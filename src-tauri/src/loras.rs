@@ -206,9 +206,9 @@ fn is_pickle(path: &Path) -> bool {
 /// The parsed safetensors header: tensor name → shape, plus `__metadata__`.
 /// Reads ONLY the 8-byte length + JSON header — never tensor data, never a
 /// pickle (`mx.load`-equivalent trust posture without loading anything).
-fn read_safetensors_header(
-    path: &Path,
-) -> Result<(BTreeMap<String, Vec<u64>>, BTreeMap<String, String>), String> {
+type SafetensorsHeader = (BTreeMap<String, Vec<u64>>, BTreeMap<String, String>);
+
+fn read_safetensors_header(path: &Path) -> Result<SafetensorsHeader, String> {
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     if is_pickle(path) {
         return Err(format!(
@@ -217,7 +217,7 @@ fn read_safetensors_header(
              execute arbitrary code)"
         ));
     }
-    if !path.extension().is_some_and(|ext| ext == "safetensors") {
+    if path.extension().is_none_or(|ext| ext != "safetensors") {
         return Err(format!("'{file_name}' is not a .safetensors adapter"));
     }
     let mut file = std::fs::File::open(path)

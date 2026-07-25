@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 import {
-  modelStatus,
-  subscribeModelsChanged,
   type LoraAdapter,
   type LoraBase,
 } from '../audio/nativeEngine'
+import { useLoraLibrary } from './loraContext'
 
 /** Which DiT family each SA3 generation kind rides (mirrors the backend's
  * `loras.KIND_BASES`): the pad kinds share the small DiTs, tracks run medium. */
@@ -22,20 +21,9 @@ export type LoraChoice = { name: string; strength: number }
 /** Adapters per generation — mirrors the backend's `loras.MAX_LORA_STACK`. */
 export const MAX_LORA_STACK = 4
 
-/** The installed SA3 LoRA adapters, kept live against `models://changed`.
- * Empty outside the shell (a plain-browser dev session has no registry). */
+/** The installed SA3 LoRA adapters from the app-wide lifecycle provider. */
 export function useLoras(): LoraAdapter[] {
-  const [loras, setLoras] = useState<LoraAdapter[]>([])
-  useEffect(() => {
-    const refresh = () => {
-      modelStatus()
-        .then((status) => setLoras(status.loras))
-        .catch(() => {})
-    }
-    refresh()
-    return subscribeModelsChanged(refresh)
-  }, [])
-  return loras
+  return useLoraLibrary().loras
 }
 
 /** The adapters that can ride a generation kind (base-matched; the backend
@@ -47,34 +35,49 @@ export function adaptersForKind(
   return loras.filter((adapter) => adapter.base === KIND_BASES[kind])
 }
 
-/** One form's LoRA stack, driving a {@link LoraRack}: toggle an adapter in or
- * out, trim its strength. Strengths are remembered per adapter name (a ref,
- * not state — only the stack renders), so toggling a chip out and back keeps
- * its trim for the session. The cap is enforced here AND in the rack's
- * disabled chips — a hardware intent can't overfill it either way. */
+/** One form's LoRA stack, driving a contextual LoRA control: apply/remove an
+ * adapter, trim its strength, or bypass it. The last non-zero strength is
+ * remembered per adapter so both remove/re-apply and bypass/enable restore the
+ * user's session value. */
 export function useLoraStack(): {
   stack: LoraChoice[]
   toggle: (name: string) => void
   setStrength: (name: string, strength: number) => void
+  toggleBypass: (name: string) => void
 } {
   const [stack, setStack] = useState<LoraChoice[]>([])
   const strengths = useRef(new Map<string, number>())
+  const activeStrengths = useRef(new Map<string, number>())
   const toggle = useCallback((name: string) => {
     setStack((current) => {
       if (current.some((entry) => entry.name === name)) {
         return current.filter((entry) => entry.name !== name)
       }
       if (current.length >= MAX_LORA_STACK) return current
-      return [...current, { name, strength: strengths.current.get(name) ?? 1 }]
+      const strength = strengths.current.get(name) ?? 1
+      if (strength > 0) activeStrengths.current.set(name, strength)
+      return [...current, { name, strength }]
     })
   }, [])
   const setStrength = useCallback((name: string, strength: number) => {
     strengths.current.set(name, strength)
+    if (strength > 0) activeStrengths.current.set(name, strength)
     setStack((current) =>
       current.map((entry) => (entry.name === name ? { ...entry, strength } : entry)),
     )
   }, [])
-  return { stack, toggle, setStrength }
+  const toggleBypass = useCallback((name: string) => {
+    setStack((current) =>
+      current.map((entry) => {
+        if (entry.name !== name) return entry
+        const strength = entry.strength === 0 ? (activeStrengths.current.get(name) ?? 1) : 0
+        strengths.current.set(name, strength)
+        if (entry.strength > 0) activeStrengths.current.set(name, entry.strength)
+        return { ...entry, strength }
+      }),
+    )
+  }, [])
+  return { stack, toggle, setStrength, toggleBypass }
 }
 
 /** The stack filtered to what still resolves for this kind at request time —

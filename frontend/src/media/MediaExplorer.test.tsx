@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { togglePianoWindow } from '../audio/nativeEngine'
@@ -249,10 +249,15 @@ describe('MediaExplorer', () => {
     const fetchMock = stubFetch()
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    expect(screen.queryByText('crackle')).toBeNull()
-    // Chip both medium adapters into the stack; trim only maqam.
-    fireEvent.click(screen.getByText('maqam'))
-    fireEvent.click(screen.getByText('breaks'))
+    fireEvent.click(screen.getByRole('button', { name: 'LoRA: Off' }))
+    expect(screen.getByText('Incompatible adapters (1)')).toBeInTheDocument()
+    // Apply both medium adapters from the contextual panel; trim only maqam.
+    const maqamRow = screen.getByText('maqam').closest('.ui-lora-panel__adapter')
+    expect(maqamRow).not.toBeNull()
+    fireEvent.click(within(maqamRow as HTMLElement).getByRole('button', { name: 'Apply' }))
+    const breaksRow = screen.getByText('breaks').closest('.ui-lora-panel__adapter')
+    expect(breaksRow).not.toBeNull()
+    fireEvent.click(within(breaksRow as HTMLElement).getByRole('button', { name: 'Apply' }))
     fireEvent.change(screen.getByLabelText('maqam strength'), {
       target: { value: '1.5' },
     })
@@ -288,8 +293,13 @@ describe('MediaExplorer', () => {
     const fetchMock = stubFetch()
     renderExplorer()
     fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    fireEvent.click(screen.getByText('maqam')) // in…
-    fireEvent.click(screen.getByText('maqam')) // …and back out
+    fireEvent.click(screen.getByRole('button', { name: 'LoRA: Off' }))
+    const availableRow = screen.getByText('maqam').closest('.ui-lora-panel__adapter')
+    expect(availableRow).not.toBeNull()
+    fireEvent.click(within(availableRow as HTMLElement).getByRole('button', { name: 'Apply' }))
+    const appliedRow = screen.getByText('maqam').closest('.ui-lora-panel__adapter')
+    expect(appliedRow).not.toBeNull()
+    fireEvent.click(within(appliedRow as HTMLElement).getByRole('button', { name: 'Remove' }))
     await composeTrack('clean take')
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/generate',

@@ -46,14 +46,12 @@ import {
   type TrackState,
 } from './useDeck'
 import {
-  adaptersForKind,
-  MAX_LORA_STACK,
   stackForKind,
   useLoras,
   useLoraStack,
   type LoraChoice,
 } from '../models/useLoras'
-import { LoraRack } from '../ui/LoraRack'
+import { LoraControl } from '../ui/LoraControl'
 import './deck.css'
 
 // The worker holds ~3s of lead (see backend worker pacing); the meter shows
@@ -316,7 +314,6 @@ export function DeckColumn({
     loop.slots.some((slot) => slot.state === 'empty')
   // Pads only ever ride the small DiTs; a stale slot (deleted adapter)
   // drops from the request, never blocks it.
-  const padAdapters = adaptersForKind(loras, 'sfx')
   const fireGenerate = () => {
     if (!canGenerate) return
     const stacked =
@@ -939,19 +936,15 @@ export function DeckColumn({
             onChange={(value) => setGenerateOneShot(value === 'oneshot')}
           />
         </div>
-        {generateEngine !== 'magenta' && (
-          <LoraRack
-            accent={deckId}
-            adapters={padAdapters.map((adapter) => ({
-              name: adapter.name,
-              label: adapter.slug,
-            }))}
-            value={padStack.stack}
-            onToggle={padStack.toggle}
-            onStrength={padStack.setStrength}
-            max={MAX_LORA_STACK}
-          />
-        )}
+        <LoraControl
+          accent={deckId}
+          adapters={loras}
+          kind={generateEngine}
+          value={padStack.stack}
+          onToggle={padStack.toggle}
+          onStrength={padStack.setStrength}
+          onToggleBypass={padStack.toggleBypass}
+        />
         <div className="deck__generate-row">
           <div className="deck__generate-prompt">
             <TextField

@@ -56,7 +56,7 @@ import {
 import { Logo } from './ui/Logo'
 import { Drawer } from './ui/Drawer'
 import { Button } from './ui/Button'
-import { LoraLibrary } from './models/LoraLibrary'
+import { LoraProvider } from './models/LoraProvider'
 import { ModelManager } from './models/ModelManager'
 import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
@@ -750,6 +750,7 @@ function App() {
   }
 
   return (
+    <LoraProvider>
     <main className="app">
       {/* The frameless title-bar strip behind the macOS traffic lights. With
           titleBarStyle Overlay the webview covers the native title bar, so that
@@ -883,13 +884,6 @@ function App() {
           <h3 className="modelmgr__heading">{t('settings.modelLibrary')}</h3>
           <ModelManager />
         </section>
-        {/* The LoRA library (issue #66): import / manage Stable Audio 3 LoRA
-            finetunes — its own top-level section so custom sound worlds don't
-            hide inside the weights installer. */}
-        <section className="modelmgr__section settings-model-library">
-          <h3 className="modelmgr__heading">{t('settings.loraLibrary')}</h3>
-          <LoraLibrary />
-        </section>
         {/* The native MCP server (ADR-0020 Phase 2): last in the list so the
             copy-paste connection snippets don't push the everyday controls down. */}
         <section className="modelmgr__section">
@@ -1019,6 +1013,7 @@ function App() {
         onResize={handleMediaResize}
       />
     </main>
+    </LoraProvider>
   )
 }
 

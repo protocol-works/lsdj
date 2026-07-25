@@ -18,14 +18,8 @@ import {
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
-import {
-  adaptersForKind,
-  MAX_LORA_STACK,
-  stackForKind,
-  useLoras,
-  useLoraStack,
-} from '../models/useLoras'
-import { LoraRack } from '../ui/LoraRack'
+import { stackForKind, useLoras, useLoraStack } from '../models/useLoras'
+import { LoraControl } from '../ui/LoraControl'
 import type { StylePreset } from '../presets'
 import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
@@ -899,8 +893,6 @@ export function MediaExplorer({
   const lengths = ENGINE_LENGTHS[engine]
   // The racks offer only base-matched adapters; Magenta hides the rack
   // entirely (no adapter path).
-  const trackAdapters = engine === 'magenta' ? [] : adaptersForKind(loras, engine)
-  const sampleAdapters = adaptersForKind(loras, sampleEngine)
 
   function loadButtons(onLoad: (deck: DeckId) => void, name: string) {
     return (['a', 'b'] as const).map((deck) => (
@@ -1112,15 +1104,13 @@ export function MediaExplorer({
               {t('media.generate.action')}
             </Button>
           </div>
-          <LoraRack
-            adapters={trackAdapters.map((adapter) => ({
-              name: adapter.name,
-              label: adapter.slug,
-            }))}
+          <LoraControl
+            adapters={loras}
+            kind={engine}
             value={trackStack.stack}
             onToggle={trackStack.toggle}
             onStrength={trackStack.setStrength}
-            max={MAX_LORA_STACK}
+            onToggleBypass={trackStack.toggleBypass}
           />
           {tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
@@ -1279,15 +1269,13 @@ export function MediaExplorer({
               {t('media.generate.action')}
             </Button>
           </div>
-          <LoraRack
-            adapters={sampleAdapters.map((adapter) => ({
-              name: adapter.name,
-              label: adapter.slug,
-            }))}
+          <LoraControl
+            adapters={loras}
+            kind={sampleEngine}
             value={sampleStack.stack}
             onToggle={sampleStack.toggle}
             onStrength={sampleStack.setStrength}
-            max={MAX_LORA_STACK}
+            onToggleBypass={sampleStack.toggleBypass}
           />
           {samples.length === 0 ? (
             <p className="media__empty">{t('media.samples.empty')}</p>

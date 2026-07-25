@@ -4,13 +4,13 @@ Issue #66 builds the production importer for Stable Audio 3 LoRA finetunes on
 top of the spike's merge-at-load runtime (ADR-0028, `docs/spike-sa3-lora.md`):
 a `sa3-loras/<base>/<slug>/` registry in the app data dir owned by the Rust
 shell, a `lora` field on `/api/generate` that rides `--lora`/`--lora-strength`
-into the pinned CLI, adapter pickers in the generate surfaces, and a
-manager section with import (HuggingFace repo id or local `.safetensors`) and
-in-app delete.
+into the pinned CLI, plus one contextual LoRA control in every generation
+surface for steering and lifecycle management (HuggingFace repo id or local
+`.safetensors`, progress, list, and delete).
 
 Unit tests cover name/path trust boundaries, the safetensors-header
 validation (pickle refusal, convention detection, base inference), the exact
-argv, the `/api/generate` contract, and the picker/manager UI. What follows
+argv, the `/api/generate` contract, and the contextual generation UI. What follows
 needs a real machine with the SA3 checkout warmed — the sandbox cannot run
 the shell or MLX. The public PEFT adapter the spike used
 (`motiftechnologies/stable-audio-3-maqam-lora`, medium base) is the reference
@@ -18,12 +18,18 @@ adapter throughout.
 
 ## Import
 
-- [ ] Settings drawer → Model library shows the **LoRA adapters** section
-      with "No adapters installed" and an **Open folder** that reveals
+- [ ] Media Explorer → Generate shows the stable-height **LoRA · None
+      installed** control even with an empty registry. Open it: the contextual
+      panel says "No adapters installed", offers **Install adapter…**, and has
+      an **Open folder** action that reveals
       `~/Library/Application Support/LSDJai/sa3-loras`.
-- [ ] Enter `motiftechnologies/stable-audio-3-maqam-lora` and Install: fetch /
-      download / install progress shows, then the adapter lists as
+- [ ] Expand **Install adapter…**, enter
+      `motiftechnologies/stable-audio-3-maqam-lora`, and Install: fetch /
+      download / install progress shows in the same panel, then the adapter
+      lists as **New** under Available adapters:
       `stable-audio-3-maqam-lora` — **Medium DiT (tracks)**, ~200 MB.
+- [ ] The new adapter remains off until **Apply** is pressed; installation alone
+      does not silently alter the next generation.
 - [ ] Cancel works mid-download and surfaces as a clean stop, not an error.
 - [ ] Import the same adapter's `adapter_model.safetensors` via **Import
       file…** (download it separately first): refused as already installed
@@ -38,8 +44,13 @@ adapter throughout.
 ## Generate
 
 - [ ] Media Explorer → Generate, engine **Track (SA3 medium)**: the LoRA
-      picker offers the Maqam adapter; the pad engines do NOT offer it (wrong
-      base), and the deck pad panels don't either.
+      control reads **Off**. Its panel offers the Maqam adapter under Available;
+      Apply moves it to **Applied to this generation**, labels it **On**, and
+      lights the collapsed control with `maqam ×1`.
+- [ ] On the SFX/Music pad engines, Maqam appears under **Incompatible
+      adapters** with "Medium DiT — select Track to apply" instead of silently
+      disappearing. Magenta reads **Unavailable for Magenta** but still opens
+      the panel for installation and management.
 - [ ] Compose two tracks from the same prompt + fixed conditions, adapter
       None vs Maqam at ×1: audibly different in character (the spike measured
       a difference as large as the signal itself).
@@ -52,7 +63,8 @@ adapter throughout.
 ## Bypass (ADR-0028's bit-exact claim)
 
 - [ ] Two tracks with the same prompt and `seed`, adapter **None** vs Maqam at
-      **×0**: byte-identical WAVs (compare SHA-256). Seed rides via the
+      **×0 / Bypassed**: byte-identical WAVs (compare SHA-256). The panel and
+      collapsed summary explicitly say **Bypassed**, not On. Seed rides via the
       `/api/generate` `seed` field (issue #54) — use
       `scripts/verify_sa3_surface.py`-style direct calls if the UI has no seed
       control.
@@ -61,8 +73,9 @@ adapter throughout.
 
 - [ ] Quit and relaunch: the adapter is still listed (the registry is the
       directory layout — nothing else to persist).
-- [ ] Delete from the manager: the row disappears, the folder is gone, and an
-      in-flight picker choice falls back to **None** on the next generate.
+- [ ] Delete from the contextual panel: an applied adapter asks for
+      confirmation; after confirmation the row disappears, the folder is gone,
+      and the stale local choice is omitted from the next generate.
 - [ ] Drop a valid adapter folder in by hand (`sa3-loras/medium/<name>/` with
       its `.safetensors`): the watcher lists it live, and it generates.
 
@@ -74,11 +87,11 @@ adapter throughout.
 
 ## LoRA stack (multi-adapter follow-up)
 
-The generate surfaces replaced the adapter/strength pickers with the
-**LoRA rack**: every base-matched adapter is a toggle chip; a chip clicked
-into the stack grows a trim knob (double-click parks it at ×1, ×0 dims the
-slot — bit-exact bypass). `/api/generate` now takes `loras` (a list of up to
-4 `{name, strength}` entries) instead of the single `lora` object.
+The generate surfaces expose one stable-height **LoRA control**. Opening its
+portalled contextual panel separates Applied, Available, and Incompatible
+adapters; each applied adapter has explicit On/Bypassed state, a labelled
+strength trim, Bypass/Enable, and Remove. `/api/generate` takes `loras` (a list
+of up to 4 `{name, strength}` entries).
 
 **Prerequisite (before anything below):** the pin is back on upstream
 `Stability-AI/stable-audio-3` (our LoRA support landed as PR #57; PR #65
@@ -88,16 +101,19 @@ run the update so the installed checkout matches the pin. On the old fork
 checkout, a multi-adapter generation fails in argparse
 (`unrecognized arguments`); a hand-patched checkout is replaced cleanly.
 
-- [ ] With two medium adapters installed: chip both into the Generate tab's
-      rack, distinct trims (e.g. ×1 and ×0.5) — the backend log shows
+- [ ] With two medium adapters installed: Apply both from the Generate panel
+      with distinct trims (e.g. ×1 and ×0.5) — the collapsed control reads
+      **2 active**, the backend log shows
       `merged … from 2 adapter(s)` and the take audibly carries both.
-- [ ] Trim one slot to ×0: its slot dims; same prompt + seed with that
-      adapter chipped out entirely is byte-identical (per-slot bypass).
-- [ ] Chip a 5th adapter with 4 stacked: the chip is disabled with the
-      "Stack full" hint (and a direct POST with 5 entries returns 422, as
+- [ ] Bypass one applied adapter: its row and collapsed summary explicitly say
+      **Bypassed**; Enable restores its last non-zero strength. Same prompt +
+      seed with that adapter removed entirely is byte-identical.
+- [ ] With 4 applied, a 5th Apply action is disabled with the "Stack full"
+      hint (and a direct POST with 5 entries returns 422, as
       does a duplicated name).
-- [ ] Deck rack takes the deck accent (A lime / B violet by default);
-      the Media Explorer racks take the master accent.
-- [ ] Toggle a chip out and back in: it remembers its trim for the session.
-- [ ] Delete a stacked adapter from the LoRA Library: the chip vanishes
-      from the racks and the next generate simply rides without it.
+- [ ] Deck controls/panels take the deck accent (A lime / B violet by default);
+      Media Explorer controls/panels take the master accent.
+- [ ] Remove and re-Apply an adapter: it remembers its trim for the session.
+- [ ] Install enough adapters to overflow the old one-line rack: the collapsed
+      generation control remains one fixed-height control and the adapter list
+      scrolls inside its panel without taking height from the media library.
