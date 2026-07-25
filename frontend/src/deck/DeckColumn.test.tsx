@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -1428,9 +1428,14 @@ describe('DeckColumn', () => {
     const onGenerateToPad = vi.fn()
     generateRow({ onGenerateToPad: onGenerateToPad as () => void })
 
-    expect(screen.queryByText('tape')).toBeNull()
-    fireEvent.click(screen.getByText('maqam'))
-    fireEvent.click(screen.getByText('crackle'))
+    fireEvent.click(screen.getByRole('button', { name: 'LoRA: Off' }))
+    expect(screen.getByText('Incompatible adapters (1)')).toBeInTheDocument()
+    const maqamRow = screen.getByText('maqam').closest('.ui-lora-panel__adapter')
+    expect(maqamRow).not.toBeNull()
+    fireEvent.click(within(maqamRow as HTMLElement).getByRole('button', { name: 'Apply' }))
+    const crackleRow = screen.getByText('crackle').closest('.ui-lora-panel__adapter')
+    expect(crackleRow).not.toBeNull()
+    fireEvent.click(within(crackleRow as HTMLElement).getByRole('button', { name: 'Apply' }))
     fireEvent.change(screen.getByLabelText('maqam strength'), {
       target: { value: '0.75' },
     })
