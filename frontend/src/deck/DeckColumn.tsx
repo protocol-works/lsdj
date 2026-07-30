@@ -45,6 +45,13 @@ import {
   type SyncResult,
   type TrackState,
 } from './useDeck'
+import {
+  stackForKind,
+  useLoras,
+  useLoraStack,
+  type LoraChoice,
+} from '../models/useLoras'
+import { LoraControl } from '../ui/LoraControl'
 import './deck.css'
 
 // The worker holds ~3s of lead (see backend worker pacing); the meter shows
@@ -123,8 +130,13 @@ type DeckColumnProps = {
   onClearLoopPad: (slot: number) => void
   onSetLoopSeconds: (seconds: number) => void
   /** Generated pads (M18): fill the first empty slot from a prompt,
-   * with the chosen engine and one-shot/loop behaviour. */
-  onGenerateToPad: (prompt: string, engine: GenerateEngine, oneShot: boolean) => void
+   * with the chosen engine, one-shot/loop behaviour, and LoRA stack. */
+  onGenerateToPad: (
+    prompt: string,
+    engine: GenerateEngine,
+    oneShot: boolean,
+    loras?: LoraChoice[] | null,
+  ) => void
   generateError: string | null
   /** Gated tempo readout (M14): null shows an honest dash. */
   bpm: number | null
@@ -268,6 +280,10 @@ export function DeckColumn({
   } | null>(null)
   const [generateEngine, setGenerateEngine] = useState<GenerateEngine>('sfx')
   const [generateOneShot, setGenerateOneShot] = useState(true)
+  // Per-deck LoRA stack (issue #66): both pad kinds ride the small DiTs, so
+  // one rack covers them; Magenta has no adapter path and hides it.
+  const loras = useLoras()
+  const padStack = useLoraStack()
   const [targetDraft, setTargetDraft] = useState('')
   // In-place prompt editing: which row is open and its draft text.
   const [editing, setEditing] = useState<{ text: string; draft: string } | null>(
@@ -296,9 +312,13 @@ export function DeckColumn({
     connected &&
     Boolean(generateDraft.trim()) &&
     loop.slots.some((slot) => slot.state === 'empty')
+  // Pads only ever ride the small DiTs; a stale slot (deleted adapter)
+  // drops from the request, never blocks it.
   const fireGenerate = () => {
     if (!canGenerate) return
-    onGenerateToPad(generateDraft, generateEngine, generateOneShot)
+    const stacked =
+      generateEngine === 'magenta' ? [] : stackForKind(padStack.stack, loras, 'sfx')
+    onGenerateToPad(generateDraft, generateEngine, generateOneShot, stacked)
   }
   const statusKey =
     mode === 'playback'
@@ -916,6 +936,15 @@ export function DeckColumn({
             onChange={(value) => setGenerateOneShot(value === 'oneshot')}
           />
         </div>
+        <LoraControl
+          accent={deckId}
+          adapters={loras}
+          kind={generateEngine}
+          value={padStack.stack}
+          onToggle={padStack.toggle}
+          onStrength={padStack.setStrength}
+          onToggleBypass={padStack.toggleBypass}
+        />
         <div className="deck__generate-row">
           <div className="deck__generate-prompt">
             <TextField

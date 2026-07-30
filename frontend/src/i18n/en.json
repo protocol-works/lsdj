@@ -369,7 +369,20 @@
       "install": "Building and warming…",
       "done": "Done",
       "error": "Failed"
-    }
+    },
+    "loras": "LoRA adapters",
+    "loraNone": "No adapters installed",
+    "loraBaseLabel": "Base",
+    "loraBaseAuto": "Detect base",
+    "loraBase": {
+      "small": "Small DiT (pads)",
+      "medium": "Medium DiT (tracks)"
+    },
+    "loraRepo": "HuggingFace repo",
+    "loraRepoPlaceholder": "owner/adapter-repo or huggingface.co link",
+    "loraImportFile": "Import file…",
+    "loraFileFilter": "LoRA adapter",
+    "loraDelete": "Delete adapter {{name}}"
   },
   "piano": {
     "heading": "MIDI keyboard",
@@ -380,5 +393,45 @@
     "octaveUp": "Octave up",
     "octaveDown": "Octave down",
     "key": "{{note}}"
+  },
+  "lora": {
+    "label": "LoRA",
+    "triggerLabel": "LoRA: {{summary}}",
+    "panelTitle": "LoRA adapters",
+    "close": "Close LoRA adapters",
+    "summary": {
+      "noneInstalled": "None installed",
+      "unavailable": "Unavailable for Magenta",
+      "noneCompatible": "None compatible",
+      "off": "Off",
+      "single": "{{name}} ×{{value}}",
+      "active": "{{count}} active",
+      "activeAndBypassed": "{{active}} active · {{bypassed}} bypassed",
+      "bypassed": "{{count}} bypassed"
+    },
+    "compatibleWith": "Compatible with {{base}}",
+    "unavailableDetail": "LoRA adapters apply to Stable Audio 3 generation, not Magenta.",
+    "applied": "Applied to this generation",
+    "noneApplied": "No adapters applied — the next generation uses the base model.",
+    "available": "Available adapters",
+    "noneAvailable": "All compatible adapters are already applied.",
+    "noneCompatible": "No installed adapters match this generation engine.",
+    "incompatible": "Incompatible adapters ({{count}})",
+    "requiresTrack": "Medium DiT — select Track to apply",
+    "requiresPads": "Small DiT — select SFX or Music to apply",
+    "on": "On",
+    "bypassed": "Bypassed",
+    "new": "New",
+    "apply": "Apply",
+    "remove": "Remove",
+    "bypass": "Bypass",
+    "enable": "Enable",
+    "strength": "{{name}} strength",
+    "strengthValue": "Strength ×{{value}}",
+    "stackFull": "Stack full — up to {{max}} adapters per generation",
+    "installAdapter": "Install adapter…",
+    "advanced": "Advanced base override",
+    "anotherInstall": "Another model install is in progress.",
+    "confirmDelete": "Delete {{name}}? It is selected for this generation and will be removed from the next request."
   }
 }

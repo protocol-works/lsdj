@@ -156,6 +156,45 @@ class TestGenerate:
         ]
         assert (mlx_dir / ".venv" / "bin" / "init.wav").read_bytes() == init_audio
 
+    def test_passes_one_lora_group_per_adapter_with_its_strength(self, checkout):
+        # Issue #66 (ADR-0028): each adapter rides the argv as its own
+        # --lora group — the directory plus a strength=S option (the
+        # upstream PR #57/#65 CLI syntax).
+        mlx_dir = checkout(SUCCESS_STUB)
+        asyncio.run(
+            sa3.generate(
+                "maqam phrasing",
+                120.0,
+                "track",
+                lora_dirs=["/adapters/medium/maqam", "/adapters/medium/breaks"],
+                lora_strengths=[0.75, 1.5],
+            )
+        )
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        first = argv.index("--lora")
+        assert argv[first : first + 6] == [
+            "--lora",
+            "/adapters/medium/maqam",
+            "strength=0.75",
+            "--lora",
+            "/adapters/medium/breaks",
+            "strength=1.5",
+        ]
+
+    def test_lora_without_strengths_omits_the_option(self, checkout):
+        # No strengths → bare --lora groups; the CLI's default (1.0) applies.
+        mlx_dir = checkout(SUCCESS_STUB)
+        asyncio.run(
+            sa3.generate(
+                "vinyl spinback", 3.0, "sfx", lora_dirs=["/adapters/small/crackle"]
+            )
+        )
+        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        lora_index = argv.index("--lora")
+        assert argv[lora_index + 1] == "/adapters/small/crackle"
+        assert not any(arg.startswith("strength=") for arg in argv)
+        assert "--lora-strength" not in argv
+
     def test_tracks_run_the_medium_dit_with_its_decoder(self, checkout):
         # M19 (ADR-0013): tracks pair the medium DiT with SAME-L; the
         # pad kinds keep the small DiTs with SAME-S.

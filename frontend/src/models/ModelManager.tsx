@@ -15,13 +15,7 @@ import {
   type ModelProgress,
   type ModelStatus,
 } from '../audio/nativeEngine'
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 MB'
-  const gb = bytes / 1e9
-  if (gb >= 1) return `${gb.toFixed(1)} GB`
-  return `${Math.max(1, Math.round(bytes / 1e6))} MB`
-}
+import { formatBytes } from './formatBytes'
 
 /** The model manager (issue #43): install / on-disk size for both model
  * families, with live install progress and cancel. Rust owns the lifecycle; this

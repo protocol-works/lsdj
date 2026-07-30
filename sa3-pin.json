@@ -1,5 +1,5 @@
 {
-  "note": "Pinned to our fork for the MLX LoRA support (ADR-0028). Revert repo to Stability-AI/stable-audio-3 and bump commit once upstream PR Stability-AI/stable-audio-3#57 merges.",
-  "repo": "https://github.com/brxs/stable-audio-3",
-  "commit": "36ef97776ee12375edd67a830a1bb0056d65bad8"
+  "note": "Back on upstream: our MLX LoRA merge-at-load (ADR-0028) landed as PR #57 (2026-07-14), and #65 extended it with per-adapter strength= and step gating. Bump via ADR-0012's upgrade path.",
+  "repo": "https://github.com/Stability-AI/stable-audio-3",
+  "commit": "0385302ea26522f00c80392c4b708df5ebf1adf5"
 }

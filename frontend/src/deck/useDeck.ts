@@ -51,6 +51,7 @@ import {
   type TrackLoop,
 } from '../audio/track'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
+import type { LoraChoice } from '../models/useLoras'
 import {
   SAMPLE_RATE,
   type Beatgrid,
@@ -205,8 +206,15 @@ export type DeckControls = {
    * dedicated render worker; first use pays its model load inside the
    * pending state). One-shots overlay, loops replace like captures;
    * music-model loops snap to whole bars while the tempo gate is
-   * locked and respect the quality floor. */
-  generateToPad: (prompt: string, engine: GenerateEngine, oneShot: boolean) => void
+   * locked and respect the quality floor. An SA3 engine can ride a LoRA
+   * stack — adapters + per-adapter strengths (issue #66); Magenta has no
+   * adapter path. */
+  generateToPad: (
+    prompt: string,
+    engine: GenerateEngine,
+    oneShot: boolean,
+    loras?: LoraChoice[] | null,
+  ) => void
   /** Load a saved sample (ADR-0022) into the first empty loop slot, as a loop or
    * one-shot per the sample. Resolves false when every slot is full, the deck isn't
    * a live Realtime deck, or the body doesn't decode (surfaced via `generateError`). */
@@ -1418,7 +1426,12 @@ export function useDeck(deckId: DeckId): DeckControls {
   )
 
   const generateToPad = useCallback(
-    (prompt: string, engine: GenerateEngine, oneShot: boolean) => {
+    (
+      prompt: string,
+      engine: GenerateEngine,
+      oneShot: boolean,
+      loras?: LoraChoice[] | null,
+    ) => {
       const trimmed = prompt.trim()
       if (!trimmed) return
       const current = loopRef.current
@@ -1469,6 +1482,7 @@ export function useDeck(deckId: DeckId): DeckControls {
                         prompt: requestPrompt,
                         seconds: requestSeconds,
                         kind: engine,
+                        ...(loras && loras.length > 0 ? { loras } : {}),
                       },
                 ),
               },

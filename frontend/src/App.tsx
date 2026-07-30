@@ -56,6 +56,7 @@ import {
 import { Logo } from './ui/Logo'
 import { Drawer } from './ui/Drawer'
 import { Button } from './ui/Button'
+import { LoraProvider } from './models/LoraProvider'
 import { ModelManager } from './models/ModelManager'
 import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
@@ -749,6 +750,7 @@ function App() {
   }
 
   return (
+    <LoraProvider>
     <main className="app">
       {/* The frameless title-bar strip behind the macOS traffic lights. With
           titleBarStyle Overlay the webview covers the native title bar, so that
@@ -1011,6 +1013,7 @@ function App() {
         onResize={handleMediaResize}
       />
     </main>
+    </LoraProvider>
   )
 }
 

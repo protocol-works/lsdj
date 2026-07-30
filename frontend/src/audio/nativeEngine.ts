@@ -139,7 +139,7 @@ export function subscribeLibraryChanged(
 // --- Model manager (issue #43) ---------------------------------------------
 
 /** A model family the manager installs (Rust `models::Family`). */
-export type ModelFamily = 'magenta' | 'sa3'
+export type ModelFamily = 'magenta' | 'sa3' | 'lora'
 
 /** One installed Magenta model in `model_status` (serde camelCase). */
 export type InstalledModel = {
@@ -155,6 +155,23 @@ export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready'
 /** The source an SA3 checkout was installed from / is pinned to (Rust
  * `models::Sa3Source`): the `sa3-pin.json` repo + commit. */
 export type Sa3Source = { repo: string; commit: string }
+
+/** The DiT family an SA3 LoRA adapter rides (issue #66): the 1024-wide small
+ * DiTs (the sfx/music pad kinds) or the 1536-wide medium track DiT. */
+export type LoraBase = 'small' | 'medium'
+
+/** One installed SA3 LoRA adapter (Rust `loras::LoraInfo`). `name` is the
+ * `<base>/<slug>` id a generate request sends to the backend. */
+export type LoraAdapter = {
+  name: string
+  base: LoraBase
+  slug: string
+  sizeBytes: number
+  /** Import-manifest facts; null for a hand-placed adapter. */
+  source: string | null
+  adapterType: string | null
+  rank: number | null
+}
 
 /** The model-manager status for both families (Rust `models::ModelStatus`). */
 export type ModelStatus = {
@@ -175,6 +192,8 @@ export type ModelStatus = {
     /** The installed checkout differs from the pin (or is unstamped) — offer an update. */
     updateAvailable: boolean
   }
+  /** The installed SA3 LoRA adapters (issue #66), sorted by name. */
+  loras: LoraAdapter[]
   /** The in-flight install, so the manager reflects it after a close/reopen even
    * though the live `model://progress` events were missed while unmounted. */
   installing: { family: ModelFamily; name: string } | null
@@ -238,6 +257,24 @@ export function cancelInstall(): Promise<void> {
  * models dir; SA3 opens its checkout. */
 export function openModelFolder(family: ModelFamily): Promise<void> {
   return invoke('open_model_folder', { family })
+}
+
+/** Import an SA3 LoRA adapter (issue #66) from a HuggingFace repo id or a local
+ * path (`.safetensors` file or PEFT adapter folder). `base` is only needed for
+ * adapters whose base cannot be inferred (rank-only `-xs` shapes). Resolves once
+ * the import has STARTED; progress arrives via `subscribeModelProgress` (family
+ * `lora`) and a final `models://changed`. */
+export function installLora(
+  source: { hfRepo: string } | { path: string },
+  base?: LoraBase,
+): Promise<void> {
+  return invoke('install_lora', { spec: { ...source, base: base ?? null } })
+}
+
+/** Delete an installed adapter (small, re-downloadable — unlike the model
+ * families, adapters get an in-app delete). Emits `models://changed`. */
+export function deleteLora(name: string): Promise<void> {
+  return invoke('delete_lora', { name })
 }
 
 /** Subscribe to `models://changed` (the models-dir watcher / an install finishing):

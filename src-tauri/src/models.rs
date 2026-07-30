@@ -71,7 +71,7 @@ pub fn magenta_models_dir() -> PathBuf {
 /// The app-owned data root for model weights — `~/Library/Application Support/
 /// LSDJai`. Kept out of `~/Documents` (which users may sync to iCloud, where
 /// multi-GB weights don't belong and Finder ops on offloaded files fail, -8013).
-fn app_support_base() -> PathBuf {
+pub(crate) fn app_support_base() -> PathBuf {
     home_dir()
         .join("Library")
         .join("Application Support")
@@ -233,7 +233,7 @@ fn sa3_update_available(installed: Option<&Sa3Source>, pinned: &Sa3Source, prese
 /// into the shared cache; the target size is the meaningful "how big is this").
 /// Best-effort: unreadable entries are skipped, and a symlinked directory is not
 /// traversed (so it cannot loop).
-fn dir_size(path: &Path) -> u64 {
+pub(crate) fn dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
@@ -356,6 +356,9 @@ pub struct ActiveInstall {
 pub struct ModelStatus {
     magenta: MagentaStatus,
     sa3: Sa3Status,
+    /// The installed SA3 LoRA adapters (issue #66), listed with the models so
+    /// the manager drawer and the generate pickers share one snapshot.
+    loras: Vec<crate::loras::LoraInfo>,
     installing: Option<ActiveInstall>,
 }
 
@@ -394,6 +397,7 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
             pinned_source: pinned,
             update_available,
         },
+        loras: crate::loras::discover(&crate::loras::loras_dir()),
         installing: active.map(|(family, name)| ActiveInstall {
             family,
             name,
@@ -410,6 +414,9 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
 pub enum Family {
     Magenta,
     Sa3,
+    /// SA3 LoRA adapters (issue #66) — same progress/changed channels, its own
+    /// import commands (an adapter needs a source + optional base, not a name).
+    Lora,
 }
 
 /// The `model://progress` payload the webview renders as a live install bar.
@@ -461,7 +468,7 @@ fn sa3_install_script() -> PathBuf {
 /// `active` names the in-flight job so `model_status` can report it — the manager
 /// reflects an install even after the drawer was closed and reopened (the live
 /// `model://progress` events are missed while it's unmounted).
-struct InstallShared {
+pub(crate) struct InstallShared {
     busy: AtomicBool,
     cancelled: AtomicBool,
     current_child: Mutex<Option<Child>>,
@@ -504,37 +511,64 @@ impl InstallManager {
         name: Option<String>,
         update: bool,
     ) -> Result<(), String> {
-        if family == Family::Magenta {
-            let name = name.as_deref().ok_or("a model name is required")?;
-            if !INSTALLABLE_MODELS.contains(&name) {
-                return Err(format!("unknown model '{name}'"));
+        match family {
+            Family::Magenta => {
+                let name = name.ok_or("a model name is required")?;
+                if !INSTALLABLE_MODELS.contains(&name.as_str()) {
+                    return Err(format!("unknown model '{name}'"));
+                }
+                let model = name.clone();
+                self.start(app, family, name, move |progress, shared| {
+                    install_magenta(progress, shared, &model)
+                })
             }
+            // `model://progress` carries the model name for Magenta, "" for SA3.
+            Family::Sa3 => self.start(app, family, String::new(), move |progress, shared| {
+                install_sa3(progress, shared, update)
+            }),
+            Family::Lora => Err("adapters are installed via install_lora".into()),
         }
+    }
+
+    /// Import an SA3 LoRA adapter (issue #66) on the same install thread and
+    /// event channels; `spec` names the source (HuggingFace repo or local path)
+    /// and an optional explicit base.
+    pub fn install_lora(
+        &self,
+        app: AppHandle,
+        spec: crate::loras::ImportSpec,
+    ) -> Result<(), String> {
+        let name = spec.display_name()?;
+        self.start(app, Family::Lora, name, move |progress, shared| {
+            crate::loras::install(progress, shared, &spec)
+        })
+    }
+
+    /// The shared install-thread dance: claim the single install slot, run `job`
+    /// with a progress sink wired to `model://progress` (as `family`/`name`),
+    /// then emit the terminal event and `models://changed`.
+    fn start(
+        &self,
+        app: AppHandle,
+        family: Family,
+        name: String,
+        job: impl FnOnce(&Progress, &InstallShared) -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
         if self.shared.busy.swap(true, Ordering::AcqRel) {
             return Err("an install is already running".into());
         }
         self.shared.cancelled.store(false, Ordering::Release);
         *self.shared.active.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some((family, name.clone().unwrap_or_default()));
+            Some((family, name.clone()));
         let shared = self.shared.clone();
         std::thread::Builder::new()
             .name("lsdj-model-install".into())
             .spawn(move || {
-                let name = name.unwrap_or_default();
-                // `model://progress` carries the model name for Magenta, "" for SA3.
-                let event_name = if family == Family::Magenta {
-                    name.clone()
-                } else {
-                    String::new()
-                };
                 let progress_app = app.clone();
                 let progress = move |stage: &str, message: Option<String>, file: Option<String>| {
-                    emit(&progress_app, family, &event_name, stage, message, file);
+                    emit(&progress_app, family, &name, stage, message, file);
                 };
-                let result = match family {
-                    Family::Magenta => install_magenta(&progress, &shared, &name),
-                    Family::Sa3 => install_sa3(&progress, &shared, update),
-                };
+                let result = job(&progress, &shared);
                 *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 match result {
                     Ok(()) => emit(&app, family, "", "done", None, None),
@@ -618,7 +652,7 @@ fn kill_group(child: &mut Child) {
     }
 }
 
-fn cancelled(shared: &InstallShared) -> Result<(), String> {
+pub(crate) fn cancelled(shared: &InstallShared) -> Result<(), String> {
     if shared.cancelled.load(Ordering::Acquire) {
         Err("cancelled".into())
     } else {
@@ -630,7 +664,7 @@ fn cancelled(shared: &InstallShared) -> Result<(), String> {
 /// stderr to the app log (so the pipe cannot fill and deadlock). Parks the child
 /// in `shared` so cancel/shutdown can kill it. Returns an error on a non-zero
 /// exit, a cancel, or a spawn/wait failure.
-fn stream_child(
+pub(crate) fn stream_child(
     shared: &InstallShared,
     label: &str,
     mut cmd: Command,
@@ -685,7 +719,7 @@ struct SidecarLine {
 /// A progress sink: `(stage, message, file)`. Injected so the install driver is
 /// decoupled from `AppHandle` — production wires it to a `model://progress`
 /// emit; tests record the events while the install actually runs.
-type Progress = dyn Fn(&str, Option<String>, Option<String>);
+pub(crate) type Progress = dyn Fn(&str, Option<String>, Option<String>);
 
 fn install_magenta(progress: &Progress, shared: &InstallShared, name: &str) -> Result<(), String> {
     progress("download", None, None);
@@ -861,17 +895,20 @@ pub fn cancel_install(installer: tauri::State<'_, InstallManager>) {
 }
 
 /// Reveal a family's folder in the OS file manager so the user can inspect or
-/// remove models natively (in-app deletion is intentionally absent — moving
-/// multi-GB weights to the Trash fails on iCloud-managed / dataless files, and
-/// the watcher reflects a native delete live anyway). Magenta opens its models
-/// dir; SA3 opens its checkout (or the app-owned SA3 home if not installed yet).
-/// Creates the folder if it does not exist.
+/// remove models natively (in-app deletion is intentionally absent for the two
+/// model families — moving multi-GB weights to the Trash fails on
+/// iCloud-managed / dataless files; adapters are small and DO get an in-app
+/// delete — and the watcher reflects a native delete live anyway). Magenta
+/// opens its models dir; SA3 opens its checkout (or the app-owned SA3 home if
+/// not installed yet); LoRA opens the adapter registry. Creates the folder if
+/// it does not exist.
 #[tauri::command]
 pub fn open_model_folder(app: AppHandle, family: Family) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let dir = match family {
         Family::Magenta => magenta_models_dir(),
         Family::Sa3 => sa3_status().1.unwrap_or_else(sa3_app_home),
+        Family::Lora => crate::loras::loras_dir(),
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create folder: {e}"))?;
     app.opener()

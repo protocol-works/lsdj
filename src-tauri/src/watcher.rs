@@ -143,6 +143,46 @@ pub fn watch_models(app: AppHandle, models_dir: PathBuf) {
         .expect("failed to spawn lsdj models-watch thread");
 }
 
+/// Watch the LoRA adapter registry (issue #66) and emit `models://changed` when
+/// the set of complete adapters changes — an import finishing, a hand-drop, or a
+/// delete (in-app or native). Same shape as [`watch_models`]: recursive watch,
+/// settled-burst re-scan, emit only on a real set change so the importer's
+/// staging dir never fires. Best-effort.
+pub fn watch_loras(app: AppHandle, loras_dir: PathBuf) {
+    std::thread::Builder::new()
+        .name("lsdj-loras-watch".into())
+        .spawn(move || {
+            let _ = std::fs::create_dir_all(&loras_dir);
+            let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+            let mut watcher = match notify::recommended_watcher(tx) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("lsdj-app: loras watcher unavailable ({e}); manager re-lists on open");
+                    return;
+                }
+            };
+            if let Err(e) = watcher.watch(&loras_dir, RecursiveMode::Recursive) {
+                eprintln!("lsdj-app: cannot watch {} ({e})", loras_dir.display());
+                return;
+            }
+
+            let mut last = crate::loras::discover_names(&loras_dir);
+            loop {
+                if rx.recv().is_err() {
+                    return; // the watcher (sole sender) was dropped — app shutdown.
+                }
+                // Coalesce the burst, then re-scan once it settles.
+                while rx.recv_timeout(DEBOUNCE).is_ok() {}
+                let now = crate::loras::discover_names(&loras_dir);
+                if now != last {
+                    last = now;
+                    let _ = app.emit("models://changed", ());
+                }
+            }
+        })
+        .expect("failed to spawn lsdj loras-watch thread");
+}
+
 /// Classify one FS event: `(touched_songs, touched_samples)`. Only an audio-file
 /// change in one of the watched folders counts; `registry.json` and any other path
 /// are ignored. `songs`/`samples` are the candidate dir prefixes (canonical + as

@@ -12,8 +12,9 @@ import asyncio
 import os
 import pathlib
 import tempfile
+from collections.abc import Sequence
 
-# CLI vocabulary of scripts/sa3_mlx.py at the pinned commit (bccf5b7).
+# CLI vocabulary of scripts/sa3_mlx.py at the pinned commit (sa3-pin.json).
 # Pads use the small DiTs with the SAME-S decoder; tracks (M19, ADR-0013)
 # the medium DiT, which pairs with SAME-L.
 KINDS = {"sfx": "sm-sfx", "music": "sm-music", "track": "medium"}
@@ -174,6 +175,8 @@ async def generate(
     cfg: float | None = None,
     apg: float | None = None,
     seed: int | None = None,
+    lora_dirs: Sequence[str] | None = None,
+    lora_strengths: Sequence[float] | None = None,
 ) -> bytes:
     """Run one generation and return the WAV bytes.
 
@@ -220,6 +223,14 @@ async def generate(
                 argv.extend(("--apg", f"{apg:g}"))
             if seed is not None:
                 argv.extend(("--seed", str(seed)))
+            if lora_dirs:
+                # One --lora group per adapter (upstream's PR #57/#65 syntax):
+                # the directory plus its strength=S option. The CLI resolves
+                # the .safetensors inside and merges all deltas at DiT load.
+                for index, lora_dir in enumerate(lora_dirs):
+                    argv.extend(("--lora", lora_dir))
+                    if lora_strengths is not None:
+                        argv.append(f"strength={lora_strengths[index]:g}")
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=mlx_dir,

@@ -43,6 +43,7 @@ mod commands;
 mod decode;
 mod generation;
 mod library;
+mod loras;
 mod mcp;
 mod midi;
 mod models;
@@ -582,6 +583,9 @@ pub fn run() {
             // when a model folder appears/disappears (`models://changed`).
             app.manage(models::InstallManager::new());
             watcher::watch_models(app.handle().clone(), models::magenta_models_dir());
+            // The LoRA adapter registry (issue #66) reflects native adds/deletes
+            // live, like the models dir.
+            watcher::watch_loras(app.handle().clone(), loras::loras_dir());
             app.manage(host);
             // The shell-level interface-state store (ADR-0020): the single source of
             // truth for the semantic / audio-param interface state the webview
@@ -826,6 +830,8 @@ pub fn run() {
             models::update_model,
             models::cancel_install,
             models::open_model_folder,
+            loras::install_lora,
+            loras::delete_lora,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -27,7 +27,7 @@ from fastapi.responses import Response
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import engine, sa3
+from . import engine, loras, sa3
 from .worker import run_deck_worker
 
 logger = logging.getLogger(__name__)
@@ -444,6 +444,66 @@ def _validate_generate_request(
                 detail=f"'seed' must be an integer from 0-{sa3.MAX_SEED}",
             )
         options["seed"] = seed
+
+    if "loras" in parsed:
+        stack = parsed["loras"]
+        if not isinstance(stack, list):
+            raise HTTPException(status_code=422, detail="'loras' must be an array")
+        if len(stack) > loras.MAX_LORA_STACK:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'loras' holds at most {loras.MAX_LORA_STACK} adapters",
+            )
+        lora_dirs: list[str] = []
+        lora_strengths: list[float] = []
+        seen: set[str] = set()
+        for entry in stack:
+            if not isinstance(entry, dict):
+                raise HTTPException(
+                    status_code=422, detail="'loras' entries must be objects"
+                )
+            name = entry.get("name")
+            if not isinstance(name, str):
+                raise HTTPException(
+                    status_code=422, detail="'loras[].name' must be a string"
+                )
+            if name in seen:
+                # A repeated adapter would double its delta silently; refuse.
+                raise HTTPException(
+                    status_code=422, detail=f"duplicate adapter {name!r}"
+                )
+            seen.add(name)
+            try:
+                adapter_dir, base = loras.resolve(name)
+            except loras.UnknownAdapter as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+            if loras.KIND_BASES[kind] != base:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"adapter '{name}' rides the {base} DiT and cannot apply "
+                        f"to kind '{kind}'"
+                    ),
+                )
+            strength = entry.get("strength", 1.0)
+            if (
+                isinstance(strength, bool)
+                or not isinstance(strength, (int, float))
+                or not math.isfinite(strength)
+                or not loras.MIN_LORA_STRENGTH <= strength <= loras.MAX_LORA_STRENGTH
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "'loras[].strength' must be "
+                        f"{loras.MIN_LORA_STRENGTH:g}-{loras.MAX_LORA_STRENGTH:g}"
+                    ),
+                )
+            lora_dirs.append(str(adapter_dir))
+            lora_strengths.append(float(strength))
+        if lora_dirs:
+            options["lora_dirs"] = lora_dirs
+            options["lora_strengths"] = lora_strengths
 
     if "inpaint_range" in parsed:
         inpaint_range = parsed["inpaint_range"]

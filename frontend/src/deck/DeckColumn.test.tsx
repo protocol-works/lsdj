@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,7 +20,16 @@ import {
   type InterfaceState,
 } from '../audio/nativeEngine'
 import * as interfaceStore from '../audio/interfaceStore'
+import type { LoraAdapter } from '../audio/nativeEngine'
 import { DeckColumn } from './DeckColumn'
+
+// The installed-adapter list (issue #66) is stubbed per test; the default is
+// none, which hides the pickers entirely.
+const useLorasMock = vi.fn<() => LoraAdapter[]>(() => [])
+vi.mock('../models/useLoras', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../models/useLoras')>()
+  return { ...original, useLoras: () => useLorasMock() }
+})
 
 // The style intents are mocked flat (no rAF coalescing — that machinery has
 // its own tests in nativeEngine.test.ts) and wired per test to a fake pad
@@ -1366,7 +1375,7 @@ describe('DeckColumn', () => {
       target: { value: 'vinyl spinback' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-    expect(onGenerateToPad).toHaveBeenCalledWith('vinyl spinback', 'sfx', true)
+    expect(onGenerateToPad).toHaveBeenCalledWith('vinyl spinback', 'sfx', true, [])
 
     fireEvent.change(screen.getByLabelText('Engine'), {
       target: { value: 'music' },
@@ -1381,7 +1390,63 @@ describe('DeckColumn', () => {
       'vinyl spinback',
       'music',
       false,
+      [],
     )
+  })
+
+  it('rides the stacked LoRA adapters and their trims into a pad generation (issue #66)', () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'small/maqam',
+        base: 'small',
+        slug: 'maqam',
+        sizeBytes: 200_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 64,
+      },
+      {
+        name: 'small/crackle',
+        base: 'small',
+        slug: 'crackle',
+        sizeBytes: 50_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 8,
+      },
+      // A medium adapter never reaches the pad rack (pads ride the small DiTs).
+      {
+        name: 'medium/tape',
+        base: 'medium',
+        slug: 'tape',
+        sizeBytes: 100_000_000,
+        source: null,
+        adapterType: 'lora',
+        rank: 16,
+      },
+    ])
+    const onGenerateToPad = vi.fn()
+    generateRow({ onGenerateToPad: onGenerateToPad as () => void })
+
+    fireEvent.click(screen.getByRole('button', { name: 'LoRA: Off' }))
+    expect(screen.getByText('Incompatible adapters (1)')).toBeInTheDocument()
+    const maqamRow = screen.getByText('maqam').closest('.ui-lora-panel__adapter')
+    expect(maqamRow).not.toBeNull()
+    fireEvent.click(within(maqamRow as HTMLElement).getByRole('button', { name: 'Apply' }))
+    const crackleRow = screen.getByText('crackle').closest('.ui-lora-panel__adapter')
+    expect(crackleRow).not.toBeNull()
+    fireEvent.click(within(crackleRow as HTMLElement).getByRole('button', { name: 'Apply' }))
+    fireEvent.change(screen.getByLabelText('maqam strength'), {
+      target: { value: '0.75' },
+    })
+    fireEvent.change(screen.getByLabelText('Generate prompt'), {
+      target: { value: 'oud phrase' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    expect(onGenerateToPad).toHaveBeenCalledWith('oud phrase', 'sfx', true, [
+      { name: 'small/maqam', strength: 0.75 },
+      { name: 'small/crackle', strength: 1 },
+    ])
   })
 
   it('offers Magenta while the deck plays — the third engine is its own worker', () => {
@@ -1397,7 +1462,7 @@ describe('DeckColumn', () => {
       target: { value: 'magenta' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
-    expect(onGenerateToPad).toHaveBeenCalledWith('dub chords', 'magenta', true)
+    expect(onGenerateToPad).toHaveBeenCalledWith('dub chords', 'magenta', true, [])
   })
 
   it('caps the prompt input short of the backend limit, sparing the BPM stamp', () => {

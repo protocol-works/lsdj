@@ -46,6 +46,7 @@ function status(overrides: Partial<ModelStatus> = {}): ModelStatus {
       pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
       updateAvailable: false,
     },
+    loras: [],
     installing: null,
     ...overrides,
   }
@@ -201,4 +202,5 @@ describe('ModelManager', () => {
     )
     expect(screen.getByRole('alert')).toHaveTextContent('no weights')
   })
+
 })

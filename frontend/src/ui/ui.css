@@ -529,6 +529,357 @@
   opacity: 0.4;
 }
 
+/* Small dial ('s'): the in-row trim (for example the LoRA panel). The viewBox is 28 so the
+   stroke scales down a step to keep the arc weight proportional. */
+.ui-knob--s .ui-knob__dial {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.ui-knob--s .ui-knob__track,
+.ui-knob--s .ui-knob__value {
+  stroke-width: 2.6;
+}
+
+/* ---------- contextual LoRA control (issue #66 proposal) ---------- */
+
+.ui-lora-control {
+  --lora-accent: var(--color-accent);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.ui-lora-control--a,
+.ui-lora-panel--a {
+  --lora-accent: var(--color-deck-a);
+}
+
+.ui-lora-control--b,
+.ui-lora-panel--b {
+  --lora-accent: var(--color-deck-b);
+}
+
+.ui-lora-control__label {
+  flex: none;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+}
+
+.ui-lora-control__trigger {
+  min-width: 0;
+  max-width: 24rem;
+  height: var(--control-height);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-s);
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font: 600 var(--text-s) var(--font-ui);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.ui-lora-control__trigger:hover,
+.ui-lora-control__trigger[aria-expanded='true'] {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
+
+.ui-lora-control__trigger:focus-visible {
+  outline: 1px solid var(--lora-accent);
+  outline-offset: 2px;
+}
+
+.ui-lora-control__led {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--color-text-silkscreen);
+  box-shadow: 0 0 0 1px var(--color-surface-inset);
+}
+
+.ui-lora-control__trigger--on {
+  color: var(--lora-accent);
+  border-color: var(--lora-accent);
+}
+
+.ui-lora-control__trigger--on .ui-lora-control__led {
+  background: var(--lora-accent);
+  box-shadow: 0 0 0.35rem color-mix(in srgb, var(--lora-accent) 55%, transparent);
+}
+
+.ui-lora-control__summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-lora-control__chevron {
+  flex: none;
+  margin-left: auto;
+}
+
+/* Portalled above the tray/deck overflow regions, but below the modal Settings
+   drawer. The panel is non-modal: outside click and Escape dismiss it. */
+.ui-anchored-panel {
+  position: fixed;
+  z-index: 90;
+}
+
+.ui-lora-panel {
+  --lora-accent: var(--color-accent);
+  width: min(35rem, calc(100vw - 1rem));
+  max-height: min(42rem, calc(100vh - 1rem));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.48);
+}
+
+.ui-lora-panel:focus {
+  outline: none;
+}
+
+.ui-lora-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ui-lora-panel__title,
+.ui-lora-panel__context,
+.ui-lora-panel__heading,
+.ui-lora-panel__empty,
+.ui-lora-panel__hint,
+.ui-lora-panel__error,
+.ui-lora-panel__progress {
+  margin: 0;
+}
+
+.ui-lora-panel__title,
+.ui-lora-panel__heading {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+}
+
+.ui-lora-panel__title {
+  color: var(--color-text);
+}
+
+.ui-lora-panel__context {
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.ui-lora-panel__header-actions,
+.ui-lora-panel__actions,
+.ui-lora-panel__install-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.ui-lora-panel__close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-l);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ui-lora-panel__close:hover {
+  color: var(--color-text);
+}
+
+.ui-lora-panel__close:focus-visible {
+  outline: 1px solid var(--lora-accent);
+  outline-offset: 2px;
+}
+
+.ui-lora-panel__body {
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.ui-lora-panel__section + .ui-lora-panel__section,
+.ui-lora-panel__section + .ui-lora-panel__disclosure,
+.ui-lora-panel__disclosure + .ui-lora-panel__disclosure {
+  margin-top: var(--space-4);
+}
+
+.ui-lora-panel__heading {
+  color: var(--color-text-silkscreen);
+  margin-bottom: var(--space-2);
+}
+
+.ui-lora-panel__empty,
+.ui-lora-panel__hint {
+  color: var(--color-text-muted);
+  font-size: var(--text-s);
+}
+
+.ui-lora-panel__hint {
+  margin-top: var(--space-2);
+}
+
+.ui-lora-panel__error {
+  color: var(--color-led-danger);
+  font-size: var(--text-s);
+  margin-bottom: var(--space-3);
+}
+
+.ui-lora-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ui-lora-panel__adapter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.ui-lora-panel__adapter--on {
+  border-left: 3px solid var(--lora-accent);
+}
+
+.ui-lora-panel__adapter--bypassed,
+.ui-lora-panel__adapter--incompatible {
+  background: var(--color-surface-inset);
+  color: var(--color-text-muted);
+}
+
+.ui-lora-panel__adapter--bypassed {
+  border-left: 3px solid var(--color-text-silkscreen);
+}
+
+.ui-lora-panel__adapter--new {
+  border-color: var(--lora-accent);
+}
+
+.ui-lora-panel__adapter-main {
+  flex: 1 1 11rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ui-lora-panel__adapter-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ui-lora-panel__adapter-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-size: var(--text-m);
+}
+
+.ui-lora-panel__meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.ui-lora-panel__state,
+.ui-lora-panel__new {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: 1px solid currentColor;
+  color: var(--lora-accent);
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+}
+
+.ui-lora-panel__adapter--bypassed .ui-lora-panel__state {
+  color: var(--color-text-muted);
+}
+
+.ui-lora-panel__adapter .ui-knob {
+  flex: none;
+}
+
+.ui-lora-panel__adapter .ui-knob__label {
+  min-width: 4.9rem;
+  white-space: nowrap;
+}
+
+.ui-lora-panel__disclosure {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+.ui-lora-panel__disclosure > summary,
+.ui-lora-panel__advanced > summary {
+  color: var(--color-text-muted);
+  font: 600 var(--text-s) var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: var(--silkscreen-spacing);
+  cursor: pointer;
+}
+
+.ui-lora-panel__disclosure[open] > summary {
+  color: var(--color-text);
+  margin-bottom: var(--space-3);
+}
+
+.ui-lora-panel__install-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ui-lora-panel__advanced {
+  padding-left: var(--space-2);
+}
+
+.ui-lora-panel__advanced[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+.ui-lora-panel__progress {
+  color: var(--lora-accent);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 620px) {
+  .ui-lora-panel__adapter {
+    flex-wrap: wrap;
+  }
+
+  .ui-lora-panel__actions {
+    margin-left: auto;
+  }
+}
+
 /* ---------- phase meter (M20) ---------- */
 
 .ui-phasemeter {
