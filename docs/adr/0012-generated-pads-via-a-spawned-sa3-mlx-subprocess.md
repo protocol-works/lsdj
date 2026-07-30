@@ -4,7 +4,8 @@
 - **Date:** 2026-06-12
 - **Deciders:** Daniel Peter
 - **Extended by:** ADR-0028 (Stable Audio 3 LoRA finetunes via the MLX path),
-  issue #54 (audio-to-audio, inpainting, CFG/APG, and fixed seeds)
+  issue #54 (audio-to-audio, inpainting, CFG/APG, and fixed seeds), issue #59
+  (Generate-tab text steering and reproducible song recipes)
 
 ## Context
 
@@ -91,6 +92,14 @@ and what happens when it's missing or fails.
   other than 1, where the CLI actually runs its unconditional branch. A seed is
   bounded to the CLI's non-negative 31-bit random domain. `/api/render` remains
   the separate Magenta worker and gains none of these SA3-specific controls.
+- **The product exposes progressive text steering only where songs are authored.**
+  Media Explorer's Generate tab has Basic and Advanced modes. Basic omits the
+  negative-prompt and guidance fields but sends a webview-minted random seed so
+  a good take can be reproduced later. Advanced exposes a concept-oriented
+  negative prompt, CFG, APG, and random/fixed seed for the medium Track DiT.
+  Effective seeds are saved with the generation recipe. Switching back to Basic
+  pauses the Advanced draft without applying it. Magenta, Samples, deck
+  generation, audio-to-audio, and inpainting remain outside this UI boundary.
 - **Magenta is the third engine, as its own worker.** A dedicated
   render process — the deck worker loop reused verbatim; a render
   worker is a deck worker that never receives `play` — serves

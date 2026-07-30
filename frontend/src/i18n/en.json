@@ -64,6 +64,48 @@
       },
       "length": "Length",
       "action": "Compose",
+      "mode": {
+        "label": "Generation mode",
+        "basic": "Basic",
+        "advanced": "Advanced"
+      },
+      "advanced": {
+        "label": "Advanced SA3 steering",
+        "negativePrompt": "Avoid concepts",
+        "negativePlaceholder": "vocals, drums, cymbals…",
+        "negativeHint": "Name the sounds to steer away from; use “drums,” not “no drums.”",
+        "concepts": {
+          "vocals": "No vocals",
+          "drums": "No drums",
+          "cymbals": "No cymbals",
+          "melody": "No melody"
+        },
+        "guidance": "Guidance: {{state}}",
+        "states": {
+          "off": "Off",
+          "on": "On"
+        },
+        "guidanceCost": "Guidance applies Avoid, CFG, and APG. It improves text adherence and takes about twice as long.",
+        "cfg": "Classifier-Free Guidance (CFG): {{value}} · diverse ↔ literal",
+        "cfgHelpLabel": "Explain Classifier-Free Guidance",
+        "cfgHelp": "Think of CFG as the accelerator: higher values follow your prompt and Avoid list more strongly. Too much can sound harsh.",
+        "apg": "Adaptive Projected Guidance (APG): {{value}} · vanilla ↔ stabilized",
+        "apgHelpLabel": "Explain Adaptive Projected Guidance",
+        "apgHelp": "Think of APG as traction control: higher values help strong guidance stay smooth instead of overdriven.",
+        "resetCfg": "Reset CFG",
+        "resetApg": "Reset APG",
+        "seed": "Seed behavior",
+        "randomSeed": "Random each take",
+        "fixedSeed": "Fixed seed",
+        "seedValue": "Seed (0–2147483647)",
+        "seedInvalid": "Enter a whole-number seed from 0 to 2147483647."
+      },
+      "reuseSettings": "Reuse settings",
+      "reuseSettingsFor": "Reuse generation settings from {{name}}",
+      "settingsApplied": "Loaded settings from {{title}}.",
+      "recipeUnavailableLoras": "Recipe loaded without unavailable adapters: {{names}}.",
+      "recipeUnsupported": "This song uses a newer recipe version that this app cannot load.",
+      "recipeInvalid": "This song's saved recipe is invalid and was not loaded.",
       "openFolder": "Open songs folder",
       "imported": "Imported",
       "inspect": "Show the full prompt for {{name}}",

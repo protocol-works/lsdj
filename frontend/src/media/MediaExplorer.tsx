@@ -18,13 +18,35 @@ import {
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
-import { stackForKind, useLoras, useLoraStack } from '../models/useLoras'
+import { postMagentaRender, postSa3Generate } from '../generation/client'
+import {
+  adaptersForKind,
+  stackForKind,
+  useLoras,
+  useLoraStack,
+} from '../models/useLoras'
+import {
+  APG_DEFAULT,
+  CFG_DEFAULT,
+  DEFAULT_SA3_STEERING,
+  buildSongGeneration,
+  mintSa3Seed,
+  parseFixedSeed,
+  parseGenerationRecipe,
+  type GenerationMode,
+  type Sa3SteeringDraft,
+  type SongGenerationEngine,
+  type SongGenerationRecipeV1,
+} from '../generation/songGeneration'
+import { Sa3AdvancedControls } from '../generation/Sa3AdvancedControls'
+import { loadAppSettings, updateAppSettings } from '../persistence'
 import { LoraControl } from '../ui/LoraControl'
 import type { StylePreset } from '../presets'
 import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
 import { PianoIcon } from '../ui/PianoIcon'
 import { Select } from '../ui/Select'
+import { SegmentedControl } from '../ui/SegmentedControl'
 import { TextField } from '../ui/TextField'
 import { randomSongTitle } from './songTitle'
 import './media.css'
@@ -46,6 +68,7 @@ type SongEntry = {
   title: string
   prompt: string | null
   model: string | null
+  recipe?: unknown
 }
 
 // One row of the on-disk sample registry (Rust `samples::SampleEntry`, camelCase):
@@ -59,7 +82,14 @@ type SampleEntry = {
 }
 
 type GeneratedTrack =
-  | { id: number; state: 'pending'; title: string; prompt: string; model: TrackEngine }
+  | {
+      id: number
+      state: 'pending'
+      title: string
+      prompt: string
+      model: TrackEngine
+      recipe: SongGenerationRecipeV1
+    }
   | {
       id: number
       state: 'ready'
@@ -79,6 +109,7 @@ type GeneratedTrack =
       // Bytes held only for a take composed THIS session; a restored take reads them
       // from disk on demand (a full render is 100 MB+ — don't hold them all).
       wav?: ArrayBuffer
+      recipe?: unknown
     }
 
 // A take in the Samples tab — the loop counterpart of GeneratedTrack. Carries
@@ -130,7 +161,7 @@ const ENGINES = Object.keys(ENGINE_LENGTHS) as TrackEngine[]
 // The Generate tab composes full tracks (songs); the Samples tab composes short
 // loops (samples). SFX/Music moved to the Samples tab (ADR-0022). `ENGINES` stays
 // the full set so `asTrackEngine` still recognises an older song saved as sfx/music.
-const TRACK_ENGINES: TrackEngine[] = ['track', 'magenta']
+const TRACK_ENGINES: SongGenerationEngine[] = ['track', 'magenta']
 const SAMPLE_ENGINES: SampleEngine[] = ['sfx', 'music']
 
 function formatLength(seconds: number): string {
@@ -174,6 +205,14 @@ function fileOf(row: { state: string; file?: string | null }): string | null {
   return row.state === 'ready' ? (row.file ?? null) : null
 }
 
+function hasVersionedRecipe(value: unknown): boolean {
+  return (
+    value != null &&
+    typeof value === 'object' &&
+    typeof (value as { version?: unknown }).version === 'number'
+  )
+}
+
 /** Re-list one library (songs or samples) from its on-disk registry, reconciled
  * against the folder by the Rust shell (hand-added files appear; deleted files drop
  * out). A row already held for a file keeps its id + in-memory wav (reuse by
@@ -213,7 +252,12 @@ function reListLibrary<
 }
 
 /** What the webview sends with a freshly composed take (Rust `songs::NewSong`). */
-type NewSong = { title: string; prompt: string; model: TrackEngine }
+type NewSong = {
+  title: string
+  prompt: string
+  model: SongGenerationEngine
+  recipe: SongGenerationRecipeV1
+}
 
 /** Persist a ready take to ~/Documents/LSDJai/generated_songs through the Rust shell
  * and return its registry entry ({@link encodeMetaFrame} builds the binary payload —
@@ -308,8 +352,16 @@ export function MediaExplorer({
   // song title at compose time, so a long/JSON prompt never becomes the name.
   const [title, setTitle] = useState('')
   const [prompt, setPrompt] = useState('')
-  const [engine, setEngine] = useState<TrackEngine>('track')
+  const [engine, setEngine] = useState<SongGenerationEngine>('track')
   const [seconds, setSeconds] = useState(120)
+  const [generationMode, setGenerationMode] = useState<GenerationMode>(
+    () => loadAppSettings().generationMode ?? 'basic',
+  )
+  const [steering, setSteering] = useState<Sa3SteeringDraft>(() => ({
+    ...DEFAULT_SA3_STEERING,
+    seed: { ...DEFAULT_SA3_STEERING.seed },
+  }))
+  const [recipeNotice, setRecipeNotice] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
   // The installed SA3 LoRA adapters (issue #66) and each form's stack: the
   // adapters riding the next generation, each at a trim strength. The racks
@@ -575,6 +627,7 @@ export function MediaExplorer({
           prompt: entry.prompt,
           model: asTrackEngine(entry.model),
           file: entry.file,
+          recipe: entry.recipe,
         }),
       ),
     [],
@@ -763,50 +816,54 @@ export function MediaExplorer({
   function generateTrack() {
     const trimmedPrompt = prompt.trim()
     if (!trimmedPrompt) return
-    const id = nextIdRef.current++
     const requestEngine = engine
     const requestLoras =
       requestEngine === 'magenta'
         ? []
         : stackForKind(trackStack.stack, loras, requestEngine)
+    let generation
+    try {
+      generation = buildSongGeneration(
+        generationMode,
+        requestEngine,
+        trimmedPrompt,
+        seconds,
+        requestLoras,
+        steering,
+        requestEngine === 'track' &&
+          (generationMode === 'basic' || steering.seed.mode === 'random')
+          ? mintSa3Seed()
+          : undefined,
+      )
+    } catch {
+      setGenerateError(t('media.generate.advanced.seedInvalid'))
+      return
+    }
+    const id = nextIdRef.current++
     // The name (and on-disk filename) come from the Title field, NOT the prompt — a
     // blank title gets a random song title so a long/JSON prompt never becomes the
     // name. The row appends a session-unique #id to tell same-title siblings apart.
     const songTitle = title.trim() || randomSongTitle()
     setGenerateError(null)
     setSaveError(null)
+    setRecipeNotice(null)
     setTracks((current) => [
-      { id, state: 'pending', title: songTitle, prompt: trimmedPrompt, model: requestEngine },
+      {
+        id,
+        state: 'pending',
+        title: songTitle,
+        prompt: trimmedPrompt,
+        model: requestEngine,
+        recipe: generation.recipe,
+      },
       ...current,
     ])
     void (async () => {
       try {
-        const apiBase = await getApiBaseUrl()
-        const response = await fetch(
-          `${apiBase}${requestEngine === 'magenta' ? '/api/render' : '/api/generate'}`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(
-              requestEngine === 'magenta'
-                ? { prompt: trimmedPrompt, seconds }
-                : {
-                    prompt: trimmedPrompt,
-                    seconds,
-                    kind: requestEngine,
-                    ...(requestLoras.length > 0 ? { loras: requestLoras } : {}),
-                  },
-            ),
-          },
-        )
-        if (!response.ok) {
-          const detail = await response
-            .json()
-            .then((body: { detail?: string }) => body.detail)
-            .catch(() => null)
-          throw new Error(detail || `generation failed (${response.status})`)
-        }
-        const wav = await response.arrayBuffer()
+        const wav =
+          'kind' in generation.request
+            ? await postSa3Generate(generation.request)
+            : await postMagentaRender(generation.request)
         setTracks((current) =>
           current.map((track) =>
             track.id === id
@@ -818,6 +875,7 @@ export function MediaExplorer({
                   model: requestEngine,
                   file: null,
                   wav,
+                  recipe: generation.recipe,
                 }
               : track,
           ),
@@ -830,7 +888,12 @@ export function MediaExplorer({
         if (isTauri()) {
           try {
             const entry = await saveGeneratedSong(
-              { title: songTitle, prompt: trimmedPrompt, model: requestEngine },
+              {
+                title: songTitle,
+                prompt: trimmedPrompt,
+                model: requestEngine,
+                recipe: generation.recipe,
+              },
               wav,
             )
             setTracks((current) =>
@@ -890,9 +953,69 @@ export function MediaExplorer({
     }
   }
 
+  function changeGenerationMode(next: GenerationMode) {
+    setGenerationMode(next)
+    updateAppSettings({ generationMode: next })
+  }
+
+  function recallSongRecipe(track: GeneratedTrack & { state: 'ready' }) {
+    const parsed = parseGenerationRecipe(track.recipe)
+    if (parsed.status === 'unsupported') {
+      setRecipeNotice(t('media.generate.recipeUnsupported'))
+      return
+    }
+    if (parsed.status === 'invalid') {
+      setRecipeNotice(t('media.generate.recipeInvalid'))
+      return
+    }
+    const { recipe } = parsed
+    if (!ENGINE_LENGTHS[recipe.engine].includes(recipe.seconds)) {
+      setRecipeNotice(t('media.generate.recipeInvalid'))
+      return
+    }
+
+    setPrompt(recipe.prompt)
+    setEngine(recipe.engine)
+    setSeconds(recipe.seconds)
+    const availableNames = new Set(
+      recipe.engine === 'track'
+        ? adaptersForKind(loras, 'track').map((adapter) => adapter.name)
+        : [],
+    )
+    const recalledLoras = recipe.loras.filter((choice) => availableNames.has(choice.name))
+    const unavailable = recipe.loras
+      .filter((choice) => !availableNames.has(choice.name))
+      .map((choice) => choice.name)
+    trackStack.replace(recalledLoras)
+
+    if (recipe.sa3) {
+      setSteering({
+        negativePrompt: recipe.sa3.negativePrompt,
+        guidance: recipe.sa3.cfg === undefined ? 'off' : 'on',
+        cfg: recipe.sa3.cfg ?? CFG_DEFAULT,
+        apg: recipe.sa3.apg ?? APG_DEFAULT,
+        seed: { mode: 'fixed', value: String(recipe.sa3.seed) },
+      })
+      changeGenerationMode('advanced')
+    } else {
+      changeGenerationMode('basic')
+    }
+    setGenerateError(null)
+    setRecipeNotice(
+      unavailable.length > 0
+        ? t('media.generate.recipeUnavailableLoras', { names: unavailable.join(', ') })
+        : t('media.generate.settingsApplied', { title: track.title }),
+    )
+  }
+
   const lengths = ENGINE_LENGTHS[engine]
-  // The racks offer only base-matched adapters; Magenta hides the rack
-  // entirely (no adapter path).
+  const fixedSeedInvalid =
+    generationMode === 'advanced' &&
+    engine === 'track' &&
+    steering.seed.mode === 'fixed' &&
+    parseFixedSeed(steering.seed.value) === null
+  // The rack offers only base-matched adapters. Magenta keeps adapter management
+  // reachable but has no compatible generation path and sends no LoRA fields.
 
   function loadButtons(onLoad: (deck: DeckId) => void, name: string) {
     return (['a', 'b'] as const).map((deck) => (
@@ -1083,7 +1206,7 @@ export function MediaExplorer({
                 label: t(`media.generate.engines.${name}`),
               }))}
               onChange={(value) => {
-                const next = value as TrackEngine
+                const next = value as SongGenerationEngine
                 setEngine(next)
                 // Each engine has its own ceiling; snap into range.
                 if (!ENGINE_LENGTHS[next].includes(seconds)) {
@@ -1100,18 +1223,38 @@ export function MediaExplorer({
               }))}
               onChange={(value) => setSeconds(Number(value))}
             />
-            <Button disabled={!prompt.trim()} onClick={generateTrack}>
+            <Button disabled={!prompt.trim() || fixedSeedInvalid} onClick={generateTrack}>
               {t('media.generate.action')}
             </Button>
           </div>
-          <LoraControl
-            adapters={loras}
-            kind={engine}
-            value={trackStack.stack}
-            onToggle={trackStack.toggle}
-            onStrength={trackStack.setStrength}
-            onToggleBypass={trackStack.toggleBypass}
-          />
+          <div className="media__generation-options">
+            <LoraControl
+              adapters={loras}
+              kind={engine}
+              value={trackStack.stack}
+              onToggle={trackStack.toggle}
+              onStrength={trackStack.setStrength}
+              onToggleBypass={trackStack.toggleBypass}
+            />
+            {engine === 'track' ? (
+              <SegmentedControl
+                label={t('media.generate.mode.label')}
+                value={generationMode}
+                options={[
+                  { value: 'basic', label: t('media.generate.mode.basic') },
+                  { value: 'advanced', label: t('media.generate.mode.advanced') },
+                ]}
+                onChange={changeGenerationMode}
+              />
+            ) : null}
+          </div>
+          {engine === 'track' && generationMode === 'advanced' ? (
+            <Sa3AdvancedControls
+              value={steering}
+              onChange={setSteering}
+              onSubmit={generateTrack}
+            />
+          ) : null}
           {tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
           ) : (
@@ -1167,6 +1310,14 @@ export function MediaExplorer({
                         ? t('media.generate.imported')
                         : t(`media.generate.engines.${track.model}`)}
                     </span>
+                    {track.state === 'ready' && hasVersionedRecipe(track.recipe) && (
+                      <Button
+                        aria-label={t('media.generate.reuseSettingsFor', { name: rowLabel })}
+                        onClick={() => recallSongRecipe(track)}
+                      >
+                        {t('media.generate.reuseSettings')}
+                      </Button>
+                    )}
                     {track.state === 'ready' && (
                       <Button
                         aria-label={
@@ -1206,6 +1357,11 @@ export function MediaExplorer({
           {saveError && (
             <p className="media__error" role="alert">
               {saveError}
+            </p>
+          )}
+          {recipeNotice && (
+            <p className="media__generation-notice" role="status">
+              {recipeNotice}
             </p>
           )}
         </div>

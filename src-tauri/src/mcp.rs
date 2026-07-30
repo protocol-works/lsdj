@@ -987,6 +987,7 @@ impl McpHandler {
                 title: prompt.clone(),
                 prompt,
                 model: "track".to_string(),
+                recipe: None,
             },
             &wav,
         )?;

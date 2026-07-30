@@ -135,6 +135,13 @@ describe('persistence', () => {
     expect(loadAppSettings().mediaHeight).toBe(320)
   })
 
+  it('round-trips the Generate mode and drops garbage', () => {
+    updateAppSettings({ generationMode: 'advanced' })
+    expect(loadAppSettings().generationMode).toBe('advanced')
+    updateAppSettings({ generationMode: 'expert' as never })
+    expect(loadAppSettings().generationMode).toBeUndefined()
+  })
+
   it('ignores garbage in the legacy shell-setting keys during migration', () => {
     localStorage.setItem(
       'lsdj:v1',

@@ -33,6 +33,19 @@ describe('useLoraStack', () => {
       `medium/adapter-${MAX_LORA_STACK}`,
     )
   })
+
+  it('replaces a stack from a recipe while enforcing control bounds', () => {
+    const { result } = renderHook(() => useLoraStack())
+    const choices = Array.from({ length: MAX_LORA_STACK + 1 }, (_, index) => ({
+      name: `medium/adapter-${index}`,
+      strength: index === 0 ? 3 : 1,
+    }))
+
+    act(() => result.current.replace(choices))
+
+    expect(result.current.stack).toHaveLength(MAX_LORA_STACK)
+    expect(result.current.stack[0].strength).toBe(2)
+  })
 })
 
 describe('stackForKind', () => {

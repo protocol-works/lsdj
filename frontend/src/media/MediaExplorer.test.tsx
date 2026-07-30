@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { togglePianoWindow } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
@@ -78,6 +78,15 @@ function stubFetch(response: Partial<Response> = {}) {
   return fetchMock
 }
 
+beforeEach(() => {
+  vi.stubGlobal('crypto', {
+    getRandomValues: (target: Uint32Array) => {
+      target[0] = 17
+      return target
+    },
+  })
+})
+
 // Sets the Title field too (to the same string) so the take's name and #id label are
 // deterministic rather than a random title — most assertions key off the label.
 async function composeTrack(name: string) {
@@ -105,6 +114,7 @@ async function composeSampleClip(name: string, oneShot = true) {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  localStorage.clear()
   vi.mocked(useInterfaceStore).mockReturnValue(null)
   vi.mocked(togglePianoWindow).mockClear()
   useLorasMock.mockReturnValue([])
@@ -188,6 +198,7 @@ describe('MediaExplorer', () => {
           prompt: 'late night dub techno',
           seconds: 120,
           kind: 'track',
+          seed: 17,
         }),
       }),
     )
@@ -213,6 +224,98 @@ describe('MediaExplorer', () => {
         .getAllByText('Track (SA3 medium)')
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
+  })
+
+  it('persists Basic/Advanced mode and restores the hidden Advanced draft', () => {
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    const mode = screen.getByRole('radiogroup', { name: 'Generation mode' })
+    expect(mode.closest('.media__generation-options')).toContainElement(
+      document.querySelector('.ui-lora-control'),
+    )
+    fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
+    fireEvent.change(screen.getByLabelText('Avoid concepts'), {
+      target: { value: 'vocals' },
+    })
+    expect(JSON.parse(localStorage.getItem('lsdj:v1') ?? '{}').app.generationMode).toBe(
+      'advanced',
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Basic' }))
+    expect(screen.queryByLabelText('Avoid concepts')).toBeNull()
+    expect(screen.queryByText(/Advanced steering is paused/)).toBeNull()
+    fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
+    expect(screen.getByLabelText('Avoid concepts')).toHaveValue('vocals')
+  })
+
+  it('sends complete Advanced SA3 text steering with a fixed seed', async () => {
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
+    fireEvent.click(screen.getByRole('button', { name: 'No drums' }))
+    fireEvent.change(screen.getByLabelText(/Classifier-Free Guidance.*3.0/), {
+      target: { value: '4.0' },
+    })
+    fireEvent.change(screen.getByLabelText(/Adaptive Projected Guidance.*1.0/), {
+      target: { value: '0.6' },
+    })
+    fireEvent.change(screen.getByLabelText('Seed behavior'), {
+      target: { value: 'fixed' },
+    })
+    fireEvent.change(screen.getByLabelText('Seed (0–2147483647)'), {
+      target: { value: '42' },
+    })
+
+    await composeTrack('dry dub')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({
+          prompt: 'dry dub',
+          seconds: 120,
+          kind: 'track',
+          negative_prompt: 'drums',
+          cfg: 4,
+          apg: 0.6,
+          seed: 42,
+        }),
+      }),
+    )
+  })
+
+  it('mints and sends a fresh random seed for every Advanced take', async () => {
+    let seed = 10
+    vi.stubGlobal('crypto', {
+      getRandomValues: (target: Uint32Array) => {
+        target[0] = seed
+        seed += 1
+        return target
+      },
+    })
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
+
+    await composeTrack('take one')
+    await composeTrack('take two')
+
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][]
+    const bodies = calls.map(([, init]) =>
+      JSON.parse(init.body as string),
+    )
+    expect(bodies.map((body) => body.seed)).toEqual([10, 11])
+  })
+
+  it('keeps generation mode out of the Samples tab', () => {
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    expect(screen.queryByRole('radiogroup', { name: 'Generation mode' })).toBeNull()
+    expect(screen.queryByLabelText('Avoid concepts')).toBeNull()
   })
 
   it('rides a stacked pair of LoRA adapters with their trims on a track compose (issue #66)', async () => {
@@ -273,6 +376,7 @@ describe('MediaExplorer', () => {
             { name: 'medium/maqam', strength: 1.5 },
             { name: 'medium/breaks', strength: 1 },
           ],
+          seed: 17,
         }),
       }),
     )
@@ -304,7 +408,12 @@ describe('MediaExplorer', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/generate',
       expect.objectContaining({
-        body: JSON.stringify({ prompt: 'clean take', seconds: 120, kind: 'track' }),
+        body: JSON.stringify({
+          prompt: 'clean take',
+          seconds: 120,
+          kind: 'track',
+          seed: 17,
+        }),
       }),
     )
   })
@@ -350,6 +459,35 @@ describe('MediaExplorer', () => {
         body: JSON.stringify({ prompt: 'air horn symphony', seconds: 60 }),
       }),
     )
+  })
+
+  it('hides SA3 mode and steering for Magenta while preserving the draft', async () => {
+    const fetchMock = stubFetch()
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
+    fireEvent.click(screen.getByRole('button', { name: 'No vocals' }))
+    fireEvent.change(screen.getByLabelText('Engine'), { target: { value: 'magenta' } })
+    expect(screen.queryByRole('radiogroup', { name: 'Generation mode' })).toBeNull()
+    expect(screen.queryByLabelText('Avoid concepts')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Track prompt'), {
+      target: { value: 'glass piano' },
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/render',
+      expect.objectContaining({
+        body: JSON.stringify({ prompt: 'glass piano', seconds: 120 }),
+      }),
+    )
+
+    fireEvent.change(screen.getByLabelText('Engine'), { target: { value: 'track' } })
+    expect(screen.getByRole('radio', { name: 'Advanced' })).toBeChecked()
+    expect(screen.getByLabelText('Avoid concepts')).toHaveValue('vocals')
   })
 
   it('surfaces the backend detail and drops the pending row on failure', async () => {
@@ -564,7 +702,68 @@ describe('MediaExplorer', () => {
       payload.byteLength,
     ).getUint32(0, true)
     const meta = JSON.parse(new TextDecoder().decode(payload.subarray(4, 4 + metaLen)))
-    expect(meta).toEqual({ title: 'keeper', prompt: 'keeper', model: 'track' })
+    expect(meta).toEqual({
+      title: 'keeper',
+      prompt: 'keeper',
+      model: 'track',
+      recipe: {
+        version: 1,
+        prompt: 'keeper',
+        engine: 'track',
+        seconds: 120,
+        loras: [],
+        sa3: { negativePrompt: '', seed: 17 },
+      },
+    })
+  })
+
+  it('auto-saves the immutable effective Advanced recipe', async () => {
+    stubFetch()
+    const calls: { cmd: string; args: unknown }[] = []
+    const invoke = vi.fn(async (cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'list_generated_songs') return []
+      if (cmd === 'save_generated_song') {
+        return { file: 'guided.wav', title: 'guided', prompt: 'guided', model: 'track' }
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
+    fireEvent.click(screen.getByRole('button', { name: 'No vocals' }))
+    fireEvent.change(screen.getByLabelText('Seed behavior'), {
+      target: { value: 'fixed' },
+    })
+    fireEvent.change(screen.getByLabelText('Seed (0–2147483647)'), {
+      target: { value: '99' },
+    })
+    await composeTrack('guided')
+
+    const payload = calls.find((call) => call.cmd === 'save_generated_song')!.args as Uint8Array
+    const metaLength = new DataView(
+      payload.buffer,
+      payload.byteOffset,
+      payload.byteLength,
+    ).getUint32(0, true)
+    const meta = JSON.parse(
+      new TextDecoder().decode(payload.subarray(4, 4 + metaLength)),
+    )
+    expect(meta.recipe).toEqual({
+      version: 1,
+      prompt: 'guided',
+      engine: 'track',
+      seconds: 120,
+      loras: [],
+      sa3: {
+        negativePrompt: 'vocals',
+        cfg: 3,
+        apg: 1,
+        seed: 99,
+      },
+    })
   })
 
   it('does not attempt a save outside the native shell', async () => {
@@ -621,6 +820,195 @@ describe('MediaExplorer', () => {
     expect(
       screen.getAllByText('Imported').some((el) => el.classList.contains('media__meta')),
     ).toBe(true)
+    expect(screen.queryByRole('button', { name: /Reuse generation settings/ })).toBeNull()
+  })
+
+  it('promotes saved Basic settings to Advanced with the used seed fixed', async () => {
+    const fetchMock = stubFetch()
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [
+          {
+            file: 'basic.wav',
+            title: 'Basic keeper',
+            prompt: 'warm house',
+            model: 'track',
+            recipe: {
+              version: 1,
+              prompt: 'warm house',
+              engine: 'track',
+              seconds: 120,
+              loras: [],
+              // Older Rust registries serialized absent guidance options as null.
+              sa3: { negativePrompt: '', cfg: null, apg: null, seed: 55 },
+            },
+          },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Reuse generation settings from Basic keeper #1',
+      }),
+    )
+
+    expect(screen.getByRole('radio', { name: 'Advanced' })).toBeChecked()
+    const guidance = screen.getByRole('switch', { name: 'Guidance: Off' })
+    expect(guidance).not.toBeChecked()
+    expect(guidance).toBeEnabled()
+    expect(screen.getByLabelText('Avoid concepts')).toBeDisabled()
+    expect(screen.getByLabelText('Seed behavior')).toHaveValue('fixed')
+    expect(screen.getByLabelText('Seed (0–2147483647)')).toHaveValue('55')
+    expect(screen.getByText('Loaded settings from Basic keeper.')).toBeInTheDocument()
+
+    fireEvent.click(guidance)
+    expect(screen.getByRole('switch', { name: 'Guidance: On' })).toBeEnabled()
+    expect(screen.getByLabelText('Avoid concepts')).toBeEnabled()
+    expect(
+      screen.getByRole('slider', { name: /Classifier-Free Guidance/ }),
+    ).toBeEnabled()
+    expect(
+      screen.getByRole('slider', { name: /Adaptive Projected Guidance/ }),
+    ).toBeEnabled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('recalls a complete saved recipe without changing Title or starting generation', async () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'medium/dub',
+        base: 'medium',
+        slug: 'dub',
+        sizeBytes: 100,
+        source: null,
+        adapterType: 'lora',
+        rank: 8,
+      },
+    ])
+    const fetchMock = stubFetch()
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [
+          {
+            file: 'recipe.wav',
+            title: 'Recipe take',
+            prompt: 'old display prompt',
+            model: 'track',
+            recipe: {
+              version: 1,
+              prompt: 'warm dub',
+              engine: 'track',
+              seconds: 240,
+              loras: [
+                { name: 'medium/dub', strength: 1.25 },
+                { name: 'medium/missing', strength: 1 },
+              ],
+              sa3: {
+                negativePrompt: 'vocals',
+                cfg: 3.5,
+                apg: 0.8,
+                seed: 77,
+              },
+            },
+          },
+        ]
+      }
+      if (cmd === 'save_generated_song') {
+        return {
+          file: 'recalled.wav',
+          title: 'Keep title',
+          prompt: 'warm dub',
+          model: 'track',
+        }
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Keep title' } })
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Reuse generation settings from Recipe take #1',
+      }),
+    )
+
+    expect(screen.getByLabelText('Title')).toHaveValue('Keep title')
+    expect(screen.getByLabelText('Track prompt')).toHaveValue('warm dub')
+    expect(screen.getByLabelText('Length')).toHaveValue('240')
+    expect(screen.getByRole('radio', { name: 'Advanced' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.getByLabelText('Avoid concepts')).toHaveValue('vocals')
+    const guidance = screen.getByRole('switch', { name: 'Guidance: On' })
+    expect(guidance).toBeEnabled()
+    fireEvent.click(guidance)
+    expect(screen.getByRole('switch', { name: 'Guidance: Off' })).toBeEnabled()
+    expect(screen.getByLabelText('Avoid concepts')).toHaveValue('vocals')
+    expect(screen.getByLabelText('Avoid concepts')).toBeDisabled()
+    expect(
+      screen.getByRole('slider', { name: /Classifier-Free Guidance/ }),
+    ).toBeDisabled()
+    fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
+    expect(screen.getByLabelText('Avoid concepts')).toBeEnabled()
+    expect(screen.getByLabelText('Seed behavior')).toHaveValue('fixed')
+    expect(screen.getByLabelText('Seed (0–2147483647)')).toHaveValue('77')
+    expect(screen.getByText(/without unavailable adapters: medium\/missing/)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({
+          prompt: 'warm dub',
+          seconds: 240,
+          kind: 'track',
+          loras: [{ name: 'medium/dub', strength: 1.25 }],
+          negative_prompt: 'vocals',
+          cfg: 3.5,
+          apg: 0.8,
+          seed: 77,
+        }),
+      }),
+    )
+  })
+
+  it('reports a future recipe version without disturbing the form', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [
+          {
+            file: 'future.wav',
+            title: 'Future',
+            prompt: 'future',
+            model: 'track',
+            recipe: { version: 2 },
+          },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.change(screen.getByLabelText('Track prompt'), {
+      target: { value: 'current draft' },
+    })
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Reuse generation settings from Future #1',
+      }),
+    )
+    expect(screen.getByLabelText('Track prompt')).toHaveValue('current draft')
+    expect(screen.getByRole('status')).toHaveTextContent('newer recipe version')
   })
 
   it('loads a restored take by library reference — no bytes round-trip', async () => {
@@ -770,7 +1158,19 @@ describe('MediaExplorer', () => {
       payload.byteLength,
     ).getUint32(0, true)
     const meta = JSON.parse(new TextDecoder().decode(payload.subarray(4, 4 + metaLen)))
-    expect(meta).toEqual({ title: 'Porcelain Halo', prompt: '{"a":1}', model: 'track' })
+    expect(meta).toEqual({
+      title: 'Porcelain Halo',
+      prompt: '{"a":1}',
+      model: 'track',
+      recipe: {
+        version: 1,
+        prompt: '{"a":1}',
+        engine: 'track',
+        seconds: 120,
+        loras: [],
+        sa3: { negativePrompt: '', seed: 17 },
+      },
+    })
   })
 
   it('falls back to a random title when the Title field is blank', async () => {

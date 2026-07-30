@@ -93,6 +93,14 @@ Realtime deck holding a stale buffer).
   medium track generation owns the generation lock for its whole wall
   time, so ADR-0012's "a queued request lands in ~3 s" does not hold
   while a track is composing — pad generations wait, visibly pending.
+- **Generated-song provenance is optional and versioned.** The on-disk song
+  registry retains the legacy title/prompt/model fields and may additionally
+  carry a versioned recipe containing prompt, engine, duration, effective LoRA
+  stack, and Advanced SA3 steering. Old and hand-added rows omit it. The
+  Generate tab validates a supported recipe before recall, leaves Title alone,
+  reports unavailable adapters instead of substituting them, and restores a
+  random take's actual seed as Fixed. Unknown versions remain playable but are
+  not applied. The WAV folder is still the library's source of truth.
 
 ## Consequences
 
@@ -120,6 +128,10 @@ Realtime deck holding a stale buffer).
   (the roadmap's standing risk); the first build measures both, with
   park-here as the kill criterion for SA3 tracks specifically —
   Magenta tracks and folder playback stand on their own.
+- A generated WAV now survives the session in the shell-owned songs folder,
+  with the optional recipe in `registry.json`; browser-only sessions retain the
+  take in memory. Recipe metadata adds reproducibility without changing deck
+  loading, decoding, or playback ownership.
 
 ## Alternatives considered
 
@@ -146,8 +158,7 @@ Realtime deck holding a stale buffer).
   renders behind a track render at the price of another ~2 GB
   resident model on a machine already hosting three. Rejected;
   honest pending state is cheaper than RAM.
-- **A track library with persistent audio** — every artefact in the
-  app is session-only (captures, samples, generated pads); persisting
-  audio would introduce a storage layer M19 doesn't need. Folder
-  tracks re-decode from disk; generated tracks persist their prompt,
-  not their audio.
+- **A user-selected track-library database** — rejected in favor of the later,
+  simpler shell-owned generated-songs folder plus its small provenance registry.
+  Folder tracks still re-decode from their selected source; generated songs
+  re-decode from the fixed app library.

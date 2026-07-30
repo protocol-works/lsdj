@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Slider } from './Slider'
@@ -37,5 +37,27 @@ describe('Slider', () => {
       <Slider label="Temperature" min={0} max={3} step={0.01} value={1.1} onChange={() => {}} />,
     )
     expect(container.querySelector('.ui-slider__reset')).toBeNull()
+  })
+
+  it('keeps optional help focusable when the slider is disabled', () => {
+    render(
+      <Slider
+        label="Guidance"
+        help={{ label: 'Explain guidance', text: 'Higher follows the prompt more strongly.' }}
+        min={1}
+        max={4}
+        step={0.1}
+        value={3}
+        disabled
+        onChange={() => {}}
+      />,
+    )
+    const trigger = screen.getByRole('button', { name: 'Explain guidance' })
+    expect(trigger).toBeEnabled()
+    expect(trigger).toHaveTextContent('?')
+    expect(trigger).toHaveAccessibleDescription('Higher follows the prompt more strongly.')
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Higher follows the prompt more strongly.',
+    )
   })
 })
