@@ -120,6 +120,107 @@
   gap: var(--space-2);
 }
 
+.media__generation-options {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+/* Match the segmented field: both utility labels sit above their controls.
+   Scope this to song generation so compact deck/Samples LoRA rows stay intact. */
+.media__generation-options .ui-lora-control {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.media__generation-hint,
+.media__generation-notice {
+  margin: 0;
+  font: 400 var(--text-s) var(--font-ui);
+  color: var(--color-text-muted);
+}
+
+.media__generation-notice {
+  color: var(--color-text);
+}
+
+.media__advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-inset);
+}
+
+.media__advanced-negative,
+.media__advanced-controls,
+.media__guidance-content,
+.media__seed-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.media__guidance-section {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.media__guidance-legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+
+.media__guidance-body {
+  display: grid;
+  grid-template-columns: minmax(16rem, 1.4fr) minmax(20rem, 1fr);
+  gap: var(--space-4);
+}
+
+.media__guidance-content--paused > .media__generation-hint,
+.media__guidance-content--paused .media__advanced-negative {
+  opacity: 0.4;
+}
+
+/* The Avoid group supplies the paused opacity; avoid compounding Button's generic
+   disabled opacity on the concept chips. */
+.media__guidance-content--paused .media__advanced-negative .ui-button:disabled {
+  opacity: 1;
+}
+
+.media__seed-section {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.media__negative-chips,
+.media__seed-fields {
+  max-width: 44rem;
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.media__seed-fields > * {
+  min-width: 10rem;
+}
+
+@media (max-width: 52rem) {
+  .media__generate-row {
+    flex-wrap: wrap;
+  }
+
+  .media__guidance-body {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* The Title field is a short name, so cap its width and let the prompt take the rest
    (the inner .ui-field is flex:1 and fills this). */
 .media__title-field {

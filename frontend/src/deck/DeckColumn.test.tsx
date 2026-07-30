@@ -1370,6 +1370,7 @@ describe('DeckColumn', () => {
   it('generates with the typed prompt, chosen engine, and behaviour', () => {
     const onGenerateToPad = vi.fn()
     generateRow({ onGenerateToPad: onGenerateToPad as () => void })
+    expect(screen.queryByRole('radiogroup', { name: 'Generation mode' })).toBeNull()
 
     fireEvent.change(screen.getByLabelText('Generate prompt'), {
       target: { value: 'vinyl spinback' },

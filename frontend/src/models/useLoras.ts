@@ -41,6 +41,7 @@ export function adaptersForKind(
  * user's session value. */
 export function useLoraStack(): {
   stack: LoraChoice[]
+  replace: (stack: LoraChoice[]) => void
   toggle: (name: string) => void
   setStrength: (name: string, strength: number) => void
   toggleBypass: (name: string) => void
@@ -48,6 +49,17 @@ export function useLoraStack(): {
   const [stack, setStack] = useState<LoraChoice[]>([])
   const strengths = useRef(new Map<string, number>())
   const activeStrengths = useRef(new Map<string, number>())
+  const replace = useCallback((next: LoraChoice[]) => {
+    const sanitized = next.slice(0, MAX_LORA_STACK).map(({ name, strength }) => ({
+      name,
+      strength: Math.max(0, Math.min(2, strength)),
+    }))
+    for (const choice of sanitized) {
+      strengths.current.set(choice.name, choice.strength)
+      if (choice.strength > 0) activeStrengths.current.set(choice.name, choice.strength)
+    }
+    setStack(sanitized)
+  }, [])
   const toggle = useCallback((name: string) => {
     setStack((current) => {
       if (current.some((entry) => entry.name === name)) {
@@ -77,7 +89,7 @@ export function useLoraStack(): {
       }),
     )
   }, [])
-  return { stack, toggle, setStrength, toggleBypass }
+  return { stack, replace, toggle, setStrength, toggleBypass }
 }
 
 /** The stack filtered to what still resolves for this kind at request time —

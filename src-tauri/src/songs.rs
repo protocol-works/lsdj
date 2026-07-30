@@ -23,6 +23,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::library;
 
+/// A LoRA slot captured in the effective song-generation request.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GenerationLora {
+    pub name: String,
+    pub strength: f64,
+}
+
+/// Stable Audio 3 text steering captured for an Advanced generation. Optional
+/// CFG/APG means guidance was off; the explicit seed always records the used take.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Sa3SteeringRecipe {
+    pub negative_prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apg: Option<f64>,
+    pub seed: u32,
+}
+
+/// The current recipe shape accepted from this version of the webview. Registry
+/// rows store recipes as opaque JSON so a future version can evolve this shape
+/// without making today's shell discard the entire registry.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GenerationRecipe {
+    pub version: u32,
+    pub prompt: String,
+    pub engine: String,
+    pub seconds: f64,
+    pub loras: Vec<GenerationLora>,
+    pub sa3: Option<Sa3SteeringRecipe>,
+}
+
 /// One row of the song registry — what the webview shows and loads from. `serde`
 /// camelCase so the field names match the TS `SongEntry`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,6 +72,10 @@ pub struct SongEntry {
     pub prompt: Option<String>,
     /// The engine/model that composed the take; `None` ("none") for a hand-added file.
     pub model: Option<String>,
+    /// Opaque on read for forward compatibility; the frontend validates version
+    /// and shape before offering recall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<serde_json::Value>,
 }
 
 /// The metadata the webview sends with a freshly composed take. The WAV bytes ride in
@@ -46,6 +85,8 @@ pub struct NewSong {
     pub title: String,
     pub prompt: String,
     pub model: String,
+    #[serde(default)]
+    pub recipe: Option<GenerationRecipe>,
 }
 
 /// The songs folder plus a lock serialising registry read-modify-write — auto-save
@@ -98,11 +139,17 @@ impl SongLibrary {
             .and_then(|n| n.to_str())
             .ok_or("written song has no filename")?
             .to_string();
+        let recipe = new
+            .recipe
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| format!("cannot serialise song recipe: {e}"))?;
         let entry = SongEntry {
             file: file.clone(),
             title: new.title,
             prompt: Some(new.prompt),
             model: Some(new.model),
+            recipe,
         };
         let mut entries: Vec<SongEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != file);
@@ -148,6 +195,7 @@ fn reconcile(existing: Vec<SongEntry>, disk: &[String]) -> Vec<SongEntry> {
                 file: file.clone(),
                 prompt: None,
                 model: None,
+                recipe: None,
             });
         }
     }
@@ -164,6 +212,7 @@ mod tests {
             title: file.trim_end_matches(".wav").to_string(),
             prompt: model.map(|_| "a prompt".to_string()),
             model: model.map(str::to_string),
+            recipe: None,
         }
     }
 
@@ -190,5 +239,165 @@ mod tests {
         assert_eq!(out[1].title, "mixtape");
         assert!(out[1].prompt.is_none());
         assert!(out[1].model.is_none());
+        assert!(out[1].recipe.is_none());
+    }
+
+    #[test]
+    fn recipe_round_trips_and_old_rows_remain_readable() {
+        let recipe = GenerationRecipe {
+            version: 1,
+            prompt: "warm dub".to_string(),
+            engine: "track".to_string(),
+            seconds: 120.0,
+            loras: vec![GenerationLora {
+                name: "medium/dub".to_string(),
+                strength: 1.25,
+            }],
+            sa3: Some(Sa3SteeringRecipe {
+                negative_prompt: "vocals".to_string(),
+                cfg: Some(3.0),
+                apg: Some(1.0),
+                seed: 42,
+            }),
+        };
+        let row = SongEntry {
+            file: "dub.wav".to_string(),
+            title: "Dub".to_string(),
+            prompt: Some("warm dub".to_string()),
+            model: Some("track".to_string()),
+            recipe: Some(serde_json::to_value(recipe).unwrap()),
+        };
+        let encoded = serde_json::to_string(&row).unwrap();
+        let decoded: SongEntry = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, row);
+
+        let legacy: SongEntry = serde_json::from_str(
+            r#"{"file":"old.wav","title":"Old","prompt":"dub","model":"track"}"#,
+        )
+        .unwrap();
+        assert!(legacy.recipe.is_none());
+
+        let basic = SongEntry {
+            file: "basic.wav".to_string(),
+            title: "Basic".to_string(),
+            prompt: Some("dub".to_string()),
+            model: Some("track".to_string()),
+            recipe: Some(serde_json::to_value(GenerationRecipe {
+                version: 1,
+                prompt: "dub".to_string(),
+                engine: "track".to_string(),
+                seconds: 120.0,
+                loras: vec![],
+                sa3: Some(Sa3SteeringRecipe {
+                    negative_prompt: String::new(),
+                    cfg: None,
+                    apg: None,
+                    seed: 55,
+                }),
+            }).unwrap()),
+        };
+        let encoded_basic = serde_json::to_string(&basic).unwrap();
+        assert!(!encoded_basic.contains("\"cfg\""));
+        assert!(!encoded_basic.contains("\"apg\""));
+        assert_eq!(
+            serde_json::from_str::<SongEntry>(&encoded_basic).unwrap(),
+            basic
+        );
+    }
+
+    #[test]
+    fn unknown_future_recipe_shape_survives_library_reconciliation() {
+        let dir = std::env::temp_dir().join(format!(
+            "lsdj-future-song-recipe-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("thread")
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("future.wav"), b"RIFF future bytes").unwrap();
+        let future_recipe = serde_json::json!({
+            "version": 2,
+            "prompt": { "segments": ["dub", "ambient"] },
+            "engine": 7,
+            "seconds": "until-done",
+            "loras": { "stack": [] },
+            "sa3": ["future", "shape"]
+        });
+        let row = SongEntry {
+            file: "future.wav".to_string(),
+            title: "Future title".to_string(),
+            prompt: Some("legacy display prompt".to_string()),
+            model: Some("track".to_string()),
+            recipe: Some(future_recipe.clone()),
+        };
+        std::fs::write(
+            dir.join("registry.json"),
+            serde_json::to_vec(&vec![row]).unwrap(),
+        )
+        .unwrap();
+
+        let songs = SongLibrary::new(dir.clone());
+        let rows = songs.list().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Future title");
+        assert_eq!(rows[0].prompt.as_deref(), Some("legacy display prompt"));
+        assert_eq!(rows[0].model.as_deref(), Some("track"));
+        assert_eq!(rows[0].recipe.as_ref(), Some(&future_recipe));
+
+        let rewritten: Vec<SongEntry> =
+            serde_json::from_slice(&std::fs::read(dir.join("registry.json")).unwrap()).unwrap();
+        assert_eq!(rewritten[0].recipe.as_ref(), Some(&future_recipe));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_fresh_library_instance_restores_the_recorded_recipe() {
+        let dir = std::env::temp_dir().join(format!(
+            "lsdj-song-recipe-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("thread")
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        let recipe = GenerationRecipe {
+            version: 1,
+            prompt: "warm dub".to_string(),
+            engine: "track".to_string(),
+            seconds: 120.0,
+            loras: vec![GenerationLora {
+                name: "medium/dub".to_string(),
+                strength: 1.25,
+            }],
+            sa3: Some(Sa3SteeringRecipe {
+                negative_prompt: "vocals".to_string(),
+                cfg: Some(3.0),
+                apg: Some(1.0),
+                seed: 42,
+            }),
+        };
+
+        let first = SongLibrary::new(dir.clone());
+        let recorded = first
+            .record(
+                NewSong {
+                    title: "Dub".to_string(),
+                    prompt: "warm dub".to_string(),
+                    model: "track".to_string(),
+                    recipe: Some(recipe.clone()),
+                },
+                b"RIFF test bytes",
+            )
+            .unwrap();
+        drop(first);
+
+        let restarted = SongLibrary::new(dir.clone());
+        let rows = restarted.list().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].file, recorded.file);
+        assert_eq!(
+            rows[0].recipe.as_ref(),
+            Some(&serde_json::to_value(&recipe).unwrap())
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -7,6 +7,7 @@ import { FX_KINDS, type FxKind } from './audio/fx'
 import { LOOP_LENGTH_OPTIONS } from './audio/loops'
 import { TRIM_RANGE_DB } from './audio/master'
 import { clampMediaHeight } from './media/mediaTray'
+import type { GenerationMode } from './generation/songGeneration'
 import type { PadPoint } from './deck/padWeights'
 import { clamp01, isPoint, parsePreset, type StylePreset } from './presets'
 
@@ -35,6 +36,8 @@ export type AppSettings = {
    * (clamped to the tray's bounds on load). */
   mediaOpen: boolean
   mediaHeight: number
+  /** Generate-tab complexity; Advanced values themselves remain session drafts. */
+  generationMode: GenerationMode
 }
 
 /** The settings that moved to shell-side persistence (ADR-0020 phase A:
@@ -303,6 +306,9 @@ export function loadAppSettings(): Partial<AppSettings> {
   }
   if (Number.isFinite(stored.mediaHeight)) {
     settings.mediaHeight = clampMediaHeight(stored.mediaHeight as number)
+  }
+  if (stored.generationMode === 'basic' || stored.generationMode === 'advanced') {
+    settings.generationMode = stored.generationMode
   }
   return settings
 }
