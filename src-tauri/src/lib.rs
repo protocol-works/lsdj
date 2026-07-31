@@ -39,6 +39,7 @@ use lsdj_engine::DeckHandle;
 use tauri::Manager;
 
 mod analysis;
+mod child_process;
 mod commands;
 mod decode;
 mod generation;

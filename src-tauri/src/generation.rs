@@ -56,7 +56,8 @@ impl GenerationServer {
             let listener = TcpListener::bind("127.0.0.1:0")?;
             listener.local_addr()?.port()
         };
-        let mut child = generation_command(port)?.spawn()?;
+        let mut command = generation_command(port)?;
+        let mut child = crate::child_process::spawn_grouped(&mut command)?;
 
         // Confirm the child actually came up before advertising the port — a
         // failed launch (bad CWD / import error) or a lost port race would
@@ -92,8 +93,7 @@ impl GenerationServer {
     /// leak the process.
     pub fn shutdown(&self) {
         if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            crate::child_process::kill_group(&mut child);
         }
     }
 }

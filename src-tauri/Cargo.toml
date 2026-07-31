@@ -53,10 +53,11 @@ trash = "5"
 # widely maintained. Rust owns the watch + emits an event — the webview gets no fs
 # access (ADR-0022).
 notify = "6"
-# Process-group signalling for cancelling a model install (issue #43): the install
-# runs `uv run python …`, so killing the immediate child orphans the real worker —
-# we put it in its own group and `kill(2)` the whole group. rust-lang's libc, already
-# in the tree transitively; the minimal way to reach the syscall.
+# Process-group signalling for supervised Python work (sidecars, generation server,
+# and model installs): dev runs use `uv run python …`, so killing the immediate child
+# orphans the real worker. Put each tree in its own group and `kill(2)` the whole
+# group. rust-lang's libc, already in the tree transitively, is the minimal syscall
+# bridge.
 libc = "0.2"
 # The audio engine as a workspace member (the cpal device + RT-safe mix core).
 lsdj-engine = { path = "engine" }

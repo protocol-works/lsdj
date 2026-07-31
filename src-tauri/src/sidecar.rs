@@ -245,7 +245,8 @@ fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, Child
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(false).ok();
     let port = listener.local_addr()?.port();
-    let child = sidecar_command(deck_id, model, port)?.spawn()?;
+    let mut command = sidecar_command(deck_id, model, port)?;
+    let child = crate::child_process::spawn_grouped(&mut command)?;
     Ok((listener, child))
 }
 
@@ -408,8 +409,7 @@ impl Sidecar {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
         if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            let _ = old.kill();
-            let _ = old.wait();
+            crate::child_process::kill_group(&mut old);
         }
         let exit = self
             .reader
@@ -534,14 +534,17 @@ impl Sidecars {
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Closing the control writer + killing the child closes the socket, so the
-        // reader's `read_frame` returns; `stop` (set above) also wakes a
-        // never-connected accept, so the join never waits out ACCEPT_TIMEOUT.
-        if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        // The reader owns a clone of this socket, so merely dropping the control
+        // writer does NOT wake its blocking read. Shut down the shared socket
+        // first; this also tells a healthy Python worker to stop cleanly. Then
+        // kill the whole process group so a `uv run` wrapper cannot leave that
+        // worker alive holding the peer socket open.
+        if let Some(writer) = self.control.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
         }
-        *self.control.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            crate::child_process::kill_group(&mut child);
+        }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -650,6 +653,7 @@ mod tests {
     use super::*;
     use lsdj_engine::Engine;
     use std::net::TcpStream;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn transport_ended_matches_only_worker_end_events() {
@@ -760,12 +764,15 @@ mod tests {
     /// In-process model switch: `restart` respawns the sidecar with a new model,
     /// reusing the deck's permanent ring producer, and suppresses a false
     /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only
-    /// Python stand-in (no models) via `LSDJ_SIDECAR_CMD`.
+    /// wrapper + Python stand-in (no models) via `LSDJ_SIDECAR_CMD`, matching the
+    /// `uv run` parent/grandchild topology used in development.
     #[test]
     fn restart_switches_model_without_a_worker_died() {
         // A stand-in sidecar: connect to --port, announce ready with --model, then
-        // block until the parent closes the socket. No backend deps.
-        let script = r#"import socket, struct, json, argparse
+        // deliberately ignore socket EOF. Teardown must kill it as the wrapper's
+        // process-group child; killing only the wrapper leaves this process and
+        // the Rust reader alive forever. No backend deps.
+        let script = r#"import socket, struct, json, argparse, time
 p = argparse.ArgumentParser()
 p.add_argument('--port', type=int)
 p.add_argument('--model')
@@ -774,15 +781,34 @@ a, _ = p.parse_known_args()
 s = socket.create_connection(('127.0.0.1', a.port))
 b = json.dumps({'event': 'ready', 'model': a.model}).encode()
 s.sendall(struct.pack('<BI', 2, len(b)) + b)
-while s.recv(4096):
-    pass
+while True:
+    time.sleep(60)
 "#;
-        let path =
-            std::env::temp_dir().join(format!("lsdj_fake_sidecar_{}.py", std::process::id()));
-        std::fs::write(&path, script).unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "lsdj-sidecar-lifecycle-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let python = tmp.join("sidecar.py");
+        let wrapper = tmp.join("sidecar-wrapper.sh");
+        let pidfile = tmp.join("python-pids");
+        std::fs::write(&python, script).unwrap();
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\npython3 \"{}\" \"$@\" &\nchild=$!\necho \"$child\" >> \"{}\"\nwait \"$child\"\n",
+                python.display(),
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&wrapper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&wrapper, permissions).unwrap();
         // SAFETY-ish: no other test reads LSDJ_SIDECAR_CMD or calls
         // Sidecar::spawn, so this process-global is uncontended; removed at the end.
-        std::env::set_var("LSDJ_SIDECAR_CMD", format!("python3 {}", path.display()));
+        std::env::set_var("LSDJ_SIDECAR_CMD", wrapper.as_os_str());
 
         let mut engine = Engine::new();
         let handle = engine.create_deck(0);
@@ -832,8 +858,56 @@ while s.recv(4096):
         );
         drop(log);
 
-        drop(sidecar);
+        // Quit teardown is synchronous. Keep a watchdog around the drop so a
+        // regression fails instead of wedging the entire test process forever.
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let teardown = thread::spawn(move || {
+            drop(sidecar);
+            let _ = dropped_tx.send(());
+        });
+        if dropped_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+            // Best-effort cleanup for the failure path: killing the stubborn
+            // Python peers releases the blocked reader join.
+            if let Ok(contents) = std::fs::read_to_string(&pidfile) {
+                for pid in contents.lines().filter_map(|line| line.parse().ok()) {
+                    // SAFETY: these pids came from the test wrapper we launched.
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+            }
+            let _ = teardown.join();
+            panic!("sidecar teardown did not finish within five seconds");
+        }
+        teardown.join().expect("teardown thread panicked");
+
+        // Both the pre-restart and final Python grandchildren must be gone. A
+        // wrapper-only kill can return while leaving either one orphaned.
+        let pids: Vec<libc::pid_t> = std::fs::read_to_string(&pidfile)
+            .expect("wrapper recorded child pids")
+            .lines()
+            .map(|line| line.parse().expect("pidfile contains numeric pids"))
+            .collect();
+        assert_eq!(pids.len(), 2, "restart should launch two Python children");
+        for pid in pids {
+            let mut gone = false;
+            for _ in 0..1000 {
+                // SAFETY: signal 0 only probes the test child's liveness.
+                if unsafe { libc::kill(pid, 0) } == -1 {
+                    gone = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            if !gone {
+                // SAFETY: failure cleanup for the known test child.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            assert!(gone, "Python sidecar child {pid} survived process-group teardown");
+        }
         std::env::remove_var("LSDJ_SIDECAR_CMD");
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
