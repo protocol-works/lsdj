@@ -32,6 +32,8 @@ export type AccentTheme = 'lime' | 'violet' | 'cyan'
 export type AppSettings = {
   beatView: BeatViewLayout
   accent: AccentTheme
+  /** Ambient backdrop and deck-frame beat pulses (issue #94). */
+  performanceVisuals: boolean
   /** Media-tray drawer state: whether it's expanded, and its height in px
    * (clamped to the tray's bounds on load). */
   mediaOpen: boolean
@@ -300,6 +302,9 @@ export function loadAppSettings(): Partial<AppSettings> {
     stored.accent === 'cyan'
   ) {
     settings.accent = stored.accent
+  }
+  if (typeof stored.performanceVisuals === 'boolean') {
+    settings.performanceVisuals = stored.performanceVisuals
   }
   if (typeof stored.mediaOpen === 'boolean') {
     settings.mediaOpen = stored.mediaOpen

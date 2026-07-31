@@ -21,6 +21,11 @@ body {
 
 .app {
   position: relative;
+  isolation: isolate;
+  --performance-wash-a: 0;
+  --performance-wash-b: 0;
+  --performance-pulse-a: 0;
+  --performance-pulse-b: 0;
   height: 100dvh;
   display: flex;
   flex-direction: column;
@@ -30,6 +35,104 @@ body {
      the `.app__titlebar` strip fills that inset as the draggable title bar. */
   padding: var(--titlebar-inset) var(--space-3) var(--space-3);
   overflow: hidden;
+}
+
+/* The performance stage is a real global underlay: a panel-coloured field sits
+   behind the booth, and top-level modules become just translucent enough for
+   the deck light to travel through them. The tree remains completely inert. */
+.performance-visuals {
+  --performance-energy: clamp(
+    0,
+    calc(var(--performance-wash-a) + var(--performance-wash-b)),
+    1
+  );
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      ellipse at center,
+      transparent 28%,
+      color-mix(in srgb, var(--color-bg) 72%, transparent) 100%
+    ),
+    var(--color-surface);
+}
+
+.performance-visuals__glow {
+  position: absolute;
+  top: -22%;
+  bottom: -22%;
+  width: 106%;
+  opacity: clamp(
+    0,
+    calc(var(--performance-wash-a) * 0.46 + var(--performance-pulse-a) * 0.68),
+    0.82
+  );
+  transform: scale(calc(0.95 + var(--performance-pulse-a) * 0.16));
+  transform-origin: left center;
+  background: radial-gradient(
+    ellipse at left center,
+    color-mix(in srgb, var(--color-deck-a) 88%, transparent) 0,
+    color-mix(in srgb, var(--color-deck-a) 52%, transparent) 35%,
+    color-mix(in srgb, var(--color-deck-a) 24%, transparent) 64%,
+    transparent 86%
+  );
+  will-change: opacity, transform;
+}
+
+.performance-visuals__glow--a {
+  left: -20%;
+}
+
+.performance-visuals__glow--b {
+  right: -20%;
+  opacity: clamp(
+    0,
+    calc(var(--performance-wash-b) * 0.46 + var(--performance-pulse-b) * 0.68),
+    0.82
+  );
+  transform: scale(calc(0.95 + var(--performance-pulse-b) * 0.16));
+  transform-origin: right center;
+  background: radial-gradient(
+    ellipse at right center,
+    color-mix(in srgb, var(--color-deck-b) 88%, transparent) 0,
+    color-mix(in srgb, var(--color-deck-b) 52%, transparent) 35%,
+    color-mix(in srgb, var(--color-deck-b) 24%, transparent) 64%,
+    transparent 86%
+  );
+}
+
+.performance-visuals__grid {
+  position: absolute;
+  inset: -3rem;
+  background-position: center;
+  background-size: 3rem 3rem;
+}
+
+.performance-visuals__grid {
+  color: color-mix(in srgb, var(--color-border-strong) 82%, transparent);
+  opacity: clamp(0.04, calc(0.04 + var(--performance-energy) * 0.14), 0.18);
+  background-image:
+    radial-gradient(ellipse 1px 5px at center, currentColor 96%, transparent 100%),
+    radial-gradient(ellipse 5px 1px at center, currentColor 96%, transparent 100%);
+}
+
+/* Only the main booth modules transmit the stage. Inset controls stay opaque,
+   preserving hierarchy and contrast while the global glow binds panels into
+   one instrument. Toggle-off restores the original fully matte surfaces. */
+.app[data-performance-visuals='on'] > .app__statusbar,
+.app[data-performance-visuals='on'] .deck,
+.app[data-performance-visuals='on'] .mixer,
+.app[data-performance-visuals='on'] > .ui-panel {
+  background: color-mix(in srgb, var(--color-surface) 76%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .performance-visuals__glow {
+    transform: none;
+  }
 }
 
 /* The draggable title-bar strip: a transparent surface over the top inset, behind
@@ -150,4 +253,3 @@ body {
     grid-template-columns: 1fr;
   }
 }
-

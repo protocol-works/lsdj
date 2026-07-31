@@ -57,6 +57,29 @@ describe('persistence', () => {
     })
   })
 
+  it('round-trips and merges both performance-visual states', () => {
+    updateAppSettings({ beatView: 'vertical', performanceVisuals: false })
+    expect(loadAppSettings()).toEqual({
+      beatView: 'vertical',
+      performanceVisuals: false,
+    })
+
+    updateAppSettings({ performanceVisuals: true })
+    expect(loadAppSettings()).toEqual({
+      beatView: 'vertical',
+      performanceVisuals: true,
+    })
+  })
+
+  it('treats an absent or malformed performance-visual setting as absent', () => {
+    expect(loadAppSettings().performanceVisuals).toBeUndefined()
+    localStorage.setItem(
+      'lsdj:v1',
+      JSON.stringify({ app: { beatView: 'top', performanceVisuals: 'yes' } }),
+    )
+    expect(loadAppSettings()).toEqual({ beatView: 'top' })
+  })
+
   it('migrates legacy mixer settings ONCE, stripping the keys (ADR-0020 phase C)', () => {
     // A blob saved by a pre-inversion build: the whole mixer in localStorage.
     localStorage.setItem(

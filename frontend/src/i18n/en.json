@@ -343,6 +343,7 @@
     "title": "Settings",
     "close": "Close",
     "appearance": "Appearance",
+    "performanceVisuals": "Performance visuals",
     "audio": "Audio",
     "models": "Deck realtime models",
     "modelDeck": "Deck {{id}}",

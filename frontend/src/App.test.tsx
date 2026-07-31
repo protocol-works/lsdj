@@ -10,6 +10,7 @@ import { AudioEngineProvider } from './audio/AudioEngineProvider'
 import type { AudioEngine } from './audio/types'
 import { createControlBus, type ControlBus } from './control/bus'
 import { ControlBusProvider } from './control/ControlBusProvider'
+import { loadAppSettings } from './persistence'
 
 // The LSDJai brand mark renders through three.js / react-three-fiber, which needs
 // a real WebGL context and ResizeObserver — neither exists in jsdom. These
@@ -106,5 +107,30 @@ describe('App settings drawer', () => {
 
     expect(screen.getByLabelText('Deck A')).toBeInTheDocument()
     expect(screen.getByLabelText('Deck B')).toBeInTheDocument()
+  })
+
+  it('defaults performance visuals on and persists the switch across remounts', () => {
+    const engine = makeEngine()
+    const first = renderApp(engine)
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    const toggle = screen.getByRole('switch', { name: 'Performance visuals' })
+    const app = document.querySelector('.app')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(app).toHaveAttribute('data-performance-visuals', 'on')
+    expect(document.querySelector('.performance-visuals')).not.toHaveAttribute('hidden')
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(app).toHaveAttribute('data-performance-visuals', 'off')
+    expect(document.querySelector('.performance-visuals')).toHaveAttribute('hidden')
+    expect(loadAppSettings().performanceVisuals).toBe(false)
+
+    first.unmount()
+    renderApp(makeEngine())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(
+      screen.getByRole('switch', { name: 'Performance visuals' }),
+    ).toHaveAttribute('aria-checked', 'false')
   })
 })
