@@ -40,6 +40,7 @@ import { RecordControl } from './mixer/RecordControl'
 import { AccentPicker } from './ui/AccentPicker'
 import { OutputDevicePicker } from './ui/OutputDevicePicker'
 import { BeatViewPicker } from './ui/BeatViewPicker'
+import { Switch } from './ui/Switch'
 import { Select } from './ui/Select'
 import {
   deletePreset,
@@ -62,6 +63,7 @@ import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
 import { phaseOffsetBeats } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
+import { PerformanceVisuals } from './visuals/PerformanceVisuals'
 
 /** The agent harnesses we tailor a connection snippet for. A `command` harness gets
  * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
@@ -226,6 +228,7 @@ function McpSettings({
 function App() {
   const { t } = useTranslation()
   const engine = useAudioEngine()
+  const appRef = useRef<HTMLElement>(null)
   // The authoritative interface-state store (ADR-0020): the webview projects it.
   const store = useInterfaceStore()
   const deckA = useDeck('a')
@@ -314,6 +317,16 @@ function App() {
   const handleAccent = useCallback((value: AccentTheme) => {
     setAccent(value)
     updateAppSettings({ accent: value })
+  }, [])
+  const [performanceVisuals, setPerformanceVisuals] = useState(
+    () => loadAppSettings().performanceVisuals ?? true,
+  )
+  const handlePerformanceVisuals = useCallback(() => {
+    setPerformanceVisuals((enabled) => {
+      const next = !enabled
+      updateAppSettings({ performanceVisuals: next })
+      return next
+    })
   }, [])
 
   // Where master-bus recordings are saved (empty = the OS Downloads folder,
@@ -710,6 +723,32 @@ function App() {
     return aPlayback ? phaseOffsetBeats(a, b) : phaseOffsetBeats(b, a)
   }, [deckA, deckB])
 
+  // Performance visuals use the same speaker-clock selection rule as the phase
+  // meter. Audibility is separate and primitive so primed/paused sources are
+  // hard-gated even if their cached pre-crossfader channel level remains hot.
+  const deckAMode = deckA.mode
+  const deckBMode = deckB.mode
+  const getTrackBeatA = deckA.getTrackBeat
+  const getTrackBeatB = deckB.getTrackBeat
+  const getLiveBeatA = deckA.getLiveBeat
+  const getLiveBeatB = deckB.getLiveBeat
+  const getPerformanceBeatA = useCallback(
+    () => (deckAMode === 'playback' ? getTrackBeatA() : getLiveBeatA()),
+    [deckAMode, getLiveBeatA, getTrackBeatA],
+  )
+  const getPerformanceBeatB = useCallback(
+    () => (deckBMode === 'playback' ? getTrackBeatB() : getLiveBeatB()),
+    [deckBMode, getLiveBeatB, getTrackBeatB],
+  )
+  const performanceAudibleA =
+    deckAMode === 'playback'
+      ? deckA.track?.playing === true
+      : deckA.state.playing && !deckA.primed
+  const performanceAudibleB =
+    deckBMode === 'playback'
+      ? deckB.track?.playing === true
+      : deckB.state.playing && !deckB.primed
+
   // The MIDI hook is now a projection + intent bridge (ADR-0031): the shell
   // owns the transport and paints the LEDs from the store, so App's old LED
   // effects are gone. The LED inputs React still owns mirror into the store
@@ -751,12 +790,35 @@ function App() {
 
   return (
     <LoraProvider>
-    <main className="app">
+    <main
+      ref={appRef}
+      className="app"
+      data-performance-visuals={performanceVisuals ? 'on' : 'off'}
+    >
       {/* The frameless title-bar strip behind the macOS traffic lights. With
           titleBarStyle Overlay the webview covers the native title bar, so that
           top strip is webview content and needs its OWN drag region — an empty,
           transparent surface over the top inset. */}
       <div className="app__titlebar" data-tauri-drag-region aria-hidden="true" />
+      <PerformanceVisuals
+        enabled={performanceVisuals}
+        rootRef={appRef}
+        crossfade={crossfade}
+        getContextTime={engine.getContextTime}
+        getMasterLevel={engine.getMasterLevel}
+        decks={{
+          a: {
+            audible: performanceAudibleA,
+            getLevel: deckA.getChannelLevel,
+            getBeat: getPerformanceBeatA,
+          },
+          b: {
+            audible: performanceAudibleB,
+            getLevel: deckB.getChannelLevel,
+            getBeat: getPerformanceBeatB,
+          },
+        }}
+      />
       {/* Drag the window by the header too. `deep` makes the whole subtree a drag
           surface (logo, gaps, status text); Tauri auto-excludes clickable
           elements (the native selects, the MIDI button) so they stay clickable. */}
@@ -804,6 +866,11 @@ function App() {
                 label: t(`accent.options.${option}`),
               }))}
               onChange={handleAccent}
+            />
+            <Switch
+              label={t('settings.performanceVisuals')}
+              on={performanceVisuals}
+              onClick={handlePerformanceVisuals}
             />
           </div>
         </section>
