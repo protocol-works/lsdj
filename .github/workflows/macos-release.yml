@@ -102,9 +102,21 @@ jobs:
           set -euo pipefail
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
-          brew install just
+          brew install just uv
           cargo install tauri-cli --version '=2.11.2' --locked
           npm ci --prefix frontend
+
+      - name: Freeze production backend
+        run: |
+          set -euo pipefail
+          uv sync --project backend --frozen
+          just freeze-backend
+          test -x src-tauri/sidecar-dist/lsdj_backend/lsdj_backend
+          test -d src-tauri/sidecar-dist/lsdj_backend/_internal
+          src-tauri/sidecar-dist/lsdj_backend/lsdj_backend --help >/dev/null
+          src-tauri/sidecar-dist/lsdj_backend/lsdj_backend \
+            --generation-server --help >/dev/null
+          src-tauri/sidecar-dist/lsdj_backend/lsdj_backend --check-runtime
 
       - name: Import Developer ID certificate into an ephemeral Keychain
         env:

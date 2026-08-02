@@ -87,11 +87,12 @@ thread's producers). A device with < 4 channels shows "no cue" — master only.
 
 ## Part 6 — Packaging (`docs/native-packaging.md`)
 
-- [ ] `just freeze-sidecar` produces `src-tauri/sidecar-dist/lsdj_infer/`
-      (~931 MB) and the frozen binary runs: `lsdj_infer --deck a --model
+- [ ] `just freeze-backend` produces `src-tauri/sidecar-dist/lsdj_backend/`
+      (~1.1 GB) and the frozen binary runs: `lsdj_backend --deck a --model
       mrt2_small --port <n>` connects to a listener and streams a chunk.
-- [ ] The frozen sidecar is added as a Tauri `resources` entry and the packaged
-      app spawns it (LSDJ_SIDECAR_CMD / resolved resource path).
+- [x] The frozen backend is added by the release-only Tauri `resources` overlay;
+      the packaged app resolves it through `LSDJ_BACKEND_BIN` and fails startup
+      if the resource is absent.
 - [ ] `just tauri-build` with the `APPLE_*` env set produces a signed, notarized,
       stapled `.app` + `.dmg` (entitlements applied; the sidecar tree signed).
 - [ ] First launch on a clean Mac: Gatekeeper passes (no "unidentified
@@ -136,7 +137,8 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
   - [x] The sa3 pad/track HTTP generation path (`/api/render`, `/api/generate`)
         rehosted for the native app. — done: the Rust shell spawns the FastAPI
         controller (generation-only by construction — it spawns no deck workers)
-        on a loopback port via `python -m lsdj.controller --port N`
+        on a loopback port via `python -m lsdj.controller --port N` in dev or
+        the shared frozen backend's `--generation-server` mode in a release
         (`generation.rs`), the
         webview fetches it via `getApiBaseUrl()` (CORS on; CSP left null/permissive
         — tightening is a security follow-up). On the live stack, verify:
@@ -152,7 +154,8 @@ status arrives as `sidecar://status` events (`useDeck` selects this with
           sample deck A's tail, drop it on a deck B pad, hear B adopt the style.
     - [ ] Dev: `just tauri-dev` launches the gen server + sidecars (the
           default `uv run` uses the backend dir as CWD; override with
-          `LSDJ_GENERATION_CMD` / `LSDJ_SIDECAR_CMD`).
+          `LSDJ_GENERATION_CMD` / `LSDJ_SIDECAR_CMD`, or point both at a freeze
+          with `LSDJ_BACKEND_BIN`).
   - [x] Remove the now-inert browser cue UI (phones picker / `cueStream`) — done
         at cutover, and the native Output picker (Part 5) replaces it: a
         `list_output_devices` / `set_output_device` dropdown in the mixer's Phones
@@ -175,7 +178,7 @@ Magenta`, no `~/Repos/stable-audio-3`).
       loads it — i.e. the shared `resources/` were fetched (`--init-resources`),
       not just the two model files.
 - [ ] Packaged build only: the same install works from the frozen bundle
-      (`lsdj_infer --init-resources` / `--download-model`) — confirms
+      (`lsdj_backend --init-resources` / `--download-model`) — confirms
       `huggingface_hub` / `fsspec` / `click` are collected (a missing fsspec
       registration fails only here, never in CI).
 - [ ] Install the Stable Audio 3 stack from the drawer on a machine with no

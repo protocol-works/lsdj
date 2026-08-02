@@ -1,55 +1,56 @@
 # Native packaging (Phase 2 part 6)
 
-How LSDJai ships as a signed, notarized macOS `.app`/`.dmg` with the Python
-inference sidecar bundled and the model weights kept external. This is **build
+How LSDJai ships as a signed, notarized macOS `.app`/`.dmg` with the frozen
+Python backend bundled and the model weights kept external. This is **build
 engineering** — the research risk was retired by Spike B
 ([`docs/spike-packaging.md`](spike-packaging.md), the PyInstaller MLX freeze) and
 Spike C ([`docs/spike-c-midi.md`](spike-c-midi.md), the Tauri MIDI app) — so the
-steps below are reproducible on a Mac with an Apple Developer ID. They are NOT
-runnable in CI (no signing certificate, no notarization), so the end-to-end build
-is a [checklist](native-migration-hardware-checklist.md) item.
+steps below are reproducible on a Mac with an Apple Developer ID and are also
+enforced by the protected release workflow.
 
-## 1. Freeze the inference sidecar
+## 1. Freeze the backend runtime
 
 ```sh
 just setup                 # backend .venv with pyinstaller + inference deps
-just freeze-sidecar        # → src-tauri/sidecar-dist/lsdj_infer/ (~931 MB)
+just freeze-backend        # → src-tauri/sidecar-dist/lsdj_backend/ (~1.1 GB)
 ```
 
-`scripts/freeze-sidecar.sh` is the production form of the Spike B recipe; the only
-change is the entry point (`backend/lsdj/sidecar.py`). ONEDIR (onefile is
-unworkable at this size); the metallib is copied next to the exe (the Spike B
-"wall"). The 4.3 GB weights are **not** frozen — they stay external (§4).
+`scripts/freeze-sidecar.sh` is the production form of the Spike B recipe. Its
+entry point (`backend/lsdj/frozen.py`) dispatches one shared dependency tree to
+the deck sidecar, Magenta model tooling, or FastAPI generation server. ONEDIR
+(onefile is unworkable at this size); the metallib is copied next to the exe (the
+Spike B "wall"). The 4.3 GB weights are **not** frozen — they stay external (§4).
 
 ## 2. Bundle the sidecar into the app
 
-Add the frozen ONEDIR as a Tauri **resource** (a directory, not a single
-`externalBin`, because the payload is a tree of dylibs):
+The release-only Tauri overlay declares the frozen ONEDIR as a **resource** (a
+directory, not a single `externalBin`, because the payload is a tree of dylibs):
 
 ```jsonc
-// src-tauri/tauri.conf.json → "bundle"
-"resources": { "sidecar-dist/lsdj_infer": "lsdj_infer" }
+// src-tauri/tauri.release.conf.json → "bundle"
+"resources": { "sidecar-dist/lsdj_backend": "lsdj_backend" }
 ```
 
-At runtime the shell resolves the bundled binary and spawns it. In dev, point the
-shell at the freeze directly instead of bundling:
+`just tauri-release` merges that overlay and enables the `bundled-backend` Cargo
+feature. During Tauri setup the shell resolves
+`resource_dir()/lsdj_backend/lsdj_backend`, fails startup if it is absent, and
+uses the exact path for decks, model tooling, and the generation API. In dev,
+point all three at the freeze directly instead of bundling:
 
 ```sh
-LSDJ_SIDECAR_CMD="$PWD/src-tauri/sidecar-dist/lsdj_infer/lsdj_infer" \
+LSDJ_BACKEND_BIN="$PWD/src-tauri/sidecar-dist/lsdj_backend/lsdj_backend" \
   just tauri-dev
 ```
 
-`src-tauri/src/sidecar.rs` (`sidecar_command`) reads `LSDJ_SIDECAR_CMD`;
-packaging sets it to the resolved resource path (or the app resolves
-`resource_dir()/lsdj_infer/lsdj_infer`). The committed config does **not**
-declare the resource, so a UI-only `tauri build` (no freeze) still succeeds — add
-the `resources` entry above once the freeze exists.
+Ordinary `just tauri-build`/`just tauri-dev` builds do not merge the release
+overlay, so they remain lightweight source-tree builds and retain the existing
+`LSDJ_SIDECAR_CMD` / `LSDJ_GENERATION_CMD` development overrides.
 
 ## 3. Codesign + notarize (Developer ID)
 
 The bundle ships hardened-runtime entitlements
 ([`src-tauri/entitlements.plist`](../src-tauri/entitlements.plist): JIT for
-WKWebView + MLX/LLVM, library validation disabled for the adhoc-signed sidecar
+WKWebView + MLX/LLVM, library validation disabled for the frozen backend's
 dylibs). Its permanent bundle identifier is `works.protocol.lsdj`, and release
 verification rejects an artifact signed by any Apple team other than Daniel
 Peter's Developer ID team (`A293544336`). There are two deliberately different
@@ -70,6 +71,7 @@ export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
 export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="app-specific-password"   # or APPLE_API_KEY/_ISSUER
 export APPLE_TEAM_ID="TEAMID"
+just freeze-backend
 just tauri-release                               # → verified .app + .dmg
 ```
 
@@ -84,11 +86,12 @@ while the `.app` has no sealed-resource signature or notarization ticket.
 Gatekeeper evaluates that quarantined app on the receiving Mac and may report
 the misleading “app is damaged” error.
 
-The bundled sidecar must itself be signed (PyInstaller adhoc-signs it; re-sign
-with the Developer ID + the same entitlements, or sign the whole `.app` tree with
-`--deep` and staple). First launch runs a one-time Gatekeeper scan of the ~931 MB
-bundle (Spike B measured ~23 s cold, ~1 s thereafter); notarization is what keeps
-that a one-time cost rather than a per-launch block.
+The release script re-signs every Mach-O in the PyInstaller tree with the
+Developer ID before Tauri seals the outer app, applies hardened-runtime
+entitlements to the backend executable, and verifies the team identity again in
+both the built app and mounted DMG. First launch runs a one-time Gatekeeper scan
+of the ~1.1 GB bundle (Spike B measured ~23 s cold, ~1 s thereafter);
+notarization is what keeps that a one-time cost rather than a per-launch block.
 
 ### GitHub Actions release
 
@@ -96,10 +99,13 @@ The release-tag workflow at
 [`.github/workflows/macos-release.yml`](../.github/workflows/macos-release.yml)
 runs only after a protected `v*` tag passes a secret-free validation job and an
 Environment reviewer approves the exact tagged commit. The signing job uses
-GitHub's Apple Silicon `macos-15` runner. It imports the Developer ID certificate
+GitHub's Apple Silicon `macos-15` runner. Before materializing credentials it
+creates the locked Python environment, freezes the backend, and smoke-tests both
+frozen CLI modes. It then imports the Developer ID certificate
 into a randomly-passworded temporary Keychain, writes the App Store Connect API
 key to a mode-0600 temporary file, runs `just tauri-release`, uploads only the
-verified DMG, and deletes the signing material even when the build fails. Every
+verified DMG, and deletes the signing material even when the build fails. The
+secret-bearing release step never executes the frozen application code. Every
 referenced action is pinned to an immutable commit, and the tested Tauri CLI is
 pinned to `2.11.2`; Dependabot keeps the action pins current through reviewed
 pull requests.
@@ -204,8 +210,8 @@ checklist (it needs the live model tooling to verify).
 the model manager (a settings-drawer panel), so the same machinery serves both a
 fresh install and later top-ups:
 
-- The packaged download runs the frozen sidecar in a non-deck mode —
-  `lsdj_infer --init-resources` then `lsdj_infer --download-model <name>` — which
+- The packaged download runs the frozen backend in a non-deck mode —
+  `lsdj_backend --init-resources` then `lsdj_backend --download-model <name>` — which
   reuses the `magenta_rt.cli.models_commands` code path and emits JSON progress
   the Rust shell relays to the UI. The init step is what makes a freshly
   downloaded model *loadable*: a model's two files (`<name>.mlxfn` +

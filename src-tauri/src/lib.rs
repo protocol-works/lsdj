@@ -61,6 +61,36 @@ mod watcher;
 /// `DEFAULT_MODEL`).
 const DEFAULT_MODEL: &str = "mrt2_small";
 
+/// The release-only PyInstaller ONEDIR executable under Tauri's resource dir.
+/// Kept as a pure join so the bundle contract has a cheap unit test.
+#[cfg(any(feature = "bundled-backend", test))]
+fn bundled_backend_path(resource_dir: &std::path::Path) -> std::path::PathBuf {
+    resource_dir.join("lsdj_backend").join("lsdj_backend")
+}
+
+/// Point every Python-backed service at the signed runtime inside the app.
+/// Developer builds deliberately omit the feature/resource and retain their
+/// source-tree `uv run` defaults. A release build fails during setup rather than
+/// opening a deceptively healthy but silent shell when its payload is absent.
+#[cfg(feature = "bundled-backend")]
+fn configure_bundled_backend(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let backend = bundled_backend_path(&app.path().resource_dir()?);
+    if !backend.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("bundled backend is missing: {}", backend.display()),
+        )
+        .into());
+    }
+    std::env::set_var("LSDJ_BACKEND_BIN", &backend);
+    Ok(())
+}
+
+#[cfg(not(feature = "bundled-backend"))]
+fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
 /// Tauri-managed audio state held ALONGSIDE the [`Host`]: the running output
 /// streams (kept alive so their Drop does not stop audio), the current device
 /// choices, and whether the main device actually started.
@@ -497,6 +527,7 @@ pub fn run() {
         // webview can't download, so songs are written to disk and opened natively.
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            configure_bundled_backend(app)?;
             // Relocate the Magenta model weights out of ~/Documents (which users
             // may sync to iCloud) into the app-owned data dir, migrating a prior
             // install. MUST run before any backend process spawns so they — and
@@ -855,7 +886,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::is_combined;
+    use super::{bundled_backend_path, is_combined};
+
+    #[test]
+    fn bundled_backend_lives_under_the_tauri_resource_dir() {
+        assert_eq!(
+            bundled_backend_path(std::path::Path::new("/Applications/LSDJai.app/Contents/Resources")),
+            std::path::Path::new(
+                "/Applications/LSDJai.app/Contents/Resources/lsdj_backend/lsdj_backend"
+            )
+        );
+    }
 
     /// The cue rides the main device (combined) when no separate cue device is
     /// chosen — an empty cue name is the "same as main" sentinel.

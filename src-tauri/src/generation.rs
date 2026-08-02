@@ -104,11 +104,20 @@ impl Drop for GenerationServer {
     }
 }
 
-/// Build the command that launches the FastAPI generation server. Overridable
-/// via `LSDJ_GENERATION_CMD` (default `uv run python -m lsdj.controller`)
-/// so dev vs. the packaged binary differ without a recompile, like
-/// `LSDJ_SIDECAR_CMD`; `--port` is always appended.
+/// Build the command that launches the FastAPI generation server. A release uses
+/// `LSDJ_BACKEND_BIN --generation-server`; dev is overridable via
+/// `LSDJ_GENERATION_CMD` and defaults to `uv run python -m lsdj.controller`.
+/// `--port` is always appended.
 pub fn generation_command(port: u16) -> io::Result<Command> {
+    // The release bundle shares one frozen dependency tree with the deck
+    // sidecars. Its dispatcher needs an explicit mode because both CLIs accept
+    // `--port`; the exact OsString also preserves paths containing spaces.
+    if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
+        let mut cmd = Command::new(program);
+        cmd.args(["--generation-server", "--port", &port.to_string()]);
+        return Ok(cmd);
+    }
+
     let overridden = std::env::var("LSDJ_GENERATION_CMD");
     let spec = overridden
         .clone()
@@ -121,8 +130,8 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
     cmd.args(parts);
     cmd.args(["--port", &port.to_string()]);
     if overridden.is_err() {
-        // The default `uv run` needs the backend project dir as its CWD; a packaged
-        // build sets LSDJ_GENERATION_CMD (the frozen binary) and controls CWD.
+        // The default `uv run` needs the backend project dir as its CWD. A packaged
+        // build returned through LSDJ_BACKEND_BIN above and never reaches this path.
         cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
     }
     Ok(cmd)

@@ -340,7 +340,7 @@ impl Sidecar {
     /// reporting status through `on_status`. Binds a loopback listener, launches
     /// the Python sidecar pointed at the bound port, accepts its connection, and
     /// starts the reader thread. The spawn command is [`sidecar_command`]
-    /// (overridable via `LSDJ_SIDECAR_CMD` for dev vs. the packaged binary).
+    /// (`LSDJ_BACKEND_BIN` in a release; overridable via `LSDJ_SIDECAR_CMD` in dev).
     ///
     /// Errors if the listener cannot bind or the process cannot launch — the
     /// caller logs and leaves that deck without a sidecar (the engine still runs,
@@ -581,13 +581,20 @@ fn accept_with_timeout(
 }
 
 /// The base sidecar launch command — program + base args + CWD — with NO mode
-/// flags. Overridable via `LSDJ_SIDECAR_CMD` (whitespace-split) so dev
-/// (`uv run python -m lsdj.sidecar`) and the packaged PyInstaller binary (part 6)
-/// differ without a recompile. The deck path ([`sidecar_command`]) and the model
+/// flags. A packaged build uses the exact `LSDJ_BACKEND_BIN` path; otherwise
+/// `LSDJ_SIDECAR_CMD` is overridable (whitespace-split) and dev defaults to
+/// `uv run python -m lsdj.sidecar`. The deck path ([`sidecar_command`]) and the model
 /// manager's installer (issue #43: `--init-resources` / `--download-model`) both
 /// build on this, so the resolution lives in one place — a download is NOT a
 /// deck, so it must not inherit `--deck`/`--model`/`--port`.
 pub fn sidecar_base_command() -> io::Result<Command> {
+    // A distributable app sets this to the exact bundled executable during
+    // Tauri setup. Keep it as an OsString and pass it directly to Command so an
+    // app copied into a path containing spaces still works.
+    if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
+        return Ok(Command::new(program));
+    }
+
     let overridden = std::env::var("LSDJ_SIDECAR_CMD");
     let spec = overridden
         .clone()
@@ -599,8 +606,8 @@ pub fn sidecar_base_command() -> io::Result<Command> {
     let mut cmd = Command::new(program);
     cmd.args(parts);
     if overridden.is_err() {
-        // The default `uv run` needs the backend project dir as its CWD; a packaged
-        // build sets LSDJ_SIDECAR_CMD (the frozen binary) and controls CWD.
+        // The default `uv run` needs the backend project dir as its CWD. A packaged
+        // build returned through LSDJ_BACKEND_BIN above and never reaches this path.
         cmd.current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
     }
     Ok(cmd)
