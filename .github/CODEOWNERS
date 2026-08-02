@@ -1,4 +1,4 @@
-# Release authority. The main ruleset requires this team's review.
+# Release ownership. Non-team changes require this team's review.
 /.github/CODEOWNERS @protocol-works/engineering
 /.github/workflows/ @protocol-works/engineering
 /scripts/create-release.sh @protocol-works/engineering
