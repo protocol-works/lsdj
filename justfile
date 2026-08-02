@@ -71,13 +71,25 @@ tauri-dev: build
 freeze-sidecar:
     ./scripts/freeze-sidecar.sh
 
-# Native shell (Phase 2): build + bundle the Tauri app (.app/.dmg) into
-# src-tauri/target/release/bundle/. The `build` dependency rebuilds frontend/dist
-# first (embedded via frontendDist). Codesign + notarize when the APPLE_* env vars
-# are set (docs/native-packaging.md §3). Needs cargo-tauri
-# (`cargo install tauri-cli@^2`); bundle the sidecar first with `freeze-sidecar`.
+# Native shell developer bundle: build the app/DMG into
+# src-tauri/target/release/bundle/. The config applies an explicit ad-hoc
+# signature so the app bundle is structurally valid on Apple Silicon. This is
+# useful for local testing only; use `just tauri-release` for anything sent to
+# another Mac.
 tauri-build: build
     cd src-tauri && cargo tauri build
+
+# Distributable macOS build. Fails closed unless a Developer ID Application
+# identity and Apple notarization credentials are configured, then verifies the
+# app and the copy inside the DMG with codesign, stapler, spctl, and hdiutil.
+tauri-release:
+    ./scripts/build-macos-release.sh
+
+# Create and push the next protected vYYYY.MM.N tag from a clean, current main.
+# Remote calendar-version tags are the ledger; no version file or bump is needed.
+# The tag starts the macOS signing workflow and its Engineering approval gate.
+release:
+    ./scripts/create-release.sh
 
 # All tests: backend pytest + frontend vitest + the Rust engine/shell.
 test:

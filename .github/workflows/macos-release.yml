@@ -1,0 +1,234 @@
+name: macOS release
+
+run-name: macOS release from ${{ github.ref_name }} by @${{ github.actor }}
+
+# A protected release tag starts validation. Signing credentials remain behind
+# the macos-release Environment's separate human approval gate.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: >-
+      github.event_name == 'push' &&
+      github.repository == 'protocol-works/lsdj' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release tag and ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]{4}\.(0[1-9]|1[0-2])\.[1-9][0-9]*$ ]] || {
+            echo "Release tag must look like v2026.08.1" >&2
+            exit 1
+          }
+
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          TAG_COMMIT="$(git rev-list -n 1 "$GITHUB_REF")"
+          git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main || {
+            echo "Release tag does not point to a commit contained in main" >&2
+            exit 1
+          }
+
+          echo "Validated $GITHUB_REF_NAME at $TAG_COMMIT"
+
+  release:
+    needs: validate
+    if: >-
+      needs.validate.result == 'success' &&
+      github.repository == 'protocol-works/lsdj' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    # This Environment allows only v* tags, requires an Engineering reviewer,
+    # prevents self-review, and disallows administrator bypass. Its secrets are
+    # withheld until all those rules pass.
+    environment:
+      name: macos-release
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Official GitHub actions are pinned to immutable commits so a moved tag
+      # cannot introduce new code into this secret-bearing job.
+      - name: Check out the approved release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Check runner architecture
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64" || {
+            echo "LSDJai releases require an Apple Silicon runner" >&2
+            exit 1
+          }
+
+      # These operations run before any signing or notarization secret is
+      # materialized on the runner.
+      - name: Install build tools and dependencies
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          brew install just
+          cargo install tauri-cli --version '=2.11.2' --locked
+          npm ci --prefix frontend
+
+      - name: Import Developer ID certificate into an ephemeral Keychain
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/lsdj-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+
+          echo "LSDJ_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "LSDJ_CERTIFICATE_PATH=$CERTIFICATE_PATH" >> "$GITHUB_ENV"
+
+          test -n "$APPLE_CERTIFICATE_BASE64"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 10800 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$({ security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true; } \
+            | awk -F '"' '/Developer ID Application:/ { print $2; exit }')"
+          test -n "$SIGNING_IDENTITY" || {
+            echo "No Developer ID Application identity found in the imported certificate" >&2
+            exit 1
+          }
+          [[ "$SIGNING_IDENTITY" == *" (A293544336)" ]] || {
+            echo "Developer ID identity does not belong to Apple team A293544336" >&2
+            exit 1
+          }
+
+          echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$CERTIFICATE_PATH"
+
+      - name: Materialize notarization API key
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_VALUE: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_API_KEY_BASE64"
+          test -n "$APPLE_API_KEY_ID"
+          test -n "$APPLE_API_ISSUER_VALUE"
+
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "LSDJ_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+
+          echo "APPLE_API_KEY=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$APPLE_API_ISSUER_VALUE" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, staple, and verify DMG
+        env:
+          LSDJ_RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          just tauri-release
+
+      - name: Upload verified DMG
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: LSDJai-macOS-arm64
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          set +e
+          if [[ -n "${LSDJ_KEYCHAIN_PATH:-}" && -f "$LSDJ_KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$LSDJ_KEYCHAIN_PATH"
+          fi
+          rm -f \
+            "${LSDJ_CERTIFICATE_PATH:-}" \
+            "${LSDJ_API_KEY_PATH:-}"
+
+  publish:
+    needs: release
+    if: >-
+      needs.release.result == 'success' &&
+      github.repository == 'protocol-works/lsdj' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified DMG
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: LSDJai-macOS-arm64
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t DMG_FILES < <(find dist -maxdepth 1 -type f -name '*.dmg' -print)
+          [[ "${#DMG_FILES[@]}" -eq 1 ]] || {
+            echo "Expected exactly one verified DMG, found ${#DMG_FILES[@]}" >&2
+            exit 1
+          }
+
+          gh release create "$GITHUB_REF_NAME" "${DMG_FILES[0]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "LSDJai $GITHUB_REF_NAME"
