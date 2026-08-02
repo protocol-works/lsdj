@@ -50,22 +50,134 @@ the `resources` entry above once the freeze exists.
 The bundle ships hardened-runtime entitlements
 ([`src-tauri/entitlements.plist`](../src-tauri/entitlements.plist): JIT for
 WKWebView + MLX/LLVM, library validation disabled for the adhoc-signed sidecar
-dylibs). `tauri build` signs + notarizes when these env vars are set (Tauri drives
-`codesign` + `notarytool`):
+dylibs). Its permanent bundle identifier is `works.protocol.lsdj`, and release
+verification rejects an artifact signed by any Apple team other than Daniel
+Peter's Developer ID team (`A293544336`). There are two deliberately different
+build recipes:
+
+- `just tauri-build` makes an explicitly **ad-hoc-signed developer build**. It is
+  structurally valid (including on Apple Silicon), but Gatekeeper may require a
+  manual Privacy & Security override on another Mac. Do not publish this DMG.
+- `just tauri-release` is the distributable build. It refuses to run without a
+  Developer ID Application identity and notarization credentials, lets Tauri
+  drive `codesign` + `notarytool`, and then verifies both the app and the exact
+  copy inside the DMG with `codesign`, `stapler`, `spctl`, and `hdiutil`.
+
+Configure the release build with:
 
 ```sh
 export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
 export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="app-specific-password"   # or APPLE_API_KEY/_ISSUER
 export APPLE_TEAM_ID="TEAMID"
-just tauri-build                                 # → .app + .dmg, signed + stapled
+just tauri-release                               # → verified .app + .dmg
 ```
+
+For App Store Connect API authentication, set `APPLE_API_ISSUER`,
+`APPLE_API_KEY`, and (when the key is not in a standard notarytool search
+location) `APPLE_API_KEY_PATH` instead of the Apple ID trio.
+
+Do not distribute a plain `cargo tauri build`/`just tauri-build` artifact. A
+build with no configured identity otherwise leaves only the Mach-O linker's
+ad-hoc signature on the executable: the DMG checksum can be perfectly valid
+while the `.app` has no sealed-resource signature or notarization ticket.
+Gatekeeper evaluates that quarantined app on the receiving Mac and may report
+the misleading “app is damaged” error.
 
 The bundled sidecar must itself be signed (PyInstaller adhoc-signs it; re-sign
 with the Developer ID + the same entitlements, or sign the whole `.app` tree with
 `--deep` and staple). First launch runs a one-time Gatekeeper scan of the ~931 MB
 bundle (Spike B measured ~23 s cold, ~1 s thereafter); notarization is what keeps
 that a one-time cost rather than a per-launch block.
+
+### GitHub Actions release
+
+The release-tag workflow at
+[`.github/workflows/macos-release.yml`](../.github/workflows/macos-release.yml)
+runs only after a protected `v*` tag passes a secret-free validation job and an
+Environment reviewer approves the exact tagged commit. The signing job uses
+GitHub's Apple Silicon `macos-15` runner. It imports the Developer ID certificate
+into a randomly-passworded temporary Keychain, writes the App Store Connect API
+key to a mode-0600 temporary file, runs `just tauri-release`, uploads only the
+verified DMG, and deletes the signing material even when the build fails. Every
+referenced action is pinned to an immutable commit, and the tested Tauri CLI is
+pinned to `2.11.2`; Dependabot keeps the action pins current through reviewed
+pull requests.
+
+Create a release from a clean, up-to-date `main` checkout with:
+
+```sh
+just release
+```
+
+Remote `vYYYY.MM.N` tags are the version ledger, so there is no separate “latest
+version” file to maintain and no bump argument. The command uses the current UTC
+year and month, fetches `origin/main` and all release tags, increments the
+highest release number for that month, refuses a dirty, detached, non-`main`, or
+stale checkout, and asks before creating and pushing an annotated tag. For
+example, the first two August 2026 releases are `v2026.08.1` and `v2026.08.2`;
+the counter resets to `1` in September.
+
+The tag supplies the Tauri bundle version for that build, normalized to the
+three-component Apple form (`v2026.08.1` becomes `2026.8.1`). After validation,
+Engineering approval, signing, notarization, and verification, a separate job
+with no Apple credentials publishes the single verified DMG as a GitHub Release
+with generated notes. Its write-capable token is isolated from the signing job.
+Repository release immutability is enabled, so the published tag and DMG cannot
+later be moved, replaced, or deleted under the same version.
+
+Create a GitHub Environment named **`macos-release`** under **Settings →
+Environments** and configure all of these protections before adding secrets:
+
+1. Set **Deployment branches and tags** to **Selected branches and tags** and
+   allow tags matching `v*` only.
+2. Add `@protocol-works/engineering` under **Required reviewers**.
+3. Enable **Prevent self-review**. This requires a second person: the member who
+   pushes a release tag cannot also approve it.
+4. Disable administrator bypass for the Environment.
+5. In the `main` branch ruleset, require pull requests, require approval from
+   Code Owners, and disallow bypass. [`.github/CODEOWNERS`](../.github/CODEOWNERS)
+   assigns the release workflow, release scripts, Tauri config, and entitlements
+   to `@protocol-works/engineering`.
+6. Under **Settings → Actions → General**, keep the workflow token at **Read
+   repository contents permission** and do not enable sending secrets or
+   write-capable tokens to workflows from forked pull requests.
+
+Add these as **Environment secrets**, not repository secrets, so GitHub withholds
+them until a required reviewer approves the `macos-release` job:
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE_BASE64` | Base64 of the exported Developer ID Application `.p12` (certificate **and private key**) |
+| `APPLE_CERTIFICATE_PASSWORD` | Strong export password protecting that `.p12` |
+| `APPLE_API_KEY_BASE64` | Base64 of the App Store Connect `AuthKey_….p8` |
+| `APPLE_API_KEY_ID` | App Store Connect API key ID |
+| `APPLE_API_ISSUER` | App Store Connect API issuer UUID |
+
+Create the base64 values locally without committing the source files or output:
+
+```sh
+openssl base64 -A -in DeveloperID.p12 | pbcopy
+openssl base64 -A -in AuthKey_ABC123.p8 | pbcopy
+```
+
+The signing job derives `APPLE_SIGNING_IDENTITY` from the imported certificate,
+so there is no identity variable to maintain. That secret-bearing job has only
+`contents: read` permission, has no user-controlled inputs, refuses to run outside
+`protocol-works/lsdj`, and is triggered only by a `v*` tag. The validation job
+rejects malformed release tags and tags whose commit is not contained in
+`main`. Repository rules restrict creation of matching tags to the Engineering
+team and prevent an existing release tag from being updated or deleted.
+
+No CI secret is impossible to extract: any approved workflow code that can use a
+credential can deliberately transmit it. The security boundary is therefore the
+protected Environment approval plus mandatory review of the exact `main` commit
+and release tag before approval. Never approve a release containing an
+unreviewed workflow, build script, dependency/build-script change, or action-pin
+change. Prefer a
+least-privilege App Store Connect API key, revoke/rotate both Apple credentials
+after suspected exposure, and use GitHub-hosted ephemeral runners rather than a
+persistent self-hosted Mac for this job.
 
 ## 4. First-run model install (the in-app model manager)
 
