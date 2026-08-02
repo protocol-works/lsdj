@@ -61,9 +61,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 180
 
-    # This Environment allows only v* tags, requires an Engineering reviewer,
-    # prevents self-review, and disallows administrator bypass. Its secrets are
-    # withheld until all those rules pass.
+    # This Environment allows only v* tags, requires an Engineering approval,
+    # permits the initiating Engineering member to approve their own release,
+    # and disallows administrator bypass. Its secrets are withheld until the
+    # explicit approval and all other rules pass.
     environment:
       name: macos-release
 

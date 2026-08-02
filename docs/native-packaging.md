@@ -132,8 +132,9 @@ Environments** and configure all of these protections before adding secrets:
 1. Set **Deployment branches and tags** to **Selected branches and tags** and
    allow tags matching `v*` only.
 2. Add `@protocol-works/engineering` under **Required reviewers**.
-3. Enable **Prevent self-review**. This requires a second person: the member who
-   pushes a release tag cannot also approve it.
+3. Leave **Prevent self-review** disabled. The Engineering member who pushes the
+   release tag may approve it, but the explicit Environment approval still makes
+   secret access visible and intentional.
 4. Disable administrator bypass for the Environment.
 5. In the `main` branch ruleset, require pull requests and one Code Owner
    approval. Grant `@protocol-works/engineering` **pull-request-only** bypass:
@@ -173,10 +174,10 @@ team and prevent an existing release tag from being updated or deleted.
 
 No CI secret is impossible to extract: any approved workflow code that can use a
 credential can deliberately transmit it. The security boundary is therefore the
-protected Environment approval plus mandatory review of the exact tagged `main`
-commit before the release job receives its secrets. Never approve a release
-containing an unreviewed workflow, build script, dependency/build-script change,
-or action-pin change. Prefer a
+protected Environment's explicit approval of the exact tagged `main` commit
+before the release job receives its secrets. Self-approval removes two-person
+separation, so never approve a release containing an unreviewed workflow, build
+script, dependency/build-script change, or action-pin change. Prefer a
 least-privilege App Store Connect API key, revoke/rotate both Apple credentials
 after suspected exposure, and use GitHub-hosted ephemeral runners rather than a
 persistent self-hosted Mac for this job.
