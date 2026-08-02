@@ -135,10 +135,12 @@ Environments** and configure all of these protections before adding secrets:
 3. Enable **Prevent self-review**. This requires a second person: the member who
    pushes a release tag cannot also approve it.
 4. Disable administrator bypass for the Environment.
-5. In the `main` branch ruleset, require pull requests, require approval from
-   Code Owners, and disallow bypass. [`.github/CODEOWNERS`](../.github/CODEOWNERS)
-   assigns the release workflow, release scripts, Tauri config, and entitlements
-   to `@protocol-works/engineering`.
+5. In the `main` branch ruleset, require pull requests and one Code Owner
+   approval. Grant `@protocol-works/engineering` **pull-request-only** bypass:
+   team members may merge their own PRs, but cannot push directly to `main`.
+   [`.github/CODEOWNERS`](../.github/CODEOWNERS) assigns the release workflow,
+   release scripts, Tauri config, and entitlements to that team, so non-team
+   changes still require Engineering approval.
 6. Under **Settings → Actions → General**, keep the workflow token at **Read
    repository contents permission** and do not enable sending secrets or
    write-capable tokens to workflows from forked pull requests.
@@ -171,10 +173,10 @@ team and prevent an existing release tag from being updated or deleted.
 
 No CI secret is impossible to extract: any approved workflow code that can use a
 credential can deliberately transmit it. The security boundary is therefore the
-protected Environment approval plus mandatory review of the exact `main` commit
-and release tag before approval. Never approve a release containing an
-unreviewed workflow, build script, dependency/build-script change, or action-pin
-change. Prefer a
+protected Environment approval plus mandatory review of the exact tagged `main`
+commit before the release job receives its secrets. Never approve a release
+containing an unreviewed workflow, build script, dependency/build-script change,
+or action-pin change. Prefer a
 least-privilege App Store Connect API key, revoke/rotate both Apple credentials
 after suspected exposure, and use GitHub-hosted ephemeral runners rather than a
 persistent self-hosted Mac for this job.
