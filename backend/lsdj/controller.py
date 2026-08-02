@@ -663,13 +663,13 @@ def list_models() -> dict:
 # `sounddevice` sink is needed. ADR-0007 is superseded by ADR-0019.
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="LSDJai generation server")
     parser.add_argument(
         "--port", type=int, default=8000, help="loopback port to bind (default 8000)"
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # The webview loads from the Tauri asset host and fetches this server
     # cross-origin over loopback, so allow it. Loopback-bound; not exposed.

@@ -8,6 +8,7 @@ demo-raw/
 # bundle output is src-tauri/sidecar-dist (ignored there).
 /build/
 /slipmate_infer.spec
+/lsdj_backend.spec
 
 # Claude Code session plans (local scratch, never shipped)
 .claude/plans/

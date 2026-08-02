@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Freeze the LSDJai inference sidecar into a launchable ONEDIR binary for
-# bundling into the native app (Phase 2 part 6, ADR-0018/0019).
+# Freeze the complete LSDJai Python backend into one launchable ONEDIR runtime
+# for bundling into the native app (Phase 2 part 6, ADR-0018/0019).
 #
 # This is the production form of the proven Spike B recipe (spike/packaging/
 # build.sh, docs/spike-packaging.md) — the ONLY change is the entry point:
-# backend/lsdj/sidecar.py (the loopback-TCP sidecar) instead of the spike's
-# freeze_test.py. The dependency closure (mlx, magenta_rt, sequence_layers, …) is
-# identical, so the spike's findings hold: ~931 MB ONEDIR, weights kept external.
+# backend/lsdj/frozen.py dispatches to the loopback-TCP sidecar/model tooling or
+# the FastAPI generation server. The dependency closure (mlx, magenta_rt,
+# sequence_layers, …) is shared. The current ONEDIR is ~1.1 GB after colocating
+# the metallib at both loader-visible libmlx paths; weights remain external.
 #
-# Output: dist/lsdj_infer/lsdj_infer (+ _internal/). Spawned by the Rust
-# shell as `lsdj_infer --deck <a|b> --model <name> --port <n>` for a deck, and
-# as `lsdj_infer --init-resources` / `--download-model <name>` for the in-app
-# model manager (issue #43).
+# Output: src-tauri/sidecar-dist/lsdj_backend/lsdj_backend (+ _internal/).
+# Spawned by Rust for decks, model management, and (with
+# `--generation-server`) the loopback generation API.
 #
 # Usage: scripts/freeze-sidecar.sh   (needs `just setup` — backend .venv with
 # pyinstaller + the inference deps).
@@ -32,17 +32,21 @@ OUT="$REPO/src-tauri/sidecar-dist"
 # path, issue #54) through a guarded `try: import python_multipart` that
 # PyInstaller's static analysis can miss; collect it explicitly so the frozen
 # generation server can parse uploads instead of failing only on that path.
-rm -rf "$OUT"
+DIST_BIN_DIR="$OUT/lsdj_backend"
+rm -rf "$DIST_BIN_DIR"
+mkdir -p "$OUT"
 "$PYI" \
   --noconfirm \
   --onedir \
-  --name lsdj_infer \
+  --name lsdj_backend \
   --console \
   --distpath "$OUT" \
   --paths "$BACKEND" \
   --paths "$SEQLAYERS_DIR" \
   --hidden-import lsdj.engine \
   --hidden-import lsdj.worker \
+  --hidden-import lsdj.sidecar \
+  --hidden-import lsdj.controller \
   --collect-submodules lsdj \
   --collect-submodules python_multipart \
   --collect-all mlx \
@@ -57,20 +61,24 @@ rm -rf "$OUT"
   --hidden-import click \
   --copy-metadata huggingface_hub \
   --copy-metadata fsspec \
-  "$BACKEND/lsdj/sidecar.py"
+  "$BACKEND/lsdj/frozen.py"
 
 # THE METALLIB WALL (Spike B): MLX's get_colocated_mtllib_path looks for
-# mlx.metallib next to libmlx.dylib; copy the metallib + dylibs next to the exe so
-# resolution succeeds regardless of which @rpath MLX takes.
-DIST_BIN_DIR="$OUT/lsdj_infer"
+# mlx.metallib next to the path used to load libmlx.dylib. PyInstaller exposes
+# that library both beside the executable and as `_internal/libmlx.dylib` (a
+# symlink into mlx/lib), so colocate the payload in both places. Tauri's resource
+# copier dereferences that symlink; the explicit _internal copy keeps the signed
+# app working after bundling too.
 MLX_LIB="$SP/mlx/lib"
-for f in mlx.metallib libmlx.dylib libjaccl.dylib; do
-  if [ -f "$MLX_LIB/$f" ] && [ ! -f "$DIST_BIN_DIR/$f" ]; then
-    cp "$MLX_LIB/$f" "$DIST_BIN_DIR/$f"
-  fi
+for destination in "$DIST_BIN_DIR" "$DIST_BIN_DIR/_internal"; do
+  for f in mlx.metallib libmlx.dylib libjaccl.dylib; do
+    if [ -f "$MLX_LIB/$f" ] && [ ! -f "$destination/$f" ]; then
+      cp "$MLX_LIB/$f" "$destination/$f"
+    fi
+  done
 done
 
 echo "=== sidecar freeze complete ==="
 du -sh "$DIST_BIN_DIR"
-echo "Bundle via tauri.conf.json resources (see docs/native-packaging.md), or point"
-echo "LSDJ_SIDECAR_CMD at $DIST_BIN_DIR/lsdj_infer for a dev run."
+echo "Release bundle source: $DIST_BIN_DIR"
+echo "For a dev run, set LSDJ_BACKEND_BIN=$DIST_BIN_DIR/lsdj_backend."

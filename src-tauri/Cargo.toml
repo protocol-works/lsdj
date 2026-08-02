@@ -15,6 +15,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "lsdj-app"
 path = "src/main.rs"
 
+[features]
+# Release-only contract: the Tauri bundle must contain the frozen Python/MLX
+# runtime and startup must resolve it from Contents/Resources. Developer builds
+# omit the feature and retain the uv-based source-tree commands.
+bundled-backend = []
+
 # The cargo WORKSPACE. The app is the root package; the audio engine is a member
 # library crate so it stays headless-testable (`cargo test -p lsdj-engine`)
 # without a window. One lockfile lives at the workspace root.

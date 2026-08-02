@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/LSDJai.app"
 DMG_DIR="$REPO_ROOT/src-tauri/target/release/bundle/dmg"
+BACKEND_DIR="$REPO_ROOT/src-tauri/sidecar-dist/lsdj_backend"
+BACKEND_BIN="$BACKEND_DIR/lsdj_backend"
+RELEASE_CONFIG="$REPO_ROOT/src-tauri/tauri.release.conf.json"
+ENTITLEMENTS="$REPO_ROOT/src-tauri/entitlements.plist"
 RELEASE_VERSION="${LSDJ_RELEASE_VERSION:-}"
 EXPECTED_BUNDLE_ID="works.protocol.lsdj"
 EXPECTED_TEAM_ID="A293544336"
@@ -15,6 +19,65 @@ EXPECTED_TEAM_ID="A293544336"
 fail() {
   echo "macOS release: $*" >&2
   exit 1
+}
+
+verify_backend_layout() {
+  local backend_bin="$1"
+  [ -x "$backend_bin" ] || fail "bundled backend is missing or not executable: $backend_bin"
+  [ -d "$(dirname "$backend_bin")/_internal" ] || fail \
+    "bundled backend has no PyInstaller _internal directory"
+  [ -f "$(dirname "$backend_bin")/_internal/mlx.metallib" ] || fail \
+    "bundled backend has no metallib beside its internal MLX library"
+}
+
+# Tauri signs declared external binaries, but resources are copied as data. The
+# PyInstaller ONEDIR tree lives in Resources so sign every Mach-O inside-out
+# before Tauri seals and notarizes the outer app.
+sign_backend_tree() {
+  local backend_dir="$1"
+  local candidate
+  while IFS= read -r -d '' candidate; do
+    [ "$candidate" = "$BACKEND_BIN" ] && continue
+    if /usr/bin/file -b "$candidate" | grep -q 'Mach-O'; then
+      codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$candidate"
+    fi
+  done < <(find "$backend_dir" -type f -print0)
+
+  codesign --force \
+    --options runtime \
+    --timestamp \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$SIGNING_IDENTITY" \
+    "$BACKEND_BIN"
+}
+
+verify_signed_backend_tree() {
+  local backend_dir="$1"
+  local candidate signature
+  local macho_count=0
+  while IFS= read -r -d '' candidate; do
+    if /usr/bin/file -b "$candidate" | grep -q 'Mach-O'; then
+      macho_count=$((macho_count + 1))
+      codesign --verify --strict --verbose=2 "$candidate"
+      signature="$(codesign -dvvv "$candidate" 2>&1)"
+      printf '%s\n' "$signature" | grep -q '^Authority=Developer ID Application:' || fail \
+        "backend code is not Developer ID-signed: $candidate"
+      printf '%s\n' "$signature" | grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$" || fail \
+        "backend code is not signed by Apple team $EXPECTED_TEAM_ID: $candidate"
+      if [ "$candidate" = "$backend_dir/lsdj_backend" ]; then
+        printf '%s\n' "$signature" | grep -q 'flags=.*runtime' || fail \
+          "backend executable is not signed with hardened runtime"
+      fi
+    fi
+  done < <(find "$backend_dir" -type f -print0)
+  [ "$macho_count" -gt 1 ] || fail "backend payload has no dependency binaries"
+}
+
+verify_app_backend() {
+  local app_path="$1"
+  local backend_dir="$app_path/Contents/Resources/lsdj_backend"
+  verify_backend_layout "$backend_dir/lsdj_backend"
+  verify_signed_backend_tree "$backend_dir"
 }
 
 [ "$(uname -s)" = "Darwin" ] || fail "must be built on macOS"
@@ -58,6 +121,12 @@ fi
 [ "$APPLE_ID_AUTH" = 1 ] || [ "$API_KEY_AUTH" = 1 ] || fail \
   "set APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID, or APPLE_API_ISSUER + APPLE_API_KEY (+ APPLE_API_KEY_PATH), for notarization"
 
+verify_backend_layout "$BACKEND_BIN"
+
+echo "macOS release: signing frozen backend runtime"
+sign_backend_tree "$BACKEND_DIR"
+verify_signed_backend_tree "$BACKEND_DIR"
+
 echo "macOS release: building frontend"
 just --justfile "$REPO_ROOT/justfile" --working-directory "$REPO_ROOT" build
 
@@ -65,9 +134,14 @@ echo "macOS release: building, signing, notarizing, and stapling"
 (
   cd "$REPO_ROOT/src-tauri"
   if [ -n "$RELEASE_VERSION" ]; then
-    cargo tauri build --ci --config "{\"version\":\"$RELEASE_VERSION\"}"
+    cargo tauri build --ci \
+      --features bundled-backend \
+      --config "$RELEASE_CONFIG" \
+      --config "{\"version\":\"$RELEASE_VERSION\"}"
   else
-    cargo tauri build --ci
+    cargo tauri build --ci \
+      --features bundled-backend \
+      --config "$RELEASE_CONFIG"
   fi
 )
 
@@ -93,6 +167,7 @@ DMG_PATH="$(find "$DMG_DIR" -maxdepth 1 -type f -name 'LSDJai_*.dmg' -print | so
 [ -n "$DMG_PATH" ] || fail "no LSDJai DMG was produced in $DMG_DIR"
 
 echo "macOS release: verifying app signature and notarization ticket"
+verify_app_backend "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 APP_SIGNATURE="$(codesign -dvvv "$APP_PATH" 2>&1)"
 printf '%s\n' "$APP_SIGNATURE" | grep -q '^Authority=Developer ID Application:' || fail \
@@ -114,6 +189,7 @@ trap cleanup EXIT
 
 DMG_APP="$MOUNT_POINT/LSDJai.app"
 [ -d "$DMG_APP" ] || fail "mounted DMG does not contain LSDJai.app"
+verify_app_backend "$DMG_APP"
 codesign --verify --deep --strict --verbose=2 "$DMG_APP"
 xcrun stapler validate "$DMG_APP"
 spctl --assess --type execute --verbose=4 "$DMG_APP"

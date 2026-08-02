@@ -1,7 +1,9 @@
 # Release ownership. Non-team changes require this team's review.
 /.github/CODEOWNERS @protocol-works/engineering
 /.github/workflows/ @protocol-works/engineering
+/justfile @protocol-works/engineering
 /scripts/create-release.sh @protocol-works/engineering
 /scripts/build-macos-release.sh @protocol-works/engineering
+/scripts/freeze-sidecar.sh @protocol-works/engineering
 /src-tauri/entitlements.plist @protocol-works/engineering
-/src-tauri/tauri.conf.json @protocol-works/engineering
+/src-tauri/tauri*.conf.json @protocol-works/engineering

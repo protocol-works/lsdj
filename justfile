@@ -61,15 +61,19 @@ build:
 # 'Connecting'. Needs cargo-tauri (`cargo install tauri-cli@^2`) and the backend
 # deps (`just setup`); install model weights in-app from the settings drawer. The
 # default `uv run` sidecar/generation commands use the backend project dir;
-# override with LSDJ_SIDECAR_CMD / LSDJ_GENERATION_CMD (e.g. the packaged binaries).
+# override each command in dev, or point both at a freeze with LSDJ_BACKEND_BIN.
 tauri-dev: build
     cd src-tauri && cargo tauri dev
 
-# Freeze the Python inference sidecar into a ONEDIR binary for bundling
-# (src-tauri/sidecar-dist/). The production form of Spike B; see
+# Freeze the shared Python backend into an ONEDIR binary for bundling
+# (src-tauri/sidecar-dist/lsdj_backend). It serves deck inference, model tooling,
+# and the generation API from one dependency tree. The production form of Spike B; see
 # docs/native-packaging.md. Needs `just setup` (backend .venv + pyinstaller).
-freeze-sidecar:
+freeze-backend:
     ./scripts/freeze-sidecar.sh
+
+# Compatibility alias for the original packaging recipe name.
+freeze-sidecar: freeze-backend
 
 # Native shell developer bundle: build the app/DMG into
 # src-tauri/target/release/bundle/. The config applies an explicit ad-hoc
