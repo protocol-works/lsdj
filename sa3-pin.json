@@ -1,5 +1,5 @@
 {
-  "note": "Back on upstream: our MLX LoRA merge-at-load (ADR-0028) landed as PR #57 (2026-07-14), and #65 extended it with per-adapter strength= and step gating. Bump via ADR-0012's upgrade path.",
+  "note": "Temporarily pinned to the head of upstream PR #90 (2026-07-31) to test its no-boost peak protection against LoRA output clipping. Once #90 merges, advance to its upstream merge commit via ADR-0012's upgrade path.",
   "repo": "https://github.com/Stability-AI/stable-audio-3",
-  "commit": "0385302ea26522f00c80392c4b708df5ebf1adf5"
+  "commit": "9d0f559a58815ce44aa4ae5a1047f79f41090257"
 }
