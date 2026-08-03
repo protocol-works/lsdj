@@ -3,7 +3,7 @@
 Adapters live on disk under the app-owned data dir, one directory per
 adapter, organised by the DiT family they ride:
 
-    ~/Library/Application Support/LSDJai/sa3-loras/<base>/<slug>/
+    ~/Library/Application Support/LSDJ/sa3-loras/<base>/<slug>/
 
 ``base`` is ``small`` (the 1024-wide sm-sfx / sm-music DiTs) or ``medium``
 (the 1536-wide track DiT). An adapter directory holds its ``.safetensors``
@@ -55,7 +55,7 @@ def loras_dir(
     override = env.get("SA3_LORAS_HOME", "")
     if override:
         return pathlib.Path(override).expanduser()
-    return home / "Library" / "Application Support" / "LSDJai" / "sa3-loras"
+    return home / "Library" / "Application Support" / "LSDJ" / "sa3-loras"
 
 
 def _adapter_file(adapter_dir: pathlib.Path) -> pathlib.Path | None:

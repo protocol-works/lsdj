@@ -6,7 +6,7 @@
 
 ## Context
 
-LSDJai is a DJ interface over Magenta RealTime 2 (MRT2): two independently
+LSDJ is a DJ interface over Magenta RealTime 2 (MRT2): two independently
 steerable "decks" of generated audio, blended with a crossfader. The model
 dictates most of the constraints:
 

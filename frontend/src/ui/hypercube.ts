@@ -1,4 +1,4 @@
-/** Cube geometry for the LSDJai hypercube — pure data, no DOM or three.js, so the
+/** Cube geometry for the LSDJ hypercube — pure data, no DOM or three.js, so the
  * line topology can be unit-tested. The mark's label is a cube nested inside a
  * cube (the recognisable hypercube read); `cubeSegments(scale)` returns one
  * cube's edges at a given size, and the renderer draws an outer + inner cube in

@@ -69,13 +69,13 @@ pub fn magenta_models_dir() -> PathBuf {
 }
 
 /// The app-owned data root for model weights — `~/Library/Application Support/
-/// LSDJai`. Kept out of `~/Documents` (which users may sync to iCloud, where
+/// LSDJ`. Kept out of `~/Documents` (which users may sync to iCloud, where
 /// multi-GB weights don't belong and Finder ops on offloaded files fail, -8013).
 pub(crate) fn app_support_base() -> PathBuf {
     home_dir()
         .join("Library")
         .join("Application Support")
-        .join("LSDJai")
+        .join("LSDJ")
 }
 
 /// The app-owned home for the Stable Audio 3 checkout — where in-app installs go
@@ -93,16 +93,71 @@ fn migration_move(new_rtv2: &Path, old_rtv2: &Path) -> Option<(PathBuf, PathBuf)
         .then(|| (old_rtv2.to_path_buf(), new_rtv2.to_path_buf()))
 }
 
+/// Move one directory from the previous brand root when its LSDJ destination
+/// does not exist yet. If the move fails, keep using the legacy directory so a
+/// branding change can never make installed models or adapters disappear.
+pub(crate) fn migrate_legacy_dir(new_dir: &Path, old_dir: &Path) -> PathBuf {
+    let Some((from, to)) = migration_move(new_dir, old_dir) else {
+        return new_dir.to_path_buf();
+    };
+    if let Some(parent) = to.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "lsdj-app: could not prepare branded data directory {}: {error}",
+                parent.display()
+            );
+            return from;
+        }
+    }
+    match std::fs::rename(&from, &to) {
+        Ok(()) => {
+            eprintln!("lsdj-app: migrated branded data → {}", to.display());
+            to
+        }
+        Err(error) => {
+            eprintln!(
+                "lsdj-app: could not migrate {} to {}: {error}",
+                from.display(),
+                to.display()
+            );
+            from
+        }
+    }
+}
+
 /// Point `MAGENTA_HOME` at the app-owned data dir and migrate a prior
 /// `~/Documents/Magenta` install into it (a same-volume rename — instant, no
 /// multi-GB copy). A pre-set `MAGENTA_HOME` (a dev/user override) wins. Must run
 /// once at startup BEFORE any backend process is spawned, so the children — and
 /// `magenta_rt.paths`, which reads the env at import — inherit the new location.
 pub fn ensure_magenta_home() {
+    let base = app_support_base();
+    let legacy_base = home_dir()
+        .join("Library")
+        .join("Application Support")
+        .join("LSDJai");
+    let branded_magenta = migrate_legacy_dir(
+        &base.join("magenta-rt-v2"),
+        &legacy_base.join("magenta-rt-v2"),
+    );
+    let branded_sa3 = migrate_legacy_dir(
+        &base.join("stable-audio-3"),
+        &legacy_base.join("stable-audio-3"),
+    );
+    let branded_loras = migrate_legacy_dir(&base.join("sa3-loras"), &legacy_base.join("sa3-loras"));
+    if branded_sa3.starts_with(&legacy_base) && std::env::var_os("SA3_MLX_HOME").is_none() {
+        std::env::set_var("SA3_MLX_HOME", branded_sa3);
+    }
+    if branded_loras.starts_with(&legacy_base) && std::env::var_os("SA3_LORAS_HOME").is_none() {
+        std::env::set_var("SA3_LORAS_HOME", branded_loras);
+    }
     if std::env::var_os("MAGENTA_HOME").is_some() {
         return; // respect an explicit override (dev, or a custom location)
     }
-    let base = app_support_base();
+    if branded_magenta.starts_with(&legacy_base) {
+        std::env::set_var("MAGENTA_HOME", legacy_base);
+        return;
+    }
     let old_base = home_dir().join("Documents").join("Magenta");
     if let Some((from, to)) = migration_move(&base.join("magenta-rt-v2"), &old_base.join("magenta-rt-v2")) {
         let _ = std::fs::create_dir_all(&base);
@@ -1027,6 +1082,22 @@ mod tests {
         // New dir already exists (already migrated) → leave the old one be.
         std::fs::create_dir_all(&new_rtv2).unwrap();
         assert_eq!(migration_move(&new_rtv2, &old_rtv2), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn legacy_brand_directory_is_moved_without_losing_its_contents() {
+        let tmp =
+            std::env::temp_dir().join(format!("lsdj-brand-migrate-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let old_dir = tmp.join("LSDJai").join("stable-audio-3");
+        let new_dir = tmp.join("LSDJ").join("stable-audio-3");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        std::fs::write(old_dir.join("model.bin"), b"model").unwrap();
+
+        assert_eq!(migrate_legacy_dir(&new_dir, &old_dir), new_dir);
+        assert_eq!(std::fs::read(new_dir.join("model.bin")).unwrap(), b"model");
+        assert!(!old_dir.exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

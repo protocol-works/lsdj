@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/lsdj-mark.svg" alt="LSDJai" width="128">
+  <img src="docs/img/lsdj-mark.svg" alt="LSDJ" width="128">
 </p>
 
 <h1 align="center">Latent Space DJ</h1>
@@ -7,7 +7,7 @@
 <p align="center"><strong>An instrument for real-time AI music.</p>
 
 <p align="center">
-  <img src="docs/img/lsdj-demo.gif" alt="LSDJai — latent space disc jockey" width="640">
+  <img src="docs/img/lsdj-demo.gif" alt="LSDJ — latent space disc jockey" width="640">
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ pads and finished tracks come from Stable Audio 3. See
 - ~13 GB disk for model weights (downloaded in-app on demand: Magenta
   ~4.5 GB for both deck models, Stable Audio 3 ~8 GB including the
   medium track model)
-- macOS 11+ — LSDJai ships as a native app (Tauri + a Rust audio engine +
+- macOS 11+ — LSDJ ships as a native app (Tauri + a Rust audio engine +
   Python inference sidecars; run with `just tauri-dev`, build with
   `just tauri-build`)
 - Optional: a Pioneer DDJ-FLX4 for hardware control and its headphone jack
@@ -47,9 +47,10 @@ open the settings drawer, and install what you need from the model manager — b
 families download with live progress. Magenta deck models (`mrt2_small` and the
 heavier, higher-quality `mrt2_base`, selectable per deck — the app warns when the
 combined selection looks tight for your RAM) and Stable Audio 3 (generated pads
-and tracks) land in the app-owned `~/Library/Application Support/LSDJai`
+and tracks) land in the app-owned `~/Library/Application Support/LSDJ`
 (`MAGENTA_HOME` / `SA3_MLX_HOME` override the locations). `just migrate-models`
-relocates an existing install into that folder without re-downloading.
+relocates an existing install—including one under the previous app name—into
+that folder without re-downloading.
 
 ## Run
 
@@ -86,7 +87,7 @@ cluster them), and ride the crossfader between decks.
   the crate from the FLX4's rotary, and load onto either deck mid-set;
   export/import as JSON for backup and sharing.
 - **Samples** — frozen loops, generated pads, and short SFX/Music
-  compositions persist to `~/Documents/LSDJai/generated_samples`; the Media
+  compositions persist to `~/Documents/LSDJ/generated_samples`; the Media
   Explorer's **Samples** tab browses them and loads one back into a deck
   loop slot. A loaded sample **layers** over the deck — it's summed on top
   of the live stream and several stack at once, so you can build a jam over

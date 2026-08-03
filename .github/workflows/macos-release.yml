@@ -91,7 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = "arm64" || {
-            echo "LSDJai releases require an Apple Silicon runner" >&2
+            echo "LSDJ releases require an Apple Silicon runner" >&2
             exit 1
           }
 
@@ -201,7 +201,7 @@ jobs:
       - name: Upload verified DMG
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: LSDJai-macOS-arm64
+          name: LSDJ-macOS-arm64
           path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
@@ -232,7 +232,7 @@ jobs:
       - name: Download verified DMG
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: LSDJai-macOS-arm64
+          name: LSDJ-macOS-arm64
           path: dist
 
       - name: Publish GitHub Release
@@ -251,4 +251,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
-            --title "LSDJai $GITHUB_REF_NAME"
+            --title "LSDJ $GITHUB_REF_NAME"

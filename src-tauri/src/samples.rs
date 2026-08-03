@@ -1,4 +1,4 @@
-//! The generated-samples library: the on-disk folder (`~/Documents/LSDJai/
+//! The generated-samples library: the on-disk folder (`~/Documents/LSDJ/
 //! generated_samples`) plus a JSON registry, the short-loop counterpart of
 //! [`crate::songs`]. It is the home for the sounds that used to die at session end —
 //! deck freeze captures, deck generated pads, and the Media Explorer's short
@@ -30,7 +30,7 @@ pub struct SampleEntry {
     /// stem for a freeze / a file added by hand.
     pub title: String,
     /// The prompt that generated the sample; `None` for a freeze capture or a file
-    /// LSDJai didn't generate.
+    /// LSDJ didn't generate.
     pub prompt: Option<String>,
     /// The source/engine: an engine (`sfx`/`music`/`magenta`) for a generated or
     /// composed sample, `"freeze"` for a deck capture, or `None` for a hand-added

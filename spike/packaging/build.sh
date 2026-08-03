@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Spike B: freeze the LSDJai MLX inference path into a launchable sidecar.
+# Spike B: freeze the LSDJ MLX inference path into a launchable sidecar.
 #
 # ONEDIR build (payload is hundreds of MB — onefile would be unworkable).
 # Iterate by adding --collect-all / --copy-metadata / --hidden-import only as

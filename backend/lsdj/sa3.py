@@ -98,7 +98,7 @@ def _checkout_candidates(env: dict, home: pathlib.Path) -> list[pathlib.Path]:
     if override:
         candidates.append(pathlib.Path(override).expanduser())
     candidates.append(
-        home / "Library" / "Application Support" / "LSDJai" / "stable-audio-3"
+        home / "Library" / "Application Support" / "LSDJ" / "stable-audio-3"
     )
     return candidates
 

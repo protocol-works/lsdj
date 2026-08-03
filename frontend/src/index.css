@@ -211,14 +211,6 @@ body {
   color: var(--color-accent);
 }
 
-.logo__ai {
-  font-size: 0.55em;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0.01em;
-  color: var(--color-text-silkscreen);
-}
-
 .logo__tag {
   font: var(--silkscreen);
   letter-spacing: var(--silkscreen-spacing);

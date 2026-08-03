@@ -1,6 +1,6 @@
 # Native packaging (Phase 2 part 6)
 
-How LSDJai ships as a signed, notarized macOS `.app`/`.dmg` with the frozen
+How LSDJ ships as a signed, notarized macOS `.app`/`.dmg` with the frozen
 Python backend bundled and the model weights kept external. This is **build
 engineering** — the research risk was retired by Spike B
 ([`docs/spike-packaging.md`](spike-packaging.md), the PyInstaller MLX freeze) and
@@ -199,7 +199,7 @@ persistent self-hosted Mac for this job.
 ## 4. First-run model install (the in-app model manager)
 
 The weights live outside the bundle at `$MAGENTA_HOME/magenta-rt-v2` (default the
-app-owned `~/Library/Application Support/LSDJai`; see [`CLAUDE.md`](../CLAUDE.md)).
+app-owned `~/Library/Application Support/LSDJ`; see [`CLAUDE.md`](../CLAUDE.md)).
 There is no terminal install path — models install **in-app** from the settings
 drawer (issue #43). The packaged app follows this flow on first run:
 
@@ -232,7 +232,7 @@ fresh install and later top-ups:
   collection only fails at runtime in the packaged app — hence the checklist
   item below, which static analysis cannot cover.
 - Stable Audio 3 installs in-app too, into the app-owned data dir
-  (`~/Library/Application Support/LSDJai/stable-audio-3`, the resolver's first
+  (`~/Library/Application Support/LSDJ/stable-audio-3`, the resolver's first
   candidate): the Rust shell fetches the pinned source
   ([`sa3-pin.json`](../sa3-pin.json)) as a tarball (`curl`), extracts it (`tar`),
   and runs [`scripts/sa3-install.sh`](../scripts/sa3-install.sh) — build+warm

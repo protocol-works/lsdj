@@ -1,4 +1,4 @@
-# LSDJai frontend
+# LSDJ frontend
 
 The React deck UI (Vite + React + TypeScript). Setup, run, and verification
 commands live in the root [`justfile`](../justfile) — see the

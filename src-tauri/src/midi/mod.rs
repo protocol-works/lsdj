@@ -234,7 +234,7 @@ impl MidiService {
         // Dropping the wrapper is fine: coremidi 0.9 never disposes clients
         // (its `Drop` is deliberately disabled upstream), so the underlying
         // client — and the delivery it anchors — lives as long as the app.
-        if let Err(e) = MidiInput::new("LSDJai hot-plug anchor") {
+        if let Err(e) = MidiInput::new("LSDJ hot-plug anchor") {
             eprintln!("lsdj-app: midi hot-plug anchor failed: {e}");
         }
         let (paint_tx, paint_rx) = channel();
@@ -332,7 +332,7 @@ fn pick_active<'m>(matched: &'m [Match], selected: Option<&str>) -> Option<&'m M
 /// by the main-thread anchor, and coremidi never disposes clients, so a
 /// fresh client per scan would leak one into the MIDI server every second.
 fn run_scanner(shared: Arc<Shared>, rescan_rx: Receiver<()>) {
-    let scan_client = match MidiInput::new("LSDJai") {
+    let scan_client = match MidiInput::new("LSDJ") {
         Ok(input) => input,
         Err(e) => {
             eprintln!("lsdj-app: midi scan client failed: {e}");
@@ -411,7 +411,7 @@ fn scan_once(
         if keyboards.contains_key(&name) {
             continue;
         }
-        let mut keyboard_input = match MidiInput::new("LSDJai") {
+        let mut keyboard_input = match MidiInput::new("LSDJ") {
             Ok(input) => input,
             Err(_) => continue,
         };
@@ -446,7 +446,7 @@ fn connect_controller(
     shared: &Arc<Shared>,
     name: &str,
 ) -> Result<MidiInputConnection<()>, String> {
-    let mut input = MidiInput::new("LSDJai").map_err(|e| e.to_string())?;
+    let mut input = MidiInput::new("LSDJ").map_err(|e| e.to_string())?;
     input.ignore(Ignore::None);
     let port = input
         .ports()
@@ -468,7 +468,7 @@ fn connect_controller(
 /// the device answers by dumping every analog position as CC traffic, which
 /// flows through the translator like any other move.
 fn bind_output(shared: &Arc<Shared>, driver: &Driver, name: &str) {
-    let output = match MidiOutput::new("LSDJai") {
+    let output = match MidiOutput::new("LSDJ") {
         Ok(output) => output,
         Err(e) => {
             eprintln!("lsdj-app: midi output client failed: {e}");

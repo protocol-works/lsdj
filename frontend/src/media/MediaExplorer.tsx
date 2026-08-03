@@ -98,10 +98,10 @@ type GeneratedTrack =
       title: string
       // The full prompt that composed the take, shown by the 🔍 button (prompts are
       // now uncapped, so the row only shows a compact form). null for a file found in
-      // the folder that LSDJai didn't generate.
+      // the folder that LSDJ didn't generate.
       prompt: string | null
       // The engine that composed the take, or null for a file found in the songs
-      // folder that LSDJai didn't generate ("model as option").
+      // folder that LSDJ didn't generate ("model as option").
       model: TrackEngine | null
       // The filename on disk (the registry identity). null only outside Tauri, where
       // nothing was persisted and the take lives solely in `wav`.
@@ -259,7 +259,7 @@ type NewSong = {
   recipe: SongGenerationRecipeV1
 }
 
-/** Persist a ready take to ~/Documents/LSDJai/generated_songs through the Rust shell
+/** Persist a ready take to ~/Documents/LSDJ/generated_songs through the Rust shell
  * and return its registry entry ({@link encodeMetaFrame} builds the binary payload —
  * a JSON args map would be megabytes of text for a multi-MB WAV). The old
  * `<a download>` is gone: it silently no-ops in WKWebView. */
@@ -278,7 +278,7 @@ type NewSample = {
   oneShot: boolean
 }
 
-/** Persist a Samples-tab composition to ~/Documents/LSDJai/generated_samples through
+/** Persist a Samples-tab composition to ~/Documents/LSDJ/generated_samples through
  * the Rust shell. (Deck freezes and pads auto-save through the deck channel; this is
  * only the explorer's own SFX/Music compositions.) */
 function saveGeneratedSample(meta: NewSample, wav: ArrayBuffer): Promise<SampleEntry> {
@@ -706,7 +706,7 @@ export function MediaExplorer({
     }),
   )
 
-  /** Compose a short loop in the Samples tab → ~/Documents/LSDJai/generated_samples
+  /** Compose a short loop in the Samples tab → ~/Documents/LSDJ/generated_samples
    * (ADR-0022). Mirrors {@link generateTrack} but always SFX/Music and persists to the
    * sample library. A loop carries the seam surplus the engine folds on reload (the
    * deck-pad convention), so the saved WAV reloads at the right musical length. */

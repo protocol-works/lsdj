@@ -305,7 +305,7 @@ function App() {
     if (commit) updateAppSettings({ mediaHeight: clamped })
   }, [])
 
-  // Master accent (LSDJai): the chosen hue rides on <html data-accent>,
+  // Master accent (LSDJ): the chosen hue rides on <html data-accent>,
   // where the theme blocks in tokens.css pick it up. Persisted like the
   // other app settings; default Acid Lime.
   const [accent, setAccent] = useState<AccentTheme>(

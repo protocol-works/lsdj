@@ -10,7 +10,7 @@ SA3 song generation is strictly **one-shot**: one prompt renders one WAV, up to
 `TRACK_MAX_SECONDS` = 380 s (6:20), authored in the Generate tab of
 `frontend/src/media/MediaExplorer.tsx` and persisted as a flat `GeneratedTrack`
 in the songs library ([ADR-0013](0013-playback-decks-play-decoded-tracks-loading-decides-the-mode.md),
-`src-tauri/src/songs.rs`, `~/Documents/LSDJai/generated_songs/` + `registry.json`).
+`src-tauri/src/songs.rs`, `~/Documents/LSDJ/generated_songs/` + `registry.json`).
 There is **no song-structure concept anywhere** — no parts, sections,
 arrangement, or ABAB — at any layer (frontend state, the `/api/generate`
 contract, the SA3 CLI, or persistence).

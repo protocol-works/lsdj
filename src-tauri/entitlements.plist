@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <!-- Hardened-runtime entitlements (Developer ID + notarization, Phase 2 part 6).
-       LSDJai is a Developer-ID app (NOT App-Store-sandboxed), so this file only
+       LSDJ is a Developer-ID app (NOT App-Store-sandboxed), so this file only
        RELAXES hardened-runtime protections the runtime needs; it grants no sandbox
        permissions. -->
 

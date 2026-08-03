@@ -6,7 +6,7 @@
 
 ## Context
 
-ADR-0002 built LSDJai as a browser app served by a local Python backend and
+ADR-0002 built LSDJ as a browser app served by a local Python backend and
 deferred a desktop shell, with an explicit revisit trigger: "if the project
 grows toward a self-contained distributable app … record that change as a new
 ADR superseding this one." We are now there — the goal is a double-clickable
@@ -18,7 +18,7 @@ hardware-control decision (ADR-0005), and the gap it missed is the whole
 problem:
 
 - Tauri on macOS renders in **WKWebView (the Safari engine), not Chromium.**
-  LSDJai's signature surface — FLX4 control — is Web MIDI (ADR-0005), and
+  LSDJ's signature surface — FLX4 control — is Web MIDI (ADR-0005), and
   WebKit does not implement Web MIDI at all. A naive wrap would silently delete
   hardware control. The other two Chromium-leaning APIs (Web Audio worklets and
   `setSinkId`) are addressed separately by ADR-0017's move to a native audio
@@ -33,7 +33,7 @@ problem:
 
 ## Decision
 
-We will package LSDJai as a native macOS app with **Tauri v2**:
+We will package LSDJ as a native macOS app with **Tauri v2**:
 
 - Hardware MIDI runs through **`tauri-plugin-midi`**, which shims
   `navigator.requestMIDIAccess` to the W3C Web MIDI API over `midir`/CoreMIDI,
@@ -114,7 +114,7 @@ Python-model-workers decision.
   MRT2's own `magentart::core` C++ engine (weights compiled to a `.mlxfn`,
   streamed on MLX), or reimplement MRT2 and Stable Audio 3 in `candle`/`mlx-rs`.
   The first is the genuine single-binary path and ADR-0002's named supersession,
-  but the `embed_style`/blend steering surface LSDJai depends on is not a
+  but the `embed_style`/blend steering surface LSDJ depends on is not a
   documented C++ surface and SA3 has no C++ engine at all; the second
   reimplements a 2.4B research model and fights upstream drift. Deferred to a
   future ADR, gated on the C++ steering surface maturing.

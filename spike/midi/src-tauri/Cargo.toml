@@ -2,7 +2,7 @@
 name = "lsdj-midi-spike"
 version = "0.0.0"
 description = "Spike C — tauri-plugin-midi vs DDJ-FLX4"
-authors = ["LSDJai"]
+authors = ["LSDJ"]
 edition = "2021"
 publish = false
 

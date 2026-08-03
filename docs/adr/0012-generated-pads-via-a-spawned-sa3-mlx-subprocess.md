@@ -60,7 +60,7 @@ and what happens when it's missing or fails.
   The module invokes the interpreter the checkout's installer created.
 - **The checkout lives outside this repo, pinned.** A small resolver takes
   `$SA3_MLX_HOME` first, then the in-app model manager's app-data checkout at
-  `~/Library/Application Support/LSDJai/stable-audio-3` (each expected to
+  `~/Library/Application Support/LSDJ/stable-audio-3` (each expected to
   contain `optimized/mlx/.venv`). `sa3-pin.json` records the repository and
   commit; issue #54 is validated against the current `36ef977` pin. The
   resolver is pure and unit-tested.

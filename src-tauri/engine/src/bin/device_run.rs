@@ -1,4 +1,4 @@
-//! `device_run` — drive the LSDJai engine library against a real output
+//! `device_run` — drive the LSDJ engine library against a real output
 //! device for N seconds with synthetic per-deck producers. This is the
 //! production replacement for the Spike A `rt_engine`: same behaviour (two decks,
 //! per-deck rings, RT-safe callback, FTZ/DAZ, `assert_no_alloc`), now built ON

@@ -6,7 +6,7 @@
 //! models (no central index file):
 //!
 //! ```text
-//! ~/Library/Application Support/LSDJai/sa3-loras/<base>/<slug>/
+//! ~/Library/Application Support/LSDJ/sa3-loras/<base>/<slug>/
 //!     adapter_model.safetensors      (the adapter — any single *.safetensors)
 //!     adapter_config.json            (PEFT convention only)
 //!     lora.json                      (import manifest: source / type / rank)

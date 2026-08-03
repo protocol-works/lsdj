@@ -1017,7 +1017,7 @@ impl ServerHandler for McpHandler {
             .enable_resources()
             .build();
         info.instructions = Some(
-            "LSDJ.ai — a generative DJ instrument. Read the `lsdj://interface-state` \
+            "LSDJ — a generative DJ instrument. Read the `lsdj://interface-state` \
              resource to observe the decks, mixer, and FX; call the tools to mix, drive \
              the decks, and generate audio into the samples library as a co-DJ."
                 .to_string(),

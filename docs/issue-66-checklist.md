@@ -22,7 +22,7 @@ adapter throughout.
       installed** control even with an empty registry. Open it: the contextual
       panel says "No adapters installed", offers **Install adapter…**, and has
       an **Open folder** action that reveals
-      `~/Library/Application Support/LSDJai/sa3-loras`.
+      `~/Library/Application Support/LSDJ/sa3-loras`.
 - [ ] Expand **Install adapter…**, enter
       `motiftechnologies/stable-audio-3-maqam-lora`, and Install: fetch /
       download / install progress shows in the same panel, then the adapter

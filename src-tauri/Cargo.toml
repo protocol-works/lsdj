@@ -3,7 +3,7 @@ name = "lsdj-app"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "LSDJai native shell: the Tauri v2 app hosting the React UI and the Rust audio engine (Phase 2, ADR-0017/0018)."
+description = "LSDJ native shell: the Tauri v2 app hosting the React UI and the Rust audio engine (Phase 2, ADR-0017/0018)."
 
 # Tauri v2 keeps the app logic in a lib so the same crate can be reused on
 # mobile and driven by an integration harness; `main.rs` is a thin entry point.

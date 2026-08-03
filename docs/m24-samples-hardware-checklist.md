@@ -2,7 +2,7 @@
 
 Manual verification of the generated-samples library (ADR-0022): deck freezes,
 generated pads, and the Media Explorer's short SFX/Music compositions persist to
-`~/Documents/LSDJai/generated_samples` and reload into a deck loop slot. The folder
+`~/Documents/LSDJ/generated_samples` and reload into a deck loop slot. The folder
 + registry plumbing (`library.rs`, `samples.rs`), the engine slot read-back
 (`read_loop_slot`), and the UI/deck wiring are unit-tested; what tests can't hear is
 the freeze round-trip and the seam — this checklist is the last hop: real audio,
@@ -11,8 +11,8 @@ real ears.
 ## Setup
 
 - [ ] `just tauri-dev`, app open, a live (Realtime) deck playing.
-- [ ] Two Finder windows handy: `~/Documents/LSDJai/generated_songs` (unchanged) and
-      `~/Documents/LSDJai/generated_samples` (new).
+- [ ] Two Finder windows handy: `~/Documents/LSDJ/generated_songs` (unchanged) and
+      `~/Documents/LSDJ/generated_samples` (new).
 
 ## Auto-save: freezes
 

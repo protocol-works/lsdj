@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Freeze the complete LSDJai Python backend into one launchable ONEDIR runtime
+# Freeze the complete LSDJ Python backend into one launchable ONEDIR runtime
 # for bundling into the native app (Phase 2 part 6, ADR-0018/0019).
 #
 # This is the production form of the proven Spike B recipe (spike/packaging/

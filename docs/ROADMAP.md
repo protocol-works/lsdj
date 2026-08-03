@@ -1,4 +1,4 @@
-# LSDJai Roadmap
+# LSDJ Roadmap
 
 A DJ interface over [Magenta RealTime 2](https://github.com/magenta/magenta-realtime):
 two locally-running model "decks" steered by text prompts, blended with a
@@ -195,12 +195,12 @@ layout switcher (centre / vertical / top bar / off). Replaced the
 decorative per-deck analyser strip. A true spectrogram renderer stays a
 Later idea. Verified by eye alongside the M20 device runs.
 
-### M24 — Look and feel: the LSDJai rebrand ✅ (2026-06-13)
+### M24 — Look and feel: the LSDJ rebrand ✅ (2026-06-13)
 
 The identity pass, presentational like M8: a brutalist dark theme (Space
 Mono, tokens v3, a swappable hard-edged accent via the `AccentPicker`, the
-LSDJai `Logo`) and the project-wide rename from `magenta-dj`/`magenta_dj`
-to LSDJai/`lsdj` — the `magenta_rt` engine and the "Magenta" deck
+LSDJ `Logo`) and the project-wide rename from `magenta-dj`/`magenta_dj`
+to LSDJ/`lsdj` — the `magenta_rt` engine and the "Magenta" deck
 model kept their names; only the product identity changed. The README hero
 GIF and the support button landed alongside. Captured by `shot_m24.mjs`; no
 behaviour changed.
@@ -319,7 +319,7 @@ closed tempo control; [`spike-beat-detection.md`](spike-beat-detection.md)
 opened the honesty gate) — no code commits ahead of the verdict.
 Architecture-reviewed before building, like M21 and M23.
 
-**Standing decision (an ADR before any code):** LSDJai *detects*
+**Standing decision (an ADR before any code):** LSDJ *detects*
 musical structure and *advises*; it does not *steer* to it. Generation
 conditions on a blended prompt embedding alone
 ([ADR-0004](adr/0004-style-is-a-weighted-prompt-blend-tempo-is-not-a-parameter.md))
@@ -392,7 +392,7 @@ signed/notarized build) is tracked on
 the documented follow-ups (synced dub echo, jog phase-nudge, in-process model
 switch / sidecar restart, the live beat/loudness analysis tap, booth output,
 master recording) are noted there too. Not a feature milestone —
-a cross-cutting re-platform that moves LSDJai from a browser app to a native
+a cross-cutting re-platform that moves LSDJ from a browser app to a native
 macOS app, decided across
 [ADR-0017](adr/0017-native-rust-audio-engine-superseding-web-audio.md) (Rust
 audio engine, superseding ADR-0003),

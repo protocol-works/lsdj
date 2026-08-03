@@ -65,14 +65,14 @@ class TestResolveMlxDir:
         # In-app installs (and `just setup-sa3`) put the checkout in the app-owned
         # data dir — the only non-override candidate.
         mlx_dir = make_checkout(
-            tmp_path / "Library" / "Application Support" / "LSDJai" / "stable-audio-3",
+            tmp_path / "Library" / "Application Support" / "LSDJ" / "stable-audio-3",
             SUCCESS_STUB,
         )
         assert sa3.resolve_mlx_dir(env={}, home=tmp_path) == mlx_dir
 
     def test_checkout_without_venv_is_skipped(self, tmp_path):
         checkout = (
-            tmp_path / "Library" / "Application Support" / "LSDJai" / "stable-audio-3"
+            tmp_path / "Library" / "Application Support" / "LSDJ" / "stable-audio-3"
         )
         (checkout / "optimized" / "mlx" / "scripts").mkdir(parents=True)
         (checkout / "optimized" / "mlx" / "scripts" / "sa3_mlx.py").write_text("#")

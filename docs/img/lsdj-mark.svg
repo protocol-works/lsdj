@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
-  <!-- LSDJai mark: a vinyl record (cyan ring + cue marker) with a two-tone
+  <!-- LSDJ mark: a vinyl record (cyan ring + cue marker) with a two-tone
        hypercube — green outer cube, blue inner cube. -->
   <circle cx="50" cy="50" r="45" fill="none" stroke="#22d3ee" stroke-width="2.2"/>
   <line x1="69.1" y1="69.1" x2="80.4" y2="80.4" stroke="#bef264" stroke-width="2" stroke-linecap="round"/>
