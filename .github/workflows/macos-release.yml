@@ -109,10 +109,17 @@ jobs:
       - name: Freeze production backend
         run: |
           set -euo pipefail
-          uv sync --project backend --frozen
+          # The runner's /Library/Frameworks Python becomes a symlinked
+          # Python.framework in PyInstaller ONEDIR output. Tauri dereferences
+          # resource symlinks, invalidating that framework after signing. Use
+          # uv's standalone distribution so the bundle contains libpython.
+          uv sync --project backend --frozen --managed-python --python 3.13
           just freeze-backend
           test -x src-tauri/sidecar-dist/lsdj_backend/lsdj_backend
           test -d src-tauri/sidecar-dist/lsdj_backend/_internal
+          test -f src-tauri/sidecar-dist/lsdj_backend/_internal/libpython3.13.dylib
+          test ! -e src-tauri/sidecar-dist/lsdj_backend/_internal/Python.framework
+          test ! -L src-tauri/sidecar-dist/lsdj_backend/_internal/Python.framework
           src-tauri/sidecar-dist/lsdj_backend/lsdj_backend --help >/dev/null
           src-tauri/sidecar-dist/lsdj_backend/lsdj_backend \
             --generation-server --help >/dev/null

@@ -20,13 +20,40 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 VENV="$REPO/backend/.venv"
-SP="$VENV/lib/python3.13/site-packages"
+PYTHON="$VENV/bin/python"
+PYTHON_MINOR="3.13"
+SP="$VENV/lib/python$PYTHON_MINOR/site-packages"
 PYI="$VENV/bin/pyinstaller"
 BACKEND="$REPO/backend"
 # sequence_layers is vendored under magenta_rt with a hyphen dir and injected
 # onto sys.path at runtime; point PyInstaller's analysis at it directly.
 SEQLAYERS_DIR="$SP/magenta_rt/_vendor/sequence-layers"
 OUT="$REPO/src-tauri/sidecar-dist"
+
+fail() {
+  echo "backend freeze: $*" >&2
+  exit 1
+}
+
+[ -x "$PYTHON" ] || fail \
+  "backend environment is missing; run 'just setup' first"
+[ -x "$PYI" ] || fail \
+  "PyInstaller is missing from backend/.venv; run 'just setup' first"
+
+ACTUAL_PYTHON_MINOR="$("$PYTHON" -c \
+  'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+[ "$ACTUAL_PYTHON_MINOR" = "$PYTHON_MINOR" ] || fail \
+  "Python $PYTHON_MINOR is required; backend/.venv uses $ACTUAL_PYTHON_MINOR"
+
+# PyInstaller preserves a python.org-style Python.framework as a symlinked
+# bundle. Tauri copies release resources as ordinary files, which changes that
+# framework after it was signed and makes Apple's notarizer reject the alias
+# binaries. uv's managed python-build-standalone distribution instead supplies
+# a flat libpython dylib, which survives the resource copy unchanged.
+PYTHON_FRAMEWORK="$("$PYTHON" -c \
+  'import sysconfig; print(sysconfig.get_config_var("PYTHONFRAMEWORK") or "")')"
+[ -z "$PYTHON_FRAMEWORK" ] || fail \
+  "framework Python '$PYTHON_FRAMEWORK' cannot be packaged; recreate backend/.venv with uv-managed Python $PYTHON_MINOR"
 
 # Starlette reaches python_multipart (the /api/generate multipart init-audio
 # path, issue #54) through a guarded `try: import python_multipart` that
@@ -63,6 +90,14 @@ mkdir -p "$OUT"
   --copy-metadata fsspec \
   "$BACKEND/lsdj/frozen.py"
 
+INTERNAL="$DIST_BIN_DIR/_internal"
+[ -f "$INTERNAL/libpython$PYTHON_MINOR.dylib" ] || fail \
+  "frozen runtime has no frameworkless libpython$PYTHON_MINOR.dylib"
+if [ -e "$INTERNAL/Python.framework" ] || [ -L "$INTERNAL/Python.framework" ] || \
+   [ -e "$INTERNAL/Python" ] || [ -L "$INTERNAL/Python" ]; then
+  fail "frozen runtime unexpectedly contains a symlinked Python.framework"
+fi
+
 # THE METALLIB WALL (Spike B): MLX's get_colocated_mtllib_path looks for
 # mlx.metallib next to the path used to load libmlx.dylib. PyInstaller exposes
 # that library both beside the executable and as `_internal/libmlx.dylib` (a
@@ -70,7 +105,7 @@ mkdir -p "$OUT"
 # copier dereferences that symlink; the explicit _internal copy keeps the signed
 # app working after bundling too.
 MLX_LIB="$SP/mlx/lib"
-for destination in "$DIST_BIN_DIR" "$DIST_BIN_DIR/_internal"; do
+for destination in "$DIST_BIN_DIR" "$INTERNAL"; do
   for f in mlx.metallib libmlx.dylib libjaccl.dylib; do
     if [ -f "$MLX_LIB/$f" ] && [ ! -f "$destination/$f" ]; then
       cp "$MLX_LIB/$f" "$destination/$f"

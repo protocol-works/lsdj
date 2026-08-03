@@ -8,7 +8,9 @@ default:
 # manager, issue #43), which is the only install path. A dev's first
 # `just tauri-dev` shows empty decks until a model is installed.
 setup:
-    cd backend && uv sync
+    # Production freezing must use uv's frameworkless python-build-standalone
+    # distribution; otherwise Tauri's resource copy invalidates Python.framework.
+    cd backend && uv sync --managed-python --python 3.13
     cd frontend && npm install
     cargo install tauri-cli
     just build
