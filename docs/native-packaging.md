@@ -67,6 +67,7 @@ build recipes:
 Configure the release build with:
 
 ```sh
+uv sync --project backend --managed-python --python 3.13
 export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
 export APPLE_ID="you@example.com"
 export APPLE_PASSWORD="app-specific-password"   # or APPLE_API_KEY/_ISSUER
@@ -92,6 +93,13 @@ entitlements to the backend executable, and verifies the team identity again in
 both the built app and mounted DMG. First launch runs a one-time Gatekeeper scan
 of the ~1.1 GB bundle (Spike B measured ~23 s cold, ~1 s thereafter);
 notarization is what keeps that a one-time cost rather than a per-launch block.
+
+The frozen backend must use uv-managed Python 3.13. The macOS runner also ships
+a framework build of Python, but PyInstaller preserves that `Python.framework`
+as a symlinked bundle while Tauri's resource copier expands the links. That
+post-signing layout change makes notarization reject the framework. The freeze
+script therefore requires uv's frameworkless python-build-standalone runtime
+and verifies that the payload contains `libpython3.13.dylib` instead.
 
 ### GitHub Actions release
 
