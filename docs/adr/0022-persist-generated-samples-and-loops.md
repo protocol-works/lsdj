@@ -7,7 +7,7 @@
 ## Context
 
 Full generated **tracks** persist: composing in the Media Explorer auto-saves a
-WAV to `~/Documents/LSDJai/generated_songs/` with a JSON `registry.json`, and the
+WAV to `~/Documents/LSDJ/generated_songs/` with a JSON `registry.json`, and the
 list restores on launch ([ADR-0013](0013-media-explorer-and-playback-mode.md),
 `src-tauri/src/songs.rs`).
 
@@ -27,7 +27,7 @@ set rather than only perform one.
 ## Decision
 
 Add a **generated-samples library** mirroring the songs library — a fixed folder
-`~/Documents/LSDJai/generated_samples/` plus a reconcile-on-list `registry.json`,
+`~/Documents/LSDJ/generated_samples/` plus a reconcile-on-list `registry.json`,
 written through the Rust shell (the webview is untrusted; the folder is never a
 webview-supplied path). It auto-saves all three sources, and a new **Samples** tab
 in the Media Explorer lists them and loads one back into a deck loop slot.

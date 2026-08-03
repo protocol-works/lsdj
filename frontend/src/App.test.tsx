@@ -12,7 +12,7 @@ import { createControlBus, type ControlBus } from './control/bus'
 import { ControlBusProvider } from './control/ControlBusProvider'
 import { loadAppSettings } from './persistence'
 
-// The LSDJai brand mark renders through three.js / react-three-fiber, which needs
+// The LSDJ brand mark renders through three.js / react-three-fiber, which needs
 // a real WebGL context and ResizeObserver — neither exists in jsdom. These
 // tests exercise App's crossfade/cue-mix wiring, not the logo, so stub it out.
 vi.mock('./ui/HypercubeMark', () => ({ HypercubeMark: () => null }))

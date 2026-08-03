@@ -15,7 +15,7 @@ things have since changed the forces:
   MIDI handled by `tauri-plugin-midi` over `midir`/CoreMIDI so the measured
   FLX4 byte map and the `control/` layer (ADR-0005) carry over unchanged. Tauri
   on macOS renders in WKWebView, not Chromium. WKWebView's `AudioWorklet` and
-  `setSinkId` support is the one remaining risk to running LSDJai's audio
+  `setSinkId` support is the one remaining risk to running LSDJ's audio
   there — which is precisely the engine ADR-0003 built. The shell decision puts
   Web Audio itself in question.
 - **Web Audio has become the capability ceiling.** Varispeed (M20) shifts pitch
@@ -117,7 +117,7 @@ the engine reports. This supersedes ADR-0003.
 - **Keep Web Audio, ship in Electron** - Electron bundles Chromium, so the whole
   ADR-0003 engine keeps working untouched and the app still ships native. The
   conservative path, and the right one if packaging is the only goal. Not chosen
-  here because it leaves LSDJai on Web Audio's ceiling — no keylock or
+  here because it leaves LSDJ on Web Audio's ceiling — no keylock or
   time-stretch, the two-workaround cue path stays — and locks in a heavier
   Chromium runtime.
 - **Keep Web Audio in WKWebView, mitigate with a spike** - cheapest if it

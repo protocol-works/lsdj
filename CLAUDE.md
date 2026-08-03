@@ -1,6 +1,6 @@
-# LSDJ.ai
+# LSDJ
 
-LSDJ.ai (Latent Space DJ) is a generative DJ instrument: two locally-running model decks
+LSDJ (Latent Space DJ) is a generative DJ instrument: two locally-running model decks
 (Magenta RealTime 2), generated pads and tracks (Stable Audio 3), mixed by a
 native Rust audio engine and playable from a Pioneer DDJ-FLX4. It ships as a
 native Tauri app. See [`README.md`](README.md) for the full overview,
@@ -45,7 +45,7 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
   FLX4's own phones jack. Color FX are pure amount→parameter curves at a
   pre-fader insert with a bit-exact bypass (ADR-0008).
 - Model weights live outside the repo in the app-owned data dir
-  `~/Library/Application Support/LSDJai/magenta-rt-v2` (kept out of `~/Documents`,
+  `~/Library/Application Support/LSDJ/magenta-rt-v2` (kept out of `~/Documents`,
   which users may sync to iCloud; `MAGENTA_HOME` overrides the base). The app sets
   `MAGENTA_HOME` at startup and migrates a prior `~/Documents/Magenta` install
   once (`models::ensure_magenta_home`). Install models **in-app** from the

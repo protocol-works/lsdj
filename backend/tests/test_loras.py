@@ -31,7 +31,7 @@ class TestLorasDir:
     def test_defaults_to_the_app_support_home(self, tmp_path):
         assert (
             loras.loras_dir(env={}, home=tmp_path)
-            == tmp_path / "Library" / "Application Support" / "LSDJai" / "sa3-loras"
+            == tmp_path / "Library" / "Application Support" / "LSDJ" / "sa3-loras"
         )
 
 

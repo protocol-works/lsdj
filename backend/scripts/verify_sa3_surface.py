@@ -3,7 +3,7 @@
 Run from backend/ with a native SA3 output (44.1 kHz PCM16 mono/stereo):
 
     uv run python -u scripts/verify_sa3_surface.py \
-      "$HOME/Documents/LSDJai/generated_samples/Cat.wav"
+      "$HOME/Documents/LSDJ/generated_samples/Cat.wav"
 
 The verifier writes five clips to /tmp/lsdj-issue54 by default. It exercises
 JSON and multipart parsing, validation, the generation lock, the pinned CLI,

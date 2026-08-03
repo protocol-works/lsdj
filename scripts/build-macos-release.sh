@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/LSDJai.app"
+APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/LSDJ.app"
 DMG_DIR="$REPO_ROOT/src-tauri/target/release/bundle/dmg"
 BACKEND_DIR="$REPO_ROOT/src-tauri/sidecar-dist/lsdj_backend"
 BACKEND_BIN="$BACKEND_DIR/lsdj_backend"
@@ -163,8 +163,8 @@ if [ -n "$RELEASE_VERSION" ]; then
   [ "$BUNDLE_BUILD_VERSION" = "$RELEASE_VERSION" ] || fail \
     "app build version is $BUNDLE_BUILD_VERSION; expected $RELEASE_VERSION"
 fi
-DMG_PATH="$(find "$DMG_DIR" -maxdepth 1 -type f -name 'LSDJai_*.dmg' -print | sort | tail -1)"
-[ -n "$DMG_PATH" ] || fail "no LSDJai DMG was produced in $DMG_DIR"
+DMG_PATH="$(find "$DMG_DIR" -maxdepth 1 -type f -name 'LSDJ_*.dmg' -print | sort | tail -1)"
+[ -n "$DMG_PATH" ] || fail "no LSDJ DMG was produced in $DMG_DIR"
 
 echo "macOS release: verifying app signature and notarization ticket"
 verify_app_backend "$APP_PATH"
@@ -187,8 +187,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-DMG_APP="$MOUNT_POINT/LSDJai.app"
-[ -d "$DMG_APP" ] || fail "mounted DMG does not contain LSDJai.app"
+DMG_APP="$MOUNT_POINT/LSDJ.app"
+[ -d "$DMG_APP" ] || fail "mounted DMG does not contain LSDJ.app"
 verify_app_backend "$DMG_APP"
 codesign --verify --deep --strict --verbose=2 "$DMG_APP"
 xcrun stapler validate "$DMG_APP"

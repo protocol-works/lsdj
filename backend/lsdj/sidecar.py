@@ -229,7 +229,7 @@ def run_model_tooling(
 
 
 def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(description="LSDJai per-deck inference sidecar")
+    parser = argparse.ArgumentParser(description="LSDJ per-deck inference sidecar")
     # Deck-sidecar arguments. Not required, so the same binary can run the
     # model-tooling modes below (issue #43) without a deck/port.
     parser.add_argument("--deck", help="deck id (e.g. a or b)")

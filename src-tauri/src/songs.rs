@@ -1,4 +1,4 @@
-//! The generated-songs library: the on-disk folder (`~/Documents/LSDJai/
+//! The generated-songs library: the on-disk folder (`~/Documents/LSDJ/
 //! generated_songs`) plus a JSON registry recording each take's prompt and model, so
 //! the webview can restore its take list across launches.
 //!
@@ -68,7 +68,7 @@ pub struct SongEntry {
     /// Display label: the prompt plus its session id for a composed take, or the
     /// filename stem for a file added by hand.
     pub title: String,
-    /// The composition prompt; `None` for a file LSDJai didn't generate.
+    /// The composition prompt; `None` for a file LSDJ didn't generate.
     pub prompt: Option<String>,
     /// The engine/model that composed the take; `None` ("none") for a hand-added file.
     pub model: Option<String>,

@@ -1,10 +1,9 @@
 {
   "app": {
-    "title": "LSDJ.ai",
+    "title": "LSDJ",
     "brand": {
       "ls": "LS",
-      "dj": "DJ",
-      "ai": ".ai"
+      "dj": "DJ"
     },
     "tagline": "Latent Space DJ",
     "ramWarning": "Selected models need roughly {{combined}} GB on a {{total}} GB machine — real-time playback may struggle."

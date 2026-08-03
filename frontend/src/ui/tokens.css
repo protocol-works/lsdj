@@ -32,7 +32,7 @@
   --color-accent-cyan-strong: #67e8f9;
   --color-accent-cyan-dim: #178fa6;
 
-  /* Per-deck accents (LSDJai): drawn from the triad — the two hues the
+  /* Per-deck accents (LSDJ): drawn from the triad — the two hues the
      master accent isn't using. Default master is Cyan, so deck A is lime
      and deck B violet. The -dim shade doubles as each deck's waveform low
      band. Overridden per theme in the [data-accent] blocks. */
@@ -41,7 +41,7 @@
   --color-deck-b: var(--color-accent-violet);
   --color-deck-b-dim: var(--color-accent-violet-dim);
 
-  /* Master accent — user-selectable (LSDJai). Default Cyan; the hue is
+  /* Master accent — user-selectable (LSDJ). Default Cyan; the hue is
      themed via [data-accent] on <html> (blocks below) and drives the logo,
      master/crossfader, playhead, focus rings, and primary buttons.
      --color-on-accent is the ink laid ON the accent: all three accents are
@@ -50,7 +50,7 @@
   --color-accent-strong: var(--color-accent-cyan-strong);
   --color-on-accent: #07070a;
 
-  /* Waveforms (LSDJai): the close-up tints to each deck's accent — low =
+  /* Waveforms (LSDJ): the close-up tints to each deck's accent — low =
      the deck's dim shade, mid = its full colour (see ZoomStrip) — while
      highs stay near-white for transient sparkle and the beat mark stays red
      so it reads over every accent. */
@@ -107,7 +107,7 @@
   --inset-border: inset 0 0 0 1px var(--color-border);
 }
 
-/* Accent themes (LSDJai). The user picks one of the lime/violet/cyan triad
+/* Accent themes (LSDJ). The user picks one of the lime/violet/cyan triad
    as the master accent; the other two become the Deck A / Deck B accents, so
    the whole instrument — chrome AND waveforms — is drawn from one harmonious
    set. :root mirrors the Cyan default so the first paint is correct before JS

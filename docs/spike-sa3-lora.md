@@ -168,7 +168,7 @@ the recomputed SVD bases are orthonormal.
 ## Reproduce
 
 1. `git apply -p1` the appendix patch in the SA3 checkout
-   (`~/Library/Application Support/LSDJai/stable-audio-3`).
+   (`~/Library/Application Support/LSDJ/stable-audio-3`).
 2. `huggingface-cli download motiftechnologies/stable-audio-3-maqam-lora --local-dir <dir>`
 3. From `optimized/mlx`, run twice with a fixed `--seed`, once with
    `--dit medium --decoder same-l --lora <dir>` and once without; compare the WAVs.
@@ -316,7 +316,7 @@ Applies cleanly with `git apply -p1` from the SA3 checkout root (verified agains
 @@ -0,0 +1,350 @@
 +"""LoRA merge-at-load for the MLX SA3 DiT.
 +
-+Spike PoC for LSDJai issue #44 — run Stable Audio 3 LoRA finetunes through the
++Spike PoC for LSDJ issue #44 — run Stable Audio 3 LoRA finetunes through the
 +MLX inference path. The MLX CLI (`sa3_mlx.py`) has no LoRA support; this module
 +adds it the cheapest way that preserves the spawn-never-import model (ADR-0012):
 +the LoRA delta is **merged into the DiT weight dict at load time**, before the

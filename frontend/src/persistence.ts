@@ -26,7 +26,7 @@ export type DeckSettings = {
  * or off. */
 export type BeatViewLayout = 'center' | 'vertical' | 'top' | 'off'
 
-/** User-selectable master accent (LSDJai). Default is 'lime'. */
+/** User-selectable master accent (LSDJ). Default is 'lime'. */
 export type AccentTheme = 'lime' | 'violet' | 'cyan'
 
 export type AppSettings = {

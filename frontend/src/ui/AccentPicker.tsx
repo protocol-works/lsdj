@@ -7,7 +7,7 @@ type AccentPickerProps = {
   onChange: (value: AccentTheme) => void
 }
 
-/** Accent chooser as fixed-colour swatches (LSDJai): each square shows its
+/** Accent chooser as fixed-colour swatches (LSDJ): each square shows its
  * own accent hue (via .ui-swatch--<accent>) regardless of the active theme,
  * so all three read at a glance. A single-select toggle-button group. */
 export function AccentPicker({ label, value, options, onChange }: AccentPickerProps) {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LSDJai",
+  "productName": "LSDJ",
   "version": "0.1.0",
   "identifier": "works.protocol.lsdj",
   "build": {

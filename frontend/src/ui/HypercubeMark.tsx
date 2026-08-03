@@ -5,7 +5,7 @@ import type { Group } from 'three'
 
 import { cubeSegments, type Segment, type Vec3 } from './hypercube'
 
-/** The LSDJai mark: a vinyl record spinning face-on — its cue marker sweeps so the
+/** The LSDJ mark: a vinyl record spinning face-on — its cue marker sweeps so the
  * spin reads — with a hypercube (a cube nested inside a cube) tumbling in 3-D at
  * the centre. A deliberately spare set of lines — record edge, cue marker, and
  * the two nested cubes — so it stays clean at any size (matching the app icon).

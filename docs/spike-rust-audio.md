@@ -15,7 +15,7 @@ trust them over re-reading unless something looks off.
 ## Objective
 
 Prove a Rust engine (`cpal` + `rtrb` + `fundsp`) can drive **two decks** of real
-LSDJai 48 kHz/stereo PCM glitch-free, reach **stated** parity with the Web
+LSDJ 48 kHz/stereo PCM glitch-free, reach **stated** parity with the Web
 Audio engine on the load-bearing nodes, and choose the PCM transport — or surface
 exactly where it can't.
 

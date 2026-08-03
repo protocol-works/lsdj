@@ -33,7 +33,7 @@ status: complete
 argv. `/api/generate` accepts only `prompt`, `seconds`, and `kind`, and every
 frontend caller sends that same shape. The pinned SA3 MLX CLI already supports
 audio-to-audio, inpainting, negative prompting/CFG/APG, variation strength, and
-fixed seeds, but none of those values can cross LSDJai's pipeline.
+fixed seeds, but none of those values can cross LSDJ's pipeline.
 
 The implementation must light up that existing model surface without changing
 the normal pad, sample, or track generation path. The production workflows that
@@ -49,7 +49,7 @@ remain separate issues.
   Its defaults are `init_noise_level=1.0`, `cfg=1.0`, and `apg=1.0`; omitting a
   seed chooses one in `0..2^31-1` and prints it.
 - The CLI reads 44.1 kHz, 16-bit PCM WAV natively. Other WAV shapes fall back to
-  `ffmpeg`, which LSDJai does not bundle and must not become a hidden runtime
+  `ffmpeg`, which LSDJ does not bundle and must not become a hidden runtime
   requirement.
 - Native deck capture already returns up to 30 seconds of 48 kHz interleaved
   stereo float PCM through `DeckChannel.captureSample()`. Loop slots can be read
@@ -193,7 +193,7 @@ a documented codec guard band).
 Use `fastapi.testclient.TestClient` against `controller.app` so the script crosses
 the real HTTP parser, validation, error mapping, generation lock, subprocess, and
 response path without requiring a separately managed server. A generated SA3
-sample from `~/Documents/LSDJai/generated_samples` is a convenient compatible
+sample from `~/Documents/LSDJ/generated_samples` is a convenient compatible
 44.1 kHz PCM16 source. Deck-capture/loop-slot conversion and app selection remain
 deferred with the frontend UX.
 

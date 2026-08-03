@@ -16,14 +16,14 @@ judge.
 
 - [x] Stable Audio 3 is **Ready** in the app's model manager.
 - [x] Pick a generated SA3 sample from
-      `~/Documents/LSDJai/generated_samples` that is at least four seconds long.
+      `~/Documents/LSDJ/generated_samples` that is at least four seconds long.
       Freeze WAVs are 48 kHz float and are intentionally rejected by this
       API-only surface; generated SA3 WAVs are native 44.1 kHz PCM16.
 - [x] From `backend/`, run:
 
       ```sh
       uv run python -u scripts/verify_sa3_surface.py \
-        "$HOME/Documents/LSDJai/generated_samples/Cat (3).wav"
+        "$HOME/Documents/LSDJ/generated_samples/Cat (3).wav"
       ```
 
       Outputs land in `/tmp/lsdj-issue54` unless `--out-dir` is supplied.

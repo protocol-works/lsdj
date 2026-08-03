@@ -1,4 +1,4 @@
-# LSDJai task runner — `just` lists recipes, `just <recipe>` runs one.
+# LSDJ task runner — `just` lists recipes, `just <recipe>` runs one.
 
 default:
     @just --list
@@ -17,17 +17,24 @@ setup:
 
 # Relocate existing model weights from the legacy ~/Documents/Magenta (or
 # $MAGENTA_HOME) location — and a ~/Repos Stable Audio 3 clone — into the
-# app-owned data dir (~/Library/Application Support/LSDJai), so model data is out
+# app-owned data dir (~/Library/Application Support/LSDJ), so model data is out
 # of any iCloud-synced Documents folder. Same-volume moves are instant. The app
-# also migrates the Magenta weights automatically on first launch; this is the
-# manual equivalent and also covers Stable Audio 3. Idempotent — an item whose
+# also migrates the previous app-name folder and Magenta weights automatically
+# on first launch; this is the manual equivalent. Idempotent — an item whose
 # destination already exists is left alone.
 migrate-models:
     #!/usr/bin/env bash
     set -euo pipefail
     old="${MAGENTA_HOME:-$HOME/Documents/Magenta}"
-    new="$HOME/Library/Application Support/LSDJai"
+    new="$HOME/Library/Application Support/LSDJ"
+    legacy_brand="$HOME/Library/Application Support/LSDJai"
     mkdir -p "$new"
+    for item in magenta-rt-v2 stable-audio-3 sa3-loras; do
+      if [ -d "$legacy_brand/$item" ] && [ ! -e "$new/$item" ]; then
+        echo "moving $item from the previous app name → $new/"
+        mv "$legacy_brand/$item" "$new/$item"
+      fi
+    done
     if [ -d "$old/magenta-rt-v2" ] && [ ! -e "$new/magenta-rt-v2" ]; then
       echo "moving magenta-rt-v2 → $new/"
       mv "$old/magenta-rt-v2" "$new/magenta-rt-v2"

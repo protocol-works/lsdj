@@ -1,7 +1,7 @@
 [project]
 name = "lsdj-backend"
 version = "0.1.0"
-description = "LSDJai backend: MRT2 deck workers behind a FastAPI WebSocket controller"
+description = "LSDJ backend: MRT2 deck workers behind a FastAPI WebSocket controller"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.136.3",

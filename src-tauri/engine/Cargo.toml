@@ -3,7 +3,7 @@ name = "lsdj-engine"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "LSDJai native audio engine: RT-safe two-deck cpal/fundsp mix (Phase 1, ADR-0017/0019)."
+description = "LSDJ native audio engine: RT-safe two-deck cpal/fundsp mix (Phase 1, ADR-0017/0019)."
 
 # The audio engine as a LIBRARY crate so the RT-safe core (Engine::render) is
 # testable headless in CI (cargo test, no device). The cpal device path is a

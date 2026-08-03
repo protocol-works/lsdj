@@ -1,4 +1,4 @@
-//! LSDJai native audio engine (Phase 1, Slice 1).
+//! LSDJ native audio engine (Phase 1, Slice 1).
 //!
 //! A device-free, RT-safe two-deck mix core plus a thin cpal device wrapper.
 //! This is the production home of the engine ported from the Spike A

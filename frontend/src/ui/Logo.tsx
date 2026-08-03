@@ -2,8 +2,8 @@ import { useTranslation } from 'react-i18next'
 
 import { HypercubeMark } from './HypercubeMark'
 
-/** LSDJai brand lockup: the spinning-record/tumbling-hypercube mark beside the
- * LSDJai wordmark — LS neutral, DJ in the accent, ai small and quiet. The mark
+/** LSDJ brand lockup: the spinning-record/tumbling-hypercube mark beside the
+ * LSDJ wordmark — LS neutral and DJ in the accent. The mark
  * inks from currentColor so it follows the master-accent token. The h1 carries
  * the accessible name; the visual text is hidden from the a11y tree so it isn't
  * read twice. */
@@ -16,7 +16,6 @@ export function Logo() {
         <span className="logo__word">
           <span className="logo__ls">{t('app.brand.ls')}</span>
           <span className="logo__dj">{t('app.brand.dj')}</span>
-          <span className="logo__ai">{t('app.brand.ai')}</span>
         </span>
         <span className="logo__tag">{t('app.tagline')}</span>
       </span>

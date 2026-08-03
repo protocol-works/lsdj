@@ -1,4 +1,4 @@
-//! LSDJai native shell — the Tauri v2 app host (Phase 2).
+//! LSDJ native shell — the Tauri v2 app host (Phase 2).
 //!
 //! This embeds the React frontend, starts the Rust audio engine and the native
 //! MIDI service (ADR-0031), and exposes the engine control surface to the
@@ -593,8 +593,13 @@ pub fn run() {
             let songs_dir = app
                 .path()
                 .document_dir()
-                .map(|d| d.join("LSDJai").join("generated_songs"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJai/generated_songs"));
+                .map(|d| {
+                    models::migrate_legacy_dir(
+                        &d.join("LSDJ").join("generated_songs"),
+                        &d.join("LSDJai").join("generated_songs"),
+                    )
+                })
+                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJ/generated_songs"));
             app.manage(songs::SongLibrary::new(songs_dir.clone()));
             // The generated-samples library: the short-loop counterpart of the songs
             // folder (ADR-0022), the home for deck freezes / generated pads / composed
@@ -603,8 +608,13 @@ pub fn run() {
             let samples_dir = app
                 .path()
                 .document_dir()
-                .map(|d| d.join("LSDJai").join("generated_samples"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJai/generated_samples"));
+                .map(|d| {
+                    models::migrate_legacy_dir(
+                        &d.join("LSDJ").join("generated_samples"),
+                        &d.join("LSDJai").join("generated_samples"),
+                    )
+                })
+                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJ/generated_samples"));
             app.manage(samples::SampleLibrary::new(samples_dir.clone()));
             // Watch both library folders so the Media Explorer tabs live-reload on a
             // change (a deck auto-saving a sample, a hand-drop/-delete); Rust owns the
@@ -891,9 +901,9 @@ mod tests {
     #[test]
     fn bundled_backend_lives_under_the_tauri_resource_dir() {
         assert_eq!(
-            bundled_backend_path(std::path::Path::new("/Applications/LSDJai.app/Contents/Resources")),
+            bundled_backend_path(std::path::Path::new("/Applications/LSDJ.app/Contents/Resources")),
             std::path::Path::new(
-                "/Applications/LSDJai.app/Contents/Resources/lsdj_backend/lsdj_backend"
+                "/Applications/LSDJ.app/Contents/Resources/lsdj_backend/lsdj_backend"
             )
         );
     }

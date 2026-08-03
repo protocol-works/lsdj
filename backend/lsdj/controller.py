@@ -665,7 +665,7 @@ def list_models() -> dict:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser(description="LSDJai generation server")
+    parser = argparse.ArgumentParser(description="LSDJ generation server")
     parser.add_argument(
         "--port", type=int, default=8000, help="loopback port to bind (default 8000)"
     )

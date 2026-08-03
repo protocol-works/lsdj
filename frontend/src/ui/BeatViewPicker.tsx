@@ -49,7 +49,7 @@ type BeatViewPickerProps = {
   onChange: (value: BeatViewLayout) => void
 }
 
-/** Beat-view layout chooser as an icon toggle group (LSDJai): replaces the
+/** Beat-view layout chooser as an icon toggle group (LSDJ): replaces the
  * dropdown with a glyph per layout, the active one lit in the accent. */
 export function BeatViewPicker({
   label,

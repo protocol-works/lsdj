@@ -24,7 +24,7 @@
 
 ## Context
 
-LSDJai is a generative DJ instrument. We want an external AI agent
+LSDJ is a generative DJ instrument. We want an external AI agent
 (Claude Desktop / Claude Code) to act as a co-DJ: generate audio *and* drive
 the decks, mixer, and FX live — alongside the human at the hardware and the
 on-screen UI. MCP is the protocol those clients speak.
