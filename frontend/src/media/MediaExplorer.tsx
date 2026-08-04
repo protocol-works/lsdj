@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -395,6 +395,7 @@ export function MediaExplorer({
   // keeps its own inside CrateBrowser (mounted only while visible, so
   // exactly one list answers the hardware at a time).
   const [highlight, setHighlight] = useState(0)
+  const highlightedRow = useRef<HTMLLIElement>(null)
   // The take whose prompt is expanded to full text, or null. One at a time; the
   // rest stay truncated to one line.
   const [expandedId, setExpandedId] = useState<number | null>(null)
@@ -457,6 +458,18 @@ export function MediaExplorer({
       ? null
       : readySamples[Math.min(highlight, readySamples.length - 1)].id
   const filteredFiles = files.filter((file) => matchesSearch(search, file.name))
+  const highlightedFileIndex =
+    filteredFiles.length === 0 ? -1 : Math.min(highlight, filteredFiles.length - 1)
+  const highlightedFileName =
+    highlightedFileIndex < 0 ? null : filteredFiles[highlightedFileIndex].name
+
+  // Controller browsing changes the highlight without moving DOM focus, so keep
+  // the selected row inside the tray's scrollable viewport. Crates does the same
+  // inside CrateBrowser, which owns that tab's independent highlight.
+  useLayoutEffect(() => {
+    if (tab === 'crates') return
+    highlightedRow.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [tab, highlightedReadyId, highlightedSampleId, highlightedFileName])
 
   function stopPreview() {
     onStopPreview()
@@ -1327,6 +1340,7 @@ export function MediaExplorer({
                 return (
                   <li
                     key={track.id}
+                    ref={track.id === highlightedReadyId ? highlightedRow : null}
                     className={`media__item${
                       track.id === highlightedReadyId
                         ? ' media__item--highlighted'
@@ -1506,6 +1520,7 @@ export function MediaExplorer({
                 return (
                   <li
                     key={sample.id}
+                    ref={sample.id === highlightedSampleId ? highlightedRow : null}
                     className={`media__item${
                       sample.id === highlightedSampleId
                         ? ' media__item--highlighted'
@@ -1614,8 +1629,9 @@ export function MediaExplorer({
               {filteredFiles.map((file, index) => (
                 <li
                   key={file.name}
+                  ref={index === highlightedFileIndex ? highlightedRow : null}
                   className={`media__item${
-                    index === Math.min(highlight, files.length - 1)
+                    index === highlightedFileIndex
                       ? ' media__item--highlighted'
                       : ''
                   }`}
@@ -1623,7 +1639,7 @@ export function MediaExplorer({
                   <button
                     className="media__name media__name--button"
                     aria-label={t('media.highlight', { name: file.name })}
-                    aria-current={index === Math.min(highlight, files.length - 1)}
+                    aria-current={index === highlightedFileIndex}
                     onClick={() => setHighlight(index)}
                   >
                     <span className="media__name-text">{file.name}</span>

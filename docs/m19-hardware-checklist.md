@@ -60,8 +60,9 @@ half no script can tick (ADR-0013).
 ## Hardware browse
 
 - [ ] The browse rotary scrolls the *visible* explorer tab's list —
-      crates, generated tracks, or folder files.
-- [ ] Pressing the rotary cycles the tabs: Crates → Generate → Folder
+      crates, generated tracks, samples, or folder files — and the highlighted
+      row stays visible after browsing past the tray's viewport.
+- [ ] Pressing the rotary cycles the tabs: Crates → Generate → Samples → Folder
       and around. The byte (`0x96 41`) is interpolated from the
       DDJ-400 family — if the press does nothing, read the actual
       bytes off the monitor and correct `flx4.ts` +
