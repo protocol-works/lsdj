@@ -10,6 +10,9 @@ import type { StylePreset } from '../presets'
 import { MediaExplorer } from './MediaExplorer'
 import { MEDIA_DEFAULT_HEIGHT } from './mediaTray'
 
+let scrollIntoView: ReturnType<typeof vi.fn>
+let scrolledRows: HTMLElement[]
+
 // Real nativeEngine except the piano-window toggle, which we spy on; and a
 // controllable interface-store hook for the window's open (lit) state.
 vi.mock('../audio/nativeEngine', async (importOriginal) => {
@@ -79,6 +82,14 @@ function stubFetch(response: Partial<Response> = {}) {
 }
 
 beforeEach(() => {
+  scrolledRows = []
+  scrollIntoView = vi.fn(function (this: HTMLElement) {
+    scrolledRows.push(this)
+  })
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: scrollIntoView,
+  })
   vi.stubGlobal('crypto', {
     getRandomValues: (target: Uint32Array) => {
       target[0] = 17
@@ -113,6 +124,7 @@ async function composeSampleClip(name: string, oneShot = true) {
 }
 
 afterEach(() => {
+  Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
   vi.unstubAllGlobals()
   localStorage.clear()
   vi.mocked(useInterfaceStore).mockReturnValue(null)
@@ -523,6 +535,32 @@ describe('MediaExplorer', () => {
       { kind: 'bytes', wav: expect.any(ArrayBuffer) },
       'first #1',
     )
+  })
+
+  it('keeps the rotary-highlighted track inside the visible viewport', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return Array.from({ length: 12 }, (_, index) => ({
+          file: `track-${index + 1}.wav`,
+          title: `Track ${index + 1}`,
+          prompt: null,
+          model: null,
+        }))
+      }
+      return []
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const bus = createControlBus()
+    renderExplorer({}, [], bus)
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    await screen.findByText('Track 12')
+    scrollIntoView.mockClear()
+    scrolledRows = []
+
+    act(() => bus.publish({ kind: 'browse_scroll', steps: 9 }))
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+    expect(scrolledRows.at(-1)).toHaveTextContent('Track 3')
   })
 
   it('composes a short loop in the Samples tab with the small SFX model', async () => {
