@@ -43,6 +43,18 @@
       "samples": "Samples",
       "folder": "Folder"
     },
+    "search": {
+      "label": "Search {{scope}}",
+      "placeholder": "Search {{scope}}…",
+      "clear": "Clear search",
+      "noResults": "No results for “{{query}}”.",
+      "scopes": {
+        "crates": "presets",
+        "generate": "songs",
+        "samples": "samples",
+        "folder": "folder files"
+      }
+    },
     "loadShort": "→ {{deck}}",
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",

@@ -210,6 +210,20 @@
   color: var(--color-text-silkscreen);
 }
 
+/* Keep compact fields labelled for assistive technology without spending a
+   second line on visible chrome (for example, the Media Explorer search). */
+.ui-field__label--hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .ui-field__input {
   font: 400 var(--text-m) var(--font-ui);
   line-height: var(--control-line);

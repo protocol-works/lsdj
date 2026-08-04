@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { DeckId } from '../audio/types'
 import { useControlBus } from '../control/busContext'
 import { parsePresetsExport, serialisePresets, type StylePreset } from '../presets'
+import { matchesSearch } from '../search'
 import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
 import './crates.css'
@@ -13,6 +14,7 @@ type CrateBrowserProps = {
   onLoad: (deck: DeckId, preset: StylePreset) => void
   onDelete: (name: string) => void
   onImport: (presets: StylePreset[]) => void
+  filter?: string
 }
 
 function downloadCrates(presets: StylePreset[]) {
@@ -30,7 +32,13 @@ function downloadCrates(presets: StylePreset[]) {
  * deck. The FLX4 browse rotary moves the highlight and the LOAD
  * buttons load it (intents on the ControlBus); mouse does the same
  * per row. */
-export function CrateBrowser({ presets, onLoad, onDelete, onImport }: CrateBrowserProps) {
+export function CrateBrowser({
+  presets,
+  onLoad,
+  onDelete,
+  onImport,
+  filter = '',
+}: CrateBrowserProps) {
   const { t } = useTranslation()
   const [index, setIndex] = useState(0)
   const [importError, setImportError] = useState<string | null>(null)
@@ -38,13 +46,22 @@ export function CrateBrowser({ presets, onLoad, onDelete, onImport }: CrateBrows
   const highlightedRow = useRef<HTMLLIElement>(null)
   // The stored index may point past the end after a delete; the
   // clamped value is the single truth everywhere below.
-  const highlighted = presets.length === 0 ? -1 : Math.min(index, presets.length - 1)
+  const filteredPresets = presets.filter((preset) =>
+    matchesSearch(
+      filter,
+      preset.name,
+      ...preset.targets.map((target) => target.text),
+      preset.fx.kind,
+    ),
+  )
+  const highlighted =
+    filteredPresets.length === 0 ? -1 : Math.min(index, filteredPresets.length - 1)
 
   // The list scrolls past ~8 presets; the rotary's highlight must stay
   // visible. (Optional call: jsdom has no scrollIntoView.)
   useLayoutEffect(() => {
     highlightedRow.current?.scrollIntoView?.({ block: 'nearest' })
-  }, [highlighted])
+  }, [highlighted, filter])
 
   // Hardware intents (M16): rotary turn = highlight, LOAD = load the
   // highlighted preset. Resubscribes per render to read fresh state;
@@ -53,13 +70,13 @@ export function CrateBrowser({ presets, onLoad, onDelete, onImport }: CrateBrows
   useEffect(() =>
     bus.subscribe((intent) => {
       if (intent.kind === 'browse_scroll') {
-        if (presets.length === 0) return
+        if (filteredPresets.length === 0) return
         setIndex((current) => {
-          const from = Math.min(current, presets.length - 1)
-          return Math.max(0, Math.min(presets.length - 1, from + intent.steps))
+          const from = Math.min(current, filteredPresets.length - 1)
+          return Math.max(0, Math.min(filteredPresets.length - 1, from + intent.steps))
         })
       } else if (intent.kind === 'browse_load') {
-        const preset = presets[highlighted]
+        const preset = filteredPresets[highlighted]
         if (preset) onLoad(intent.deck, preset)
       }
     }),
@@ -79,9 +96,13 @@ export function CrateBrowser({ presets, onLoad, onDelete, onImport }: CrateBrows
       <h2 className="crates__title">{t('crates.title')}</h2>
       {presets.length === 0 ? (
         <p className="crates__empty">{t('crates.empty')}</p>
+      ) : filteredPresets.length === 0 ? (
+        <p className="crates__empty" role="status">
+          {t('media.search.noResults', { query: filter.trim() })}
+        </p>
       ) : (
         <ul className="crates__list">
-          {presets.map((preset, presetIndex) => (
+          {filteredPresets.map((preset, presetIndex) => (
             <li
               key={preset.name}
               ref={presetIndex === highlighted ? highlightedRow : null}
