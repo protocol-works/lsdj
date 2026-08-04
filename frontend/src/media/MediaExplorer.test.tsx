@@ -676,6 +676,41 @@ describe('MediaExplorer', () => {
     expect(metas.some((text) => text.includes('Imported'))).toBe(true)
   })
 
+  it('filters samples across prompt, model, and playback mode metadata', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_samples') {
+        return [
+          {
+            file: 'bass-loop.wav',
+            title: 'Low end',
+            prompt: 'sub bass pressure',
+            model: 'music',
+            oneShot: false,
+          },
+          {
+            file: 'laser.wav',
+            title: 'Laser hit',
+            prompt: 'bright zap',
+            model: 'sfx',
+            oneShot: true,
+          },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    await screen.findByText('Low end')
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search samples' }), {
+      target: { value: 'PRESSURE music loop' },
+    })
+
+    expect(screen.getByText('Low end')).toBeInTheDocument()
+    expect(screen.queryByText('Laser hit')).toBeNull()
+  })
+
   it('auto-saves a composed take to the songs folder via the Rust shell', async () => {
     stubFetch()
     const calls: { cmd: string; args: unknown }[] = []
@@ -788,6 +823,64 @@ describe('MediaExplorer', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Open songs folder' }))
     })
     expect(calls).toContain('open_songs_folder')
+  })
+
+  it('filters songs across title, prompt, model, and filename metadata', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [
+          {
+            file: 'midnight-take.wav',
+            title: 'Midnight drive',
+            prompt: 'rolling breakbeat',
+            model: 'magenta',
+          },
+          {
+            file: 'sunrise.wav',
+            title: 'Sunrise house',
+            prompt: 'bright chords',
+            model: 'track',
+          },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    await screen.findByText('Midnight drive')
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search songs' }), {
+      target: { value: 'TAKE rolling magenta' },
+    })
+
+    expect(screen.getByText('Midnight drive')).toBeInTheDocument()
+    expect(screen.queryByText('Sunrise house')).toBeNull()
+  })
+
+  it('clears a song filter and restores all results', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        return [
+          { file: 'dub.wav', title: 'Dub', prompt: null, model: null },
+          { file: 'house.wav', title: 'House', prompt: null, model: null },
+        ]
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    await screen.findByText('Dub')
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search songs' }), {
+      target: { value: 'none' },
+    })
+    expect(screen.getByRole('status')).toHaveTextContent('No results for “none”.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+
+    expect(screen.getByText('Dub')).toBeInTheDocument()
+    expect(screen.getByText('House')).toBeInTheDocument()
   })
 
   it('restores takes from the registry on startup, tagging hand-added files as imported', async () => {
@@ -1259,6 +1352,34 @@ describe('MediaExplorer', () => {
       'a',
       { kind: 'folder', dir: '/Users/dj/DJ Sets', name: 'a-side.mp3' },
       'a-side.mp3',
+    )
+  })
+
+  it('filters folder files and scopes hardware loading to the results', async () => {
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'plugin:dialog|open') return '/Users/dj/DJ Sets'
+      if (cmd === 'list_audio_files') return ['a-side.mp3', 'b-side.wav']
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const bus = createControlBus()
+    const onLoadTrack = vi.fn(async () => true)
+    renderExplorer({ onLoadTrack }, [], bus)
+    fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
+    })
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search folder files' }), {
+      target: { value: 'B-SIDE' },
+    })
+
+    expect(screen.queryByText('a-side.mp3')).toBeNull()
+    expect(screen.getByText('b-side.wav')).toBeInTheDocument()
+    act(() => bus.publish({ kind: 'browse_load', deck: 'a' }))
+    expect(onLoadTrack).toHaveBeenCalledWith(
+      'a',
+      { kind: 'folder', dir: '/Users/dj/DJ Sets', name: 'b-side.wav' },
+      'b-side.wav',
     )
   })
 

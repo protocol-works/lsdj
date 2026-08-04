@@ -42,6 +42,7 @@ import { Sa3AdvancedControls } from '../generation/Sa3AdvancedControls'
 import { loadAppSettings, updateAppSettings } from '../persistence'
 import { LoraControl } from '../ui/LoraControl'
 import type { StylePreset } from '../presets'
+import { matchesSearch } from '../search'
 import { Button } from '../ui/Button'
 import { Panel } from '../ui/Panel'
 import { PianoIcon } from '../ui/PianoIcon'
@@ -344,6 +345,7 @@ export function MediaExplorer({
   // read-back that lights the tray's piano toggle.
   const pianoWindowOpen = useInterfaceStore()?.pianoWindowOpen ?? false
   const [tab, setTab] = useState<MediaTab>('crates')
+  const [search, setSearch] = useState('')
   // True only while the top grip is being dragged, to drop the height
   // transition so the tray tracks the cursor instead of easing behind it.
   const [dragging, setDragging] = useState(false)
@@ -416,14 +418,37 @@ export function MediaExplorer({
     samplesRef.current = samples
   }, [tracks, samples])
 
-  const ready = tracks.filter(
+  const filteredTracks = tracks.filter((track) =>
+    matchesSearch(
+      search,
+      track.title,
+      track.prompt,
+      fileOf(track),
+      track.model,
+      track.model == null
+        ? t('media.generate.imported')
+        : t(`media.generate.engines.${track.model}`),
+    ),
+  )
+  const ready = filteredTracks.filter(
     (track): track is GeneratedTrack & { state: 'ready' } =>
       track.state === 'ready',
   )
   const highlightedReadyId =
     ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)].id
 
-  const readySamples = samples.filter(
+  const filteredSamples = samples.filter((sample) =>
+    matchesSearch(
+      search,
+      sample.title,
+      sample.prompt,
+      fileOf(sample),
+      sample.model,
+      sampleModelLabel(sample.model),
+      t(sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop'),
+    ),
+  )
+  const readySamples = filteredSamples.filter(
     (sample): sample is GeneratedSample & { state: 'ready' } =>
       sample.state === 'ready',
   )
@@ -431,6 +456,7 @@ export function MediaExplorer({
     readySamples.length === 0
       ? null
       : readySamples[Math.min(highlight, readySamples.length - 1)].id
+  const filteredFiles = files.filter((file) => matchesSearch(search, file.name))
 
   function stopPreview() {
     onStopPreview()
@@ -686,7 +712,7 @@ export function MediaExplorer({
           ? ready.length
           : tab === 'samples'
             ? readySamples.length
-            : files.length
+            : filteredFiles.length
       if (intent.kind === 'browse_scroll') {
         if (count === 0) return
         setHighlight((current) =>
@@ -700,7 +726,7 @@ export function MediaExplorer({
         } else if (tab === 'samples') {
           void loadSample(intent.deck, readySamples[index])
         } else {
-          void loadFolderFile(intent.deck, files[index])
+          void loadFolderFile(intent.deck, filteredFiles[index])
         }
       }
     }),
@@ -1054,6 +1080,7 @@ export function MediaExplorer({
 
   const collapseHint = t('media.collapseHint', { shortcut: TOGGLE_SHORTCUT })
   const expandHint = t('media.expandHint', { shortcut: TOGGLE_SHORTCUT })
+  const searchScope = t(`media.search.scopes.${tab}`)
   // Collapsed, the whole header bar is the expand target (click or Enter/Space);
   // open, the header is inert chrome and only the chevron button toggles.
   const collapsedBarProps = open
@@ -1111,22 +1138,49 @@ export function MediaExplorer({
             ))}
           </div>
         )}
-        {/* The right cluster: per-tab utility actions (Open Folder, so far)
-            sit next to the collapse toggle, which is always present. */}
+        {/* The right cluster: search and per-tab utility actions sit next to the
+            collapse toggle, which is always present. */}
         <div className="media__header-end">
-          {open && (tab === 'generate' || tab === 'samples') && (
+          {open && (
             <div className="media__header-actions">
-              <Button
-                onClick={() =>
-                  void (tab === 'generate' ? openSongsFolder() : openSamplesFolder())
-                }
-              >
-                {t(
-                  tab === 'generate'
-                    ? 'media.generate.openFolder'
-                    : 'media.samples.openFolder',
+              <div className="media__search" role="search">
+                <TextField
+                  type="search"
+                  labelHidden
+                  label={t('media.search.label', { scope: searchScope })}
+                  placeholder={t('media.search.placeholder', { scope: searchScope })}
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value)
+                    setHighlight(0)
+                  }}
+                />
+                {search && (
+                  <Button
+                    aria-label={t('media.search.clear')}
+                    title={t('media.search.clear')}
+                    onClick={() => {
+                      setSearch('')
+                      setHighlight(0)
+                    }}
+                  >
+                    ✕
+                  </Button>
                 )}
-              </Button>
+              </div>
+              {(tab === 'generate' || tab === 'samples') && (
+                <Button
+                  onClick={() =>
+                    void (tab === 'generate' ? openSongsFolder() : openSamplesFolder())
+                  }
+                >
+                  {t(
+                    tab === 'generate'
+                      ? 'media.generate.openFolder'
+                      : 'media.samples.openFolder',
+                  )}
+                </Button>
+              )}
             </div>
           )}
           {open && (
@@ -1173,6 +1227,7 @@ export function MediaExplorer({
           onLoad={onLoadPreset}
           onDelete={onDeletePreset}
           onImport={onImportPresets}
+          filter={search}
         />
       )}
 
@@ -1257,9 +1312,13 @@ export function MediaExplorer({
           ) : null}
           {tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
+          ) : filteredTracks.length === 0 ? (
+            <p className="media__empty" role="status">
+              {t('media.search.noResults', { query: search.trim() })}
+            </p>
           ) : (
             <ul className="media__list">
-              {tracks.map((track) => {
+              {filteredTracks.map((track) => {
                 // Composed takes (those carrying a prompt) get a #id to tell same-title
                 // siblings apart; an imported file shows just its name. The title
                 // ellipsises in the row; the tag never shrinks.
@@ -1435,9 +1494,13 @@ export function MediaExplorer({
           />
           {samples.length === 0 ? (
             <p className="media__empty">{t('media.samples.empty')}</p>
+          ) : filteredSamples.length === 0 ? (
+            <p className="media__empty" role="status">
+              {t('media.search.noResults', { query: search.trim() })}
+            </p>
           ) : (
             <ul className="media__list">
-              {samples.map((sample) => {
+              {filteredSamples.map((sample) => {
                 const composed = sample.prompt != null
                 const rowLabel = sampleLabel(sample)
                 return (
@@ -1541,9 +1604,14 @@ export function MediaExplorer({
               {t('media.folder.empty', { name: folderName })}
             </p>
           )}
-          {files.length > 0 && (
+          {files.length > 0 && filteredFiles.length === 0 && (
+            <p className="media__empty" role="status">
+              {t('media.search.noResults', { query: search.trim() })}
+            </p>
+          )}
+          {filteredFiles.length > 0 && (
             <ul className="media__list">
-              {files.map((file, index) => (
+              {filteredFiles.map((file, index) => (
                 <li
                   key={file.name}
                   className={`media__item${

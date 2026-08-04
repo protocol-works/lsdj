@@ -100,11 +100,23 @@
   gap: var(--space-1);
 }
 
-/* Utility actions (Open Folder for now) inside the right cluster. */
+/* Search and per-library utility actions inside the right cluster. */
 .media__header-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.media__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  inline-size: clamp(11rem, 22vw, 18rem);
+  max-inline-size: 100%;
+}
+
+.media__search .ui-field__input {
+  min-inline-size: 0;
 }
 
 .media__generate,
@@ -212,6 +224,11 @@
 }
 
 @media (max-width: 52rem) {
+  .media__header-end,
+  .media__header-actions {
+    flex-wrap: wrap;
+  }
+
   .media__generate-row {
     flex-wrap: wrap;
   }

@@ -22,6 +22,7 @@ function renderBrowser(
     onImport?: ReturnType<typeof vi.fn>
   } = {},
   bus: ControlBus = createControlBus(),
+  filter = '',
 ) {
   return render(
     <ControlBusProvider bus={bus}>
@@ -30,6 +31,7 @@ function renderBrowser(
         onLoad={(handlers.onLoad ?? vi.fn()) as (deck: 'a' | 'b', preset: StylePreset) => void}
         onDelete={(handlers.onDelete ?? vi.fn()) as (name: string) => void}
         onImport={(handlers.onImport ?? vi.fn()) as (presets: StylePreset[]) => void}
+        filter={filter}
       />
     </ControlBusProvider>,
   )
@@ -51,6 +53,24 @@ describe('CrateBrowser', () => {
       screen.getByRole('button', { name: 'Load Dub session to deck B' }),
     )
     expect(onLoad).toHaveBeenCalledWith('b', DUB)
+  })
+
+  it('filters presets by name and target text, including hardware loading', () => {
+    const onLoad = vi.fn()
+    const bus = createControlBus()
+    renderBrowser([FUNK, DUB], { onLoad }, bus, 'DUB warm disco')
+
+    expect(screen.queryByText('Warm funk')).toBeNull()
+    expect(screen.getByText('Dub session')).toBeInTheDocument()
+    act(() => bus.publish({ kind: 'browse_load', deck: 'b' }))
+    expect(onLoad).toHaveBeenCalledWith('b', DUB)
+  })
+
+  it('distinguishes an empty filter result from an empty preset library', () => {
+    renderBrowser([FUNK], {}, createControlBus(), 'techno')
+    expect(screen.getByRole('status')).toHaveTextContent('No results for “techno”.')
+    expect(screen.queryByText(/No presets yet/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Export' })).toBeEnabled()
   })
 
   it('deletes a preset from its row', () => {
