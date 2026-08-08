@@ -1,0 +1,10 @@
+# Direct dependencies audited by issue #109.  This file is not installed into
+# the MLX backend environment; it is the input for target-specific bundled
+# Python/CUDA runtime locks.
+torch==2.12.1
+transformers==5.8.0
+huggingface-hub==1.5.0
+numpy==2.3.5
+safetensors==0.7.0
+sentencepiece==0.2.1
+resampy==0.4.3

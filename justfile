@@ -84,6 +84,13 @@ freeze-backend:
 # Compatibility alias for the original packaging recipe name.
 freeze-sidecar: freeze-backend
 
+# Resolve the separately bundled PyTorch/CUDA runtime without importing it into
+# the macOS MLX backend environment. These are installation candidates until
+# both clean-host installs and the NVIDIA qualification matrix pass.
+lock-mrt2-pytorch:
+    uv pip compile backend/mrt2-pytorch-runtime.in --python-version 3.12 --python-platform x86_64-unknown-linux-gnu --index https://download.pytorch.org/whl/cu130 --default-index https://pypi.org/simple --index-strategy unsafe-best-match --only-binary :all: --generate-hashes --output-file backend/runtime-locks/mrt2-pytorch-linux-x86_64.txt
+    uv pip compile backend/mrt2-pytorch-runtime.in --python-version 3.12 --python-platform x86_64-pc-windows-msvc --index https://download.pytorch.org/whl/cu130 --default-index https://pypi.org/simple --index-strategy unsafe-best-match --only-binary :all: --generate-hashes --output-file backend/runtime-locks/mrt2-pytorch-windows-x86_64.txt
+
 # Native shell developer bundle: build the app/DMG into
 # src-tauri/target/release/bundle/. The config applies an explicit ad-hoc
 # signature so the app bundle is structurally valid on Apple Silicon. This is

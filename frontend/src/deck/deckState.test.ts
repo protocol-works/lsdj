@@ -48,14 +48,22 @@ describe('deckReducer', () => {
     expect(moved.bufferedSeconds).toBeCloseTo(1.9)
   })
 
-  it('tracks generation speed from chunk events', () => {
+  it('tracks generation speed, latency, and queue depth from chunk events', () => {
     const state = reduce([
       {
         type: 'server_event',
-        event: { event: 'chunk', index: 4, rtf: 1.86 },
+        event: {
+          event: 'chunk',
+          index: 4,
+          rtf: 1.86,
+          generation_latency_ms: 107.5,
+          queue_depth: 2,
+        },
       },
     ])
     expect(state.generationSpeed).toBe(1.86)
+    expect(state.generationLatencyMs).toBe(107.5)
+    expect(state.workerQueueDepth).toBe(2)
   })
 
   it('surfaces worker errors and clears them when a style applies', () => {
@@ -121,6 +129,49 @@ describe('deckReducer', () => {
     expect(state.switchingModel).toBe(false)
     expect(state.workerDied).toBe(false)
     expect(state.model).toBe('mrt2_base')
+  })
+
+  it('retains runtime provenance from readiness diagnostics', () => {
+    const state = reduce([
+      {
+        type: 'server_event',
+        event: {
+          event: 'ready',
+          deck: 'a',
+          model: 'mrt2_small',
+          runtime: {
+            runtime: 'pytorch-cuda',
+            accelerator: 'cuda',
+            hardware_qualified: false,
+            model_revision: 'model-sha',
+            cuda_device: 'NVIDIA Test',
+          },
+        },
+      },
+    ])
+    expect(state.runtimeDiagnostics).toMatchObject({
+      runtime: 'pytorch-cuda',
+      hardware_qualified: false,
+      model_revision: 'model-sha',
+      cuda_device: 'NVIDIA Test',
+    })
+  })
+
+  it('surfaces a fail-closed runtime startup error', () => {
+    const state = reduce([
+      {
+        type: 'server_event',
+        event: {
+          event: 'startup_failed',
+          deck: 'a',
+          model: 'mrt2_small',
+          error: 'PyTorch reports no CUDA accelerator; MRT2 has no CPU fallback',
+        },
+      },
+    ])
+    expect(state.workerDied).toBe(true)
+    expect(state.switchingModel).toBe(false)
+    expect(state.error).toContain('no CPU fallback')
   })
 
   it('flags a dead worker; the transport drop arrives via the store projection', () => {

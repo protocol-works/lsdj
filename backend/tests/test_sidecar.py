@@ -14,10 +14,12 @@ from lsdj.sidecar import (
     FRAME_EMBED,
     FRAME_PCM,
     FRAME_STATUS,
+    SharedSocketCmdQueues,
     SocketCmdQueue,
     SocketOutQueue,
     read_frame,
     run_sidecar,
+    run_shared_sidecar,
     write_frame,
 )
 
@@ -172,6 +174,9 @@ def test_sidecar_streams_pcm_and_status_over_a_socketpair():
 
         ftype, payload = _read_frames_until(shell_reader, lambda t, p: t == FRAME_PCM)
         assert payload == FAKE_PCM
+        write_frame(shell, FRAME_CONTROL, b'{"type":"shutdown"}')
+        thread.join(timeout=2)
+        assert not thread.is_alive()
     finally:
         # Closing the shell end → the sidecar's reader hits EOF → shutdown.
         shell.close()
@@ -187,9 +192,10 @@ def test_sidecar_main_argument_parsing(monkeypatch):
         captured["addr"] = addr
         return RecordingSock()
 
-    def fake_run(sock, deck, model, engine_factory=None):
+    def fake_run(sock, deck, model, *, runtime="auto", engine_factory=None):
         captured["deck"] = deck
         captured["model"] = model
+        captured["runtime"] = runtime
 
     import lsdj.sidecar as sidecar_mod
 
@@ -200,10 +206,22 @@ def test_sidecar_main_argument_parsing(monkeypatch):
     )
     monkeypatch.setattr(sidecar_mod, "run_sidecar", fake_run)
 
-    sidecar_mod.main(["--deck", "b", "--model", "mrt2_small", "--port", "5050"])
+    sidecar_mod.main(
+        [
+            "--deck",
+            "b",
+            "--model",
+            "mrt2_small",
+            "--runtime",
+            "mlx",
+            "--port",
+            "5050",
+        ]
+    )
     assert captured["addr"] == ("127.0.0.1", 5050)
     assert captured["deck"] == "b"
     assert captured["model"] == "mrt2_small"
+    assert captured["runtime"] == "mlx"
 
 
 def test_cmd_queue_decodes_embed_frame_to_embed_sample():
@@ -221,3 +239,55 @@ def test_cmd_queue_decodes_embed_frame_to_embed_sample():
         "id": "sample:a:1",
         "pcm": pcm,
     }
+
+
+def test_shared_command_stream_demultiplexes_by_deck():
+    rec = RecordingSock()
+    write_frame(rec, FRAME_CONTROL, b'\x01{"type":"play"}')
+    write_frame(rec, FRAME_CONTROL, b'\x00{"type":"stop"}')
+
+    commands = SharedSocketCmdQueues(io.BytesIO(bytes(rec.buffer)))
+    assert commands.queues[1].get(timeout=1.0) == {"type": "play"}
+    assert commands.queues[0].get(timeout=1.0) == {"type": "stop"}
+    assert commands.queues[0].get(timeout=1.0) == {"type": "shutdown"}
+    assert commands.queues[1].get(timeout=1.0) == {"type": "shutdown"}
+
+
+def test_shared_sidecar_multiplexes_two_decks_over_one_socket():
+    shell, side = socket.socketpair()
+    try:
+        thread = threading.Thread(
+            target=run_shared_sidecar,
+            args=(side, ("same", "same")),
+            kwargs={
+                "runtime": "fake",
+                "engine_factory": lambda model: FakeEngine(model),
+            },
+            daemon=True,
+        )
+        thread.start()
+        reader = shell.makefile("rb")
+        ready_decks = set()
+        warming_decks = set()
+        while ready_decks != {0, 1}:
+            frame_type, payload = read_frame(reader)
+            if frame_type == FRAME_STATUS and b'"warming"' in payload:
+                warming_decks.add(payload[0])
+            if frame_type == FRAME_STATUS and b'"ready"' in payload:
+                ready_decks.add(payload[0])
+        assert warming_decks == {0, 1}
+
+        write_frame(shell, FRAME_CONTROL, b'\x01{"type":"play"}')
+        while True:
+            frame_type, payload = read_frame(reader)
+            if frame_type == FRAME_PCM:
+                assert payload[0] == 1
+                assert payload[1:] == FAKE_PCM
+                break
+        write_frame(shell, FRAME_CONTROL, b'\x00{"type":"shutdown"}')
+        write_frame(shell, FRAME_CONTROL, b'\x01{"type":"shutdown"}')
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    finally:
+        shell.close()
+        side.close()
