@@ -77,7 +77,8 @@ working notes — commit or fold into issues as you see fit.
     against the backend — see "What's left".
 
 - **DONE (2026-08-08 session 5) — the two reasons the show-night agent had to
-  script around MCP, fixed. Not yet live-verified:**
+  script around MCP, fixed. Live-verified same day via raw JSON-RPC (see the
+  session-5 verification entry below):**
   - **#15 Option params schema fix** — session 4's live failure: schemars 1.x
     emits `Option<…>` params as draft-2020-12 nullable shapes
     (`"type": ["number", "null"]` for `ramp_ms`, `["array", "null"]` for
@@ -97,26 +98,45 @@ working notes — commit or fold into issues as you see fit.
     `mcp://generation` UI events fire exactly as before. The 380 s server cap
     is now reachable through any MCP client.
 
+- **Session-5 verification (2026-08-08, same day, raw JSON-RPC against the
+  rebuilt app):**
+  - Wire schemas: all 36 tools clean — no `$ref`/`$defs`, no nullable type
+    arrays, no Option `anyOf` anywhere; `ramp_ms` serves as `"number"`,
+    `loras` as `"array"`, `set_notes.mode` as a typed enum.
+  - `set_crossfade` with a *typed numeric* `ramp_ms` accepted ("crossfade
+    gliding to 0.5 over 2000 ms").
+  - `generate_track` returned in <1 s with the job id; `generation_status`
+    tracked running (elapsed counting) and kept answering while the job ran
+    past the old 60 s client-timeout mark; a backend failure surfaced as
+    `status: "failed"` with the server's detail string.
+  - **#16 (found by the LoRA live-fire): the backend's SA3 deadline didn't
+    budget the LoRA merge.** `sa3.timeout_for` was `120 + seconds`; the CLI
+    merges adapter deltas into the DiT at load — measured **127.7 s flat**
+    for one adapter on the medium DiT (12.6 s sample, 148 s total for a 60 s
+    track, peak 5.68 GB) — so any LoRA track died at the deadline ("502:
+    generation timed out after 180s"). Fixed: `LORA_TIMEOUT_SECONDS = 300`
+    flat allowance when a stack rides (the merge cost is dominated by the
+    base-DiT dequant, not per-adapter), and the MCP ETA adds a matching
+    ~130 s so the agent isn't promised 26 s. The direct CLI run confirmed the
+    adapter itself works — a clean 60 s chiptune WAV. Re-fired in-app after
+    the fix: job `done` in 215 s wall (memory pressure beside the loaded
+    Magenta models; inside the new 480 s deadline), "Velvet Reverie"
+    auto-loaded onto deck 1 in playback mode, analysed at **140.0 BPM** — the
+    prompt's requested tempo. The LoRA live-fire Jake asked for is done.
+  - The remaining session-4 leftovers are now tracked as issues: #124
+    (`set_fx_amount` ramp), #125 (idle -32001), #126 (`mainDevice: ""` —
+    reproduced live this session).
+  - co-DJ SKILL.md added at `.agents/skills/co-dj/SKILL.md` (served to Claude
+    Code via the `.claude/skills` symlink).
+
 ## What's left (next session)
 
-1. **Live-verify session 5** (needs a rebuilt app + fresh MCP session):
-   `generate_track` returns the job id immediately; `generation_status` shows
-   running → done; the deck flips when the track lands; `ramp_ms`/`loras`
-   accepted as *typed* params through the Claude Code harness (no
-   stringification, no raw JSON-RPC workaround).
-2. **Fire a LoRA generation end-to-end** — now unblocked by #15. Jake wants a
-   hyperfocus chiptune: `generate_track` deck 1, ~60 s, `loras: [{"name":
-   "medium/zentai-chiptune-step-20000-epoch-909", "strength": 1.0}]`.
-   (Adapters are per-base: the two installed ride "medium" → tracks only.)
-3. **#10 remainder** — optional: `ramp_ms` on `set_fx_amount` (needs the FX
-   curves driven audio-rate, like the EQ's `Shared`+`follow()` pattern).
-4. **co-DJ SKILL.md** (below) — now should also cover `ramp_ms`, `toggle_pad`,
-   `transport.playing`, the LoRA flow (`list_loras` → generate), and the async
-   generate_track → generation_status loop.
-5. **Session-4 leftovers:** first MCP call after an idle stretch sometimes
-   times out (-32001; immediate retry succeeds) — worth a look at keep-alives;
-   `get_state` intermittently shows `mainDevice: ""` while audio works
-   (display bug).
+1. **Harness-side proof:** a *fresh Claude Code session* (so the client
+   re-lists tools) calling `set_crossfade{ramp_ms}` and
+   `generate_track{loras}` through the MCP tools — the session-4 failure was
+   harness stringification, which raw JSON-RPC can't exercise. Expected to
+   pass now that the schemas carry plain types; this is the PR checklist item.
+2. **#10 remainder** — now issue #124 (`ramp_ms` on `set_fx_amount`).
 
 ### Workflow gotchas (learned the hard way, session 3)
 

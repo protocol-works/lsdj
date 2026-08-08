@@ -52,20 +52,27 @@ MAX_GENERATE_METADATA_BYTES = 64 * 1024
 # (see SETUP_HINT).
 TIMEOUT_SECONDS = 120
 
+# Extra deadline when a LoRA stack rides: the CLI merges adapter deltas into
+# the DiT at load — measured 127.7 s for one adapter on the medium DiT
+# (M-series, warm cache) against a 12.6 s sample. The cost is dominated by
+# the base-DiT dequant/merge, so one flat allowance covers any stack size.
+LORA_TIMEOUT_SECONDS = 300
+
 SETUP_HINT = (
     "sa3_mlx checkout not found - install Stable Audio 3 from the app's settings "
     "drawer (the model manager), or point SA3_MLX_HOME at an existing checkout"
 )
 
 
-def timeout_for(seconds: float) -> float:
+def timeout_for(seconds: float, lora_count: int = 0) -> float:
     """Deadline for one generation, scaled to the requested length.
 
     The published medium benchmark is ~15 s wall for a 2-minute track on
     M4-Pro-class hardware, so a second of deadline per second of audio is
     ~8x slack on top of the flat base — a wedge kill-switch, not a UX
-    promise (ADR-0013)."""
-    return TIMEOUT_SECONDS + seconds
+    promise (ADR-0013). A LoRA stack adds the flat merge allowance
+    (LORA_TIMEOUT_SECONDS)."""
+    return TIMEOUT_SECONDS + seconds + (LORA_TIMEOUT_SECONDS if lora_count else 0)
 
 
 _generation_lock = asyncio.Semaphore(1)
@@ -237,7 +244,7 @@ async def generate(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            timeout = timeout_for(seconds)
+            timeout = timeout_for(seconds, len(lora_dirs or ()))
             try:
                 output, _ = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
