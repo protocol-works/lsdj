@@ -82,6 +82,13 @@ FunctionEnd
     ; target or replace it with a computed parent directory.
     Call un.LsdjDataMarkerIsValid
     ${If} $R9 = 1
+      ; Match Tauri's explicit-data-removal registry cleanup without invoking
+      ; its undisclosed bundle-ID directory deletion.
+      DeleteRegKey SHCTX "${MANUPRODUCTKEY}"
+      DeleteRegKey /ifempty SHCTX "${MANUKEY}"
+      DeleteRegValue HKCU "${MANUPRODUCTKEY}" "Installer Language"
+      DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"
+      DeleteRegKey /ifempty HKCU "${MANUKEY}"
       RMDir /r "${LSDJ_DATA_ROOT}"
     ${Else}
       DetailPrint "LSDJ data was preserved because its ownership marker disappeared or became invalid"
