@@ -213,10 +213,7 @@ pub fn run_shared_reader(
     on_status: &mut DeckStatusSinks,
     on_pcm: &mut DeckPcmSinks,
 ) -> [DeckHandle; lsdj_engine::DECK_COUNT] {
-    loop {
-        let Ok(Some((frame_type, payload))) = read_frame(&mut stream) else {
-            break;
-        };
+    while let Ok(Some((frame_type, payload))) = read_frame(&mut stream) {
         let Some((&deck, body)) = payload.split_first() else {
             continue;
         };
