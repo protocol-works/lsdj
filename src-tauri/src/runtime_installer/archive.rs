@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -234,6 +234,120 @@ pub(crate) fn extract_tar_gz_cancellable(
     Ok(())
 }
 
+/// Extract a ZIP archive under the same portable path, count, and expanded
+/// byte policy as [`extract_tar_gz_cancellable`]. Official uv Windows builds
+/// use ZIP; archive-provided links and special files remain forbidden.
+pub(crate) fn extract_zip_cancellable(
+    source: impl Read + Seek,
+    destination: &Path,
+    expected_root: &str,
+    limits: ArchiveLimits,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    validate_root(expected_root)?;
+    if limits.max_files == 0 || limits.max_expanded_bytes == 0 {
+        return Err("archive limits must be non-zero".into());
+    }
+    prepare_empty_destination(destination)?;
+    let mut archive = zip::ZipArchive::new(source)
+        .map_err(|error| format!("cannot read ZIP archive: {error}"))?;
+    if archive.is_empty() {
+        return Err("archive is empty".into());
+    }
+    if archive.len() as u64 > limits.max_files {
+        return Err(format!(
+            "archive contains more than {} entries",
+            limits.max_files
+        ));
+    }
+
+    let mut expanded = 0u64;
+    let mut seen = HashSet::new();
+    let mut materialized = HashSet::new();
+    let mut materialized_count = 0u64;
+    for index in 0..archive.len() {
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("cannot read ZIP entry: {error}"))?;
+        let raw = entry.name_raw();
+        if raw.is_empty()
+            || raw[0] == b'/'
+            || raw[0] == b'\\'
+            || raw.iter().any(|byte| *byte == b'\\' || *byte == 0)
+        {
+            return Err("archive contains an absolute or platform-ambiguous path".into());
+        }
+        let text =
+            std::str::from_utf8(raw).map_err(|_| "archive path is not valid UTF-8".to_string())?;
+        let relative = checked_text_relative_path(text, expected_root)?;
+        let key = relative.to_string_lossy().to_lowercase();
+        if !seen.insert(key) {
+            return Err("archive contains a duplicate path".into());
+        }
+        for ancestor in relative
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            let key = ancestor.to_string_lossy().to_lowercase();
+            if materialized.insert(key) {
+                materialized_count = materialized_count
+                    .checked_add(1)
+                    .ok_or("archive materialized file count overflow")?;
+                if materialized_count > limits.max_files {
+                    return Err(format!(
+                        "archive materializes more than {} filesystem entries",
+                        limits.max_files
+                    ));
+                }
+            }
+        }
+
+        let unix_kind = entry.unix_mode().unwrap_or(0) & 0o170000;
+        if unix_kind == 0o120000 || !(entry.is_file() || entry.is_dir()) {
+            return Err("archive contains a link or unsupported special entry".into());
+        }
+        let output = destination.join(&relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&output)
+                .map_err(|error| format!("cannot create archive directory: {error}"))?;
+            set_safe_permissions(&output, true, false)?;
+            continue;
+        }
+        if relative.as_os_str().is_empty() {
+            return Err("archive root must be a directory".into());
+        }
+        expanded = expanded
+            .checked_add(entry.size())
+            .ok_or("archive expanded size overflow")?;
+        if expanded > limits.max_expanded_bytes {
+            return Err(format!(
+                "archive expands beyond {} bytes",
+                limits.max_expanded_bytes
+            ));
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create archive parent: {error}"))?;
+        }
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&output)
+            .map_err(|error| format!("cannot create archive file: {error}"))?;
+        let copied = copy_cancellable(&mut entry, &mut file, is_cancelled)
+            .map_err(|error| format!("cannot extract archive file: {error}"))?;
+        if copied != entry.size() {
+            return Err("archive entry ended before its declared size".into());
+        }
+        let executable = entry.unix_mode().unwrap_or(0) & 0o111 != 0;
+        set_safe_permissions(&output, false, executable)?;
+    }
+    Ok(())
+}
+
 struct CancellationReader<'a, R> {
     inner: R,
     is_cancelled: &'a dyn Fn() -> bool,
@@ -334,6 +448,10 @@ fn checked_relative_path<R: Read>(
     }
     let text =
         std::str::from_utf8(&raw).map_err(|_| "archive path is not valid UTF-8".to_string())?;
+    checked_text_relative_path(text, expected_root)
+}
+
+fn checked_text_relative_path(text: &str, expected_root: &str) -> Result<PathBuf, String> {
     if text.len() > 4096 {
         return Err("archive path exceeds the portable length limit".into());
     }
@@ -504,6 +622,7 @@ mod tests {
     use super::*;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Cursor;
 
     fn fixture(entries: &[(&str, tar::EntryType, &[u8], Option<&str>)]) -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::fast());
@@ -522,6 +641,19 @@ mod tests {
         }
         let encoder = builder.into_inner().unwrap();
         encoder.finish().unwrap()
+    }
+
+    fn zip_fixture(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o755);
+        for (name, body) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(body).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
     }
 
     fn set_raw_name(header: &mut tar::Header, name: &str) {
@@ -838,5 +970,57 @@ mod tests {
         assert!(!target.join("file").exists());
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(target);
+    }
+
+    #[test]
+    fn zip_extracts_one_pinned_root_with_portable_paths() {
+        let bytes = zip_fixture(&[("uv-x86_64-pc-windows-msvc/uv.exe", b"fixture")]);
+        let out = temp("zip-safe");
+        let _ = fs::remove_dir_all(&out);
+        extract_zip_cancellable(
+            Cursor::new(bytes),
+            &out,
+            "uv-x86_64-pc-windows-msvc",
+            limits(),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(fs::read(out.join("uv.exe")).unwrap(), b"fixture");
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn zip_rejects_traversal_wrong_roots_and_expansion_over_budget() {
+        for (label, name, expected) in [
+            ("zip-traversal", "root/../escape", "portable"),
+            ("zip-wrong-root", "other/file", "pinned root"),
+        ] {
+            let bytes = zip_fixture(&[(name, b"fixture")]);
+            let out = temp(label);
+            let _ = fs::remove_dir_all(&out);
+            let error =
+                extract_zip_cancellable(Cursor::new(bytes), &out, "root", limits(), &|| false)
+                    .unwrap_err();
+            assert!(error.contains(expected), "unexpected error: {error}");
+            let _ = fs::remove_dir_all(out);
+        }
+
+        let bytes = zip_fixture(&[("root/file", b"too large")]);
+        let out = temp("zip-budget");
+        let _ = fs::remove_dir_all(&out);
+        let error = extract_zip_cancellable(
+            Cursor::new(bytes),
+            &out,
+            "root",
+            ArchiveLimits {
+                max_files: 10,
+                max_expanded_bytes: 1,
+                materialize_safe_links: false,
+            },
+            &|| false,
+        )
+        .unwrap_err();
+        assert!(error.contains("expands beyond"));
+        let _ = fs::remove_dir_all(out);
     }
 }

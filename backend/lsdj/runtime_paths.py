@@ -39,6 +39,12 @@ def staging_home(env: Mapping[str, str] | None = None) -> pathlib.Path | None:
 
 def sa3_home(env: Mapping[str, str] | None = None) -> pathlib.Path | None:
     env = os.environ if env is None else env
+    neutral_override = _path(env, "SA3_HOME")
+    if neutral_override is not None:
+        return neutral_override
+    tflite_override = _path(env, "SA3_TFLITE_HOME")
+    if tflite_override is not None:
+        return tflite_override
     override = _path(env, "SA3_MLX_HOME")
     if override is not None:
         return override

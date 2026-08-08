@@ -84,6 +84,9 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # to the installer trust boundary explicit in review.
 flate2 = "=1.1.9"
 tar = "=0.4.46"
+# Official uv Windows releases are ZIP archives. Keep extraction native and
+# apply the same path/count/expanded-size policy as the tar.gz installer path.
+zip = { version = "=4.6.1", default-features = false, features = ["deflate"] }
 sha2 = "=0.10.9"
 hex = "=0.4.3"
 # Shell-side track decode (ADR-0030): pure-Rust demux + decode covering the

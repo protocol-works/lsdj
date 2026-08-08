@@ -40,7 +40,9 @@ function status(overrides: Partial<ModelStatus> = {}): ModelStatus {
     },
     sa3: {
       state: 'missing',
+      backend: 'tflite',
       sizeBytes: 0,
+      downloadBytes: 14_138_994_904,
       checkout: null,
       installedSource: null,
       pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
@@ -122,7 +124,9 @@ describe('ModelManager', () => {
       status({
         sa3: {
           state: 'ready',
+          backend: 'mlx',
           sizeBytes: 5_000_000_000,
+          downloadBytes: 9_154_794_562,
           checkout: '/sa3',
           installedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
           pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
@@ -161,7 +165,9 @@ describe('ModelManager', () => {
       status({
         sa3: {
           state: 'ready',
+          backend: 'mlx',
           sizeBytes: 5_000_000_000,
+          downloadBytes: 9_154_794_562,
           checkout: '/sa3',
           installedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'oldsha' },
           pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'newsha' },
@@ -180,7 +186,9 @@ describe('ModelManager', () => {
       status({
         sa3: {
           state: 'ready',
+          backend: 'mlx',
           sizeBytes: 5_000_000_000,
+          downloadBytes: 9_154_794_562,
           checkout: '/sa3',
           installedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
           pinnedSource: { repo: 'https://github.com/brxs/stable-audio-3', commit: 'pinned1' },
@@ -201,6 +209,27 @@ describe('ModelManager', () => {
       progressCb?.({ family: 'magenta', name: 'mrt2_base', stage: 'error', message: 'no weights', file: null }),
     )
     expect(screen.getByRole('alert')).toHaveTextContent('no weights')
+  })
+
+  it('discloses the selected backend download and offers repair after verification failure', async () => {
+    modelStatus.mockResolvedValue(
+      status({
+        sa3: {
+          state: 'failed',
+          backend: 'tflite',
+          sizeBytes: 0,
+          downloadBytes: 14_138_994_904,
+          checkout: '/sa3',
+          installedSource: null,
+          pinnedSource: { repo: 'https://github.com/Stability-AI/stable-audio-3', commit: 'pin' },
+          updateAvailable: true,
+        },
+      }),
+    )
+    render(<ModelManager />)
+    await screen.findByText('Verification failed — repair required')
+    fireEvent.click(screen.getByText('Repair'))
+    expect(installModel).toHaveBeenCalledWith('sa3', undefined)
   })
 
 })
