@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "releaseReady": false,
+  "backend": "pytorch_cuda",
+  "platform": "windows-x86_64",
+  "source": {
+    "repository": "https://github.com/Stability-AI/stable-audio-3",
+    "revision": "a0b57f5483c4588f827f3552b7d5c6ca2a9687be",
+    "archiveUrl": "https://github.com/Stability-AI/stable-audio-3/archive/a0b57f5483c4588f827f3552b7d5c6ca2a9687be.tar.gz",
+    "size": 50494239,
+    "sha256": "98e206e061a3b64a4e65f50b2802bdb6965910ac1fab65da919808dfb4497e9f",
+    "license": "MIT"
+  },
+  "sharedRuntime": {
+    "python": "3.12",
+    "cuda": "12.6",
+    "requirementsInput": "backend/runtime-locks/windows-gpu-pytorch.in",
+    "requirementsLock": "backend/runtime-locks/windows-gpu-pytorch.txt",
+    "requirementsLockSize": 56238,
+    "requirementsLockSha256": "3c9bf7d79c3848ebe1da40fd14b26708b55d8157f008cb3a1944ddfb1cd597c4",
+    "packages": {
+      "torch": "2.7.1+cu126",
+      "torchaudio": "2.7.1+cu126",
+      "transformers": "5.8.0",
+      "huggingface-hub": "1.7.1",
+      "numpy": "2.3.5",
+      "safetensors": "0.7.0",
+      "sentencepiece": "0.2.1",
+      "resampy": "0.4.3"
+    },
+    "mrt2RequalificationRequired": true
+  },
+  "models": {
+    "small-music": {
+      "repository": "stabilityai/stable-audio-3-small-music",
+      "revision": "0fef1392cd842149a2b6d445e181c97608faac06",
+      "required": true,
+      "weight": {
+        "path": "model.safetensors",
+        "size": 2270384940,
+        "sha256": "da85866b11b01d0694d990785f6abbd79c8064df1b0e6f8aea52935e0ef84b64"
+      },
+      "config": {
+        "path": "model_config.json",
+        "size": 10341,
+        "gitBlobSha1": "29ba617d6556c9e3c94bea19f07ea66d0c895e9e",
+        "sha256": null
+      }
+    },
+    "small-sfx": {
+      "repository": "stabilityai/stable-audio-3-small-sfx",
+      "revision": "ae12755283df9d62ca39a9b050a39a0b607b8c20",
+      "required": true,
+      "weight": {
+        "path": "model.safetensors",
+        "size": 2270384940,
+        "sha256": "ed9cf1b6172f1a8c2921a9560c21109ff3239524563ced9dce6dcdef41e2f515"
+      },
+      "config": {
+        "path": "model_config.json",
+        "size": 10454,
+        "gitBlobSha1": null,
+        "sha256": null
+      }
+    },
+    "medium": {
+      "repository": "stabilityai/stable-audio-3-medium",
+      "revision": "27b5a21b791b1b033d193a9e1e3ce78493f102f9",
+      "required": false,
+      "enabled": false,
+      "blockedBy": "No official Windows FlashAttention 2 build has been qualified",
+      "weight": {
+        "path": "model.safetensors",
+        "size": 9222116660,
+        "sha256": "48d9c65e290e7bcd5194e0633bfc2424a59ee9683f5c2d58762d997b7d8ce0b5"
+      },
+      "config": {
+        "path": "model_config.json",
+        "size": 10360,
+        "gitBlobSha1": null,
+        "sha256": null
+      }
+    }
+  },
+  "gatedArtifactsComplete": false,
+  "releaseBlockers": [
+    "Authenticated SHA-256 audit of all model configs and nested T5Gemma artifacts after the terms flow in issue #108",
+    "Small Music and Small SFX measured VRAM reservations with conservative headroom",
+    "MRT2 functional and real-time parity on the shared torch 2.7.1/CUDA 12.6 runtime",
+    "Windows NVIDIA OOM, cancellation, crash, exit, and VRAM-release evidence",
+    "Ten-minute dual-deck 25-frame and 5-frame runs with zero engine-reported underruns"
+  ]
+}

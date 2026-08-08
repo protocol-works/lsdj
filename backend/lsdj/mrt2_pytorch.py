@@ -7,6 +7,7 @@ already-installed snapshots and never performs a network download at startup.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.metadata
 import math
 import threading
@@ -17,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from . import runtime_paths
+from .gpu_broker import GpuBroker, Priority
 from .engine import (
     CFG_MUSICCOCA,
     CFG_NOTES,
@@ -121,6 +123,7 @@ class PytorchMrt2Engine:
         selection: RuntimeSelection,
         bindings: PytorchBindings | None = None,
         cache_root: Path | None = None,
+        gpu_broker: GpuBroker | None = None,
     ) -> None:
         if selection.name != PYTORCH_CUDA_RUNTIME:
             raise RuntimeUnavailable(
@@ -189,6 +192,14 @@ class PytorchMrt2Engine:
         self._model = model
         self._model_pin = model_pin
         self._model_lock = threading.RLock()
+        broker_root = runtime_paths.cache_home()
+        self._gpu_broker = (
+            gpu_broker
+            if gpu_broker is not None
+            else None
+            if broker_root is None
+            else GpuBroker(broker_root / "gpu-broker")
+        )
         self._warmup_owner = True
         self._init_deck_state()
 
@@ -217,6 +228,7 @@ class PytorchMrt2Engine:
         deck._model = self._model
         deck._model_pin = self._model_pin
         deck._model_lock = self._model_lock
+        deck._gpu_broker = self._gpu_broker
         deck._warmup_owner = False
         deck._init_deck_state()
         return deck
@@ -353,21 +365,40 @@ class PytorchMrt2Engine:
     ) -> tuple[np.ndarray, Any]:
         notes = self._notes if stream_conditioning else None
         drums = self._drums if stream_conditioning else None
-        with self._model_lock:
-            audio, state = self._system.generate(
-                style=style,
-                notes=notes,
-                drums=None if drums is None else [drums],
-                cfg_drums=self._drums_cfg if stream_conditioning else None,
-                temperature=self._temperature,
-                top_k=self._top_k,
-                cfg_musiccoca=self._cfg_musiccoca,
-                cfg_notes=self._cfg_notes,
-                frames=frames,
-                seed=self._seed,
-                state=state,
-                guidance=True,
+        broker_hold = (
+            contextlib.nullcontext()
+            if self._gpu_broker is None
+            else self._gpu_broker.hold(
+                "mrt2",
+                priority=Priority.MRT2_REALTIME,
+                reservation_bytes=0,
+                capacity_bytes=int(
+                    self._bindings.torch.cuda.get_device_properties(
+                        self._bindings.torch.cuda.current_device()
+                    ).total_memory
+                ),
+                timeout_seconds=max(10.0, frames * FRAME_SECONDS),
             )
+        )
+        # Acquire the cross-process priority lease before the in-process model
+        # lock. A waiting MRT2 lease makes a background SA3 callback cancel its
+        # disposable process, while the two deck states remain serialized here.
+        with broker_hold:
+            with self._model_lock:
+                audio, state = self._system.generate(
+                    style=style,
+                    notes=notes,
+                    drums=None if drums is None else [drums],
+                    cfg_drums=self._drums_cfg if stream_conditioning else None,
+                    temperature=self._temperature,
+                    top_k=self._top_k,
+                    cfg_musiccoca=self._cfg_musiccoca,
+                    cfg_notes=self._cfg_notes,
+                    frames=frames,
+                    seed=self._seed,
+                    state=state,
+                    guidance=True,
+                )
         samples = np.asarray(audio)
         expected = frames * round(SAMPLE_RATE * FRAME_SECONDS)
         if samples.ndim != 2 or samples.shape != (expected, CHANNELS):
@@ -433,6 +464,11 @@ class PytorchMrt2Engine:
             "accelerator": "cuda",
             "acceleration_mode": "eager-guidance",
             "topology": "shared-worker-two-state",
+            "gpu_broker": {
+                "enabled": self._gpu_broker is not None,
+                "priority": int(Priority.MRT2_REALTIME),
+                "preempts": "sa3-background",
+            },
             "hardware_qualified": self._selection.hardware_qualified,
             "experimental": self._selection.experimental,
             "model": self._model,
