@@ -51,9 +51,9 @@ class ProducerPolicy:
     asset_count: int
 
 
-# Every policy entry is required. Adding a platform is an explicit fail-closed
-# change: add its producer here and to the publisher's --required-producer list
-# in the workflow in the same reviewed change.
+# Every policy entry is mandatory. Keep this set identical to the publisher's
+# --required-producer arguments; omission, duplication, or an unexpected bundle
+# fails before a GitHub Release is created.
 PRODUCER_POLICIES = {
     "macos-arm64": ProducerPolicy(
         platform="macos",
@@ -65,6 +65,12 @@ PRODUCER_POLICIES = {
         platform="linux",
         architecture="x86_64",
         asset_suffix=".appimage",
+        asset_count=1,
+    ),
+    "windows-x64": ProducerPolicy(
+        platform="windows",
+        architecture="x86_64",
+        asset_suffix=".exe",
         asset_count=1,
     ),
 }

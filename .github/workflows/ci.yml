@@ -61,7 +61,7 @@ jobs:
   shared:
     name: Shared checks (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +97,7 @@ jobs:
           scripts/release_artifact.py scripts/verify_linux_appimage.py
           scripts/tests/test_release_artifact.py
           scripts/tests/test_verify_linux_appimage.py
+          scripts/tests/test_windows_packaging.py
 
       - name: Lint release tooling
         run: >-
@@ -104,6 +105,7 @@ jobs:
           scripts/release_artifact.py scripts/verify_linux_appimage.py
           scripts/tests/test_release_artifact.py
           scripts/tests/test_verify_linux_appimage.py
+          scripts/tests/test_windows_packaging.py
 
       - name: Check portable Python formatting
         working-directory: backend
@@ -201,6 +203,48 @@ jobs:
         run: >-
           cargo clippy --locked --workspace --all-targets
           --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Install pinned Tauri packaging CLI
+        if: runner.os == 'Windows'
+        run: cargo install tauri-cli --version '=2.11.2' --locked
+
+      - name: Build older unsigned Windows installer
+        if: runner.os == 'Windows'
+        id: windows_older
+        shell: pwsh
+        run: ./scripts/build-windows-installer.ps1 -ReleaseTag v2026.08.1 -UnsignedDevelopment
+
+      - name: Build newer unsigned Windows installer
+        if: runner.os == 'Windows'
+        id: windows_newer
+        shell: pwsh
+        run: ./scripts/build-windows-installer.ps1 -ReleaseTag v2026.08.2 -UnsignedDevelopment
+
+      - name: Prove release verification rejects unsigned artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          ./scripts/assert-windows-release-rejects-unsigned.ps1
+          -Path '${{ steps.windows_newer.outputs.installer }}'
+
+      - name: Test Windows installer lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          ./scripts/test-windows-installer.ps1
+          -OlderInstaller '${{ steps.windows_older.outputs.installer }}'
+          -NewerInstaller '${{ steps.windows_newer.outputs.installer }}'
+          -OlderVersion '${{ steps.windows_older.outputs.version }}'
+          -NewerVersion '${{ steps.windows_newer.outputs.version }}'
+
+      - name: Upload unsigned Windows development installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-x64-unsigned-development
+          path: ${{ steps.windows_newer.outputs.installer }}
+          if-no-files-found: error
+          retention-days: 7
 
   linux_appimage:
     name: Linux AppImage contract (Ubuntu 22.04)

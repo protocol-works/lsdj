@@ -4,7 +4,6 @@ import re
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
 
 
@@ -18,6 +17,7 @@ SPEC.loader.exec_module(release_artifact)
 
 REVISION = "a" * 40
 TAG = "v2026.08.7"
+REQUIRED_PRODUCERS = ["macos-arm64", "linux-x64", "windows-x64"]
 
 
 class ReleaseArtifactTest(unittest.TestCase):
@@ -28,6 +28,8 @@ class ReleaseArtifactTest(unittest.TestCase):
         self.macos_asset.write_bytes(b"verified dmg bytes")
         self.linux_asset = self.root / "LSDJ_2026.08.7_amd64.AppImage"
         self.linux_asset.write_bytes(b"verified appimage bytes")
+        self.windows_asset = self.root / "LSDJ_2026.08.7_x64-setup.exe"
+        self.windows_asset.write_bytes(b"verified signed nsis bytes")
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -36,6 +38,7 @@ class ReleaseArtifactTest(unittest.TestCase):
         asset = {
             "macos-arm64": self.macos_asset,
             "linux-x64": self.linux_asset,
+            "windows-x64": self.windows_asset,
         }[producer]
         bundle = self.root / "incoming" / producer
         release_artifact.create_bundle(
@@ -50,6 +53,7 @@ class ReleaseArtifactTest(unittest.TestCase):
     def create_all_bundles(self):
         self.create_bundle("macos-arm64")
         self.create_bundle("linux-x64")
+        self.create_bundle("windows-x64")
         return self.root / "incoming"
 
     def draft_release(self, assets, **updates):
@@ -70,7 +74,7 @@ class ReleaseArtifactTest(unittest.TestCase):
 
         release_artifact.verify_bundles(
             input_root=incoming,
-            required_producers=["macos-arm64", "linux-x64"],
+            required_producers=REQUIRED_PRODUCERS,
             release_tag=TAG,
             revision=REVISION,
             output_dir=output,
@@ -81,17 +85,22 @@ class ReleaseArtifactTest(unittest.TestCase):
             {
                 self.macos_asset.name,
                 self.linux_asset.name,
+                self.windows_asset.name,
                 "macos-arm64-release-metadata.json",
                 "macos-arm64-SHA256SUMS.txt",
                 "linux-x64-release-metadata.json",
                 "linux-x64-SHA256SUMS.txt",
+                "windows-x64-release-metadata.json",
+                "windows-x64-SHA256SUMS.txt",
                 "release-index.json",
             },
         )
         index = json.loads((output / "release-index.json").read_text())
         self.assertEqual(index["release_tag"], TAG)
         self.assertEqual(index["revision"], REVISION)
-        self.assertEqual(index["producers"], ["linux-x64", "macos-arm64"])
+        self.assertEqual(
+            index["producers"], ["linux-x64", "macos-arm64", "windows-x64"]
+        )
 
     def test_tampered_asset_fails_closed(self):
         incoming = self.create_all_bundles()
@@ -100,7 +109,7 @@ class ReleaseArtifactTest(unittest.TestCase):
         with self.assertRaisesRegex(release_artifact.ArtifactError, "size|checksum"):
             release_artifact.verify_bundles(
                 input_root=incoming,
-                required_producers=["macos-arm64", "linux-x64"],
+                required_producers=REQUIRED_PRODUCERS,
                 release_tag=TAG,
                 revision=REVISION,
                 output_dir=self.root / "verified",
@@ -129,7 +138,7 @@ class ReleaseArtifactTest(unittest.TestCase):
         with self.assertRaisesRegex(release_artifact.ArtifactError, "producer set"):
             release_artifact.verify_bundles(
                 input_root=incoming,
-                required_producers=["macos-arm64", "linux-x64"],
+                required_producers=REQUIRED_PRODUCERS,
                 release_tag=TAG,
                 revision=REVISION,
                 output_dir=self.root / "verified",
@@ -142,7 +151,7 @@ class ReleaseArtifactTest(unittest.TestCase):
         with self.assertRaisesRegex(release_artifact.ArtifactError, "unexpected"):
             release_artifact.verify_bundles(
                 input_root=incoming,
-                required_producers=["macos-arm64", "linux-x64"],
+                required_producers=REQUIRED_PRODUCERS,
                 release_tag=TAG,
                 revision=REVISION,
                 output_dir=self.root / "verified",
@@ -154,7 +163,7 @@ class ReleaseArtifactTest(unittest.TestCase):
         with self.assertRaisesRegex(release_artifact.ArtifactError, "release_tag"):
             release_artifact.verify_bundles(
                 input_root=incoming,
-                required_producers=["macos-arm64", "linux-x64"],
+                required_producers=REQUIRED_PRODUCERS,
                 release_tag="v2026.08.8",
                 revision=REVISION,
                 output_dir=self.root / "verified",
@@ -162,27 +171,17 @@ class ReleaseArtifactTest(unittest.TestCase):
 
     def test_required_producer_arguments_must_exactly_match_policy(self):
         incoming = self.create_all_bundles()
-        windows_policy = release_artifact.ProducerPolicy(
-            platform="windows",
-            architecture="x86_64",
-            asset_suffix=".exe",
-            asset_count=1,
-        )
+        with self.assertRaisesRegex(release_artifact.ArtifactError, "release policy"):
+            release_artifact.verify_bundles(
+                input_root=incoming,
+                required_producers=["macos-arm64"],
+                release_tag=TAG,
+                revision=REVISION,
+                output_dir=self.root / "verified",
+            )
 
-        with mock.patch.dict(
-            release_artifact.PRODUCER_POLICIES,
-            {"windows-x64": windows_policy},
-        ):
-            with self.assertRaisesRegex(
-                release_artifact.ArtifactError, "release policy"
-            ):
-                release_artifact.verify_bundles(
-                    input_root=incoming,
-                    required_producers=["macos-arm64", "linux-x64"],
-                    release_tag=TAG,
-                    revision=REVISION,
-                    output_dir=self.root / "verified",
-                )
+    def test_policy_requires_exact_three_platform_producer_set(self):
+        self.assertEqual(set(release_artifact.PRODUCER_POLICIES), set(REQUIRED_PRODUCERS))
 
     def test_draft_release_assets_must_match_exactly(self):
         verified = self.root / "verified"
@@ -344,12 +343,45 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r"^  publish:$", workflow, re.MULTILINE)), 1)
         self.assertIn("needs.produce_macos.result == 'success'", workflow)
         self.assertIn("needs.produce_linux.result == 'success'", workflow)
+        self.assertIn("needs.produce_windows.result == 'success'", workflow)
         self.assertIn("--required-producer macos-arm64", workflow)
         self.assertIn("--required-producer linux-x64", workflow)
+        self.assertIn("--required-producer windows-x64", workflow)
         self.assertIn("runs-on: ubuntu-22.04", workflow)
+        self.assertEqual(workflow.count("environment:\n      name: windows-release"), 1)
         self.assertRegex(workflow, r"(?m)^on:\n  push:\n    tags:$")
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("workflow_dispatch:", workflow)
+
+    def test_exact_three_producers_feed_the_publisher(self):
+        workflow = (REPO_ROOT / ".github/workflows/macos-release.yml").read_text()
+        expected_jobs = {"produce_macos", "produce_linux", "produce_windows"}
+        expected_artifacts = {
+            "release-macos-arm64",
+            "release-linux-x64",
+            "release-windows-x64",
+        }
+        expected_producers = {"macos-arm64", "linux-x64", "windows-x64"}
+
+        producer_jobs = set(
+            re.findall(r"(?m)^  (produce_[a-z]+):$", workflow)
+        )
+        self.assertEqual(producer_jobs, expected_jobs)
+
+        publisher = workflow[workflow.index("  publish:") :]
+        required_results = set(
+            re.findall(r"needs\.(produce_[a-z]+)\.result == 'success'", publisher)
+        )
+        downloaded_artifacts = set(
+            re.findall(r"(?m)^          name: (release-[a-z0-9-]+)$", publisher)
+        )
+        required_producers = set(
+            re.findall(r"--required-producer ([a-z0-9-]+)", publisher)
+        )
+
+        self.assertEqual(required_results, expected_jobs)
+        self.assertEqual(downloaded_artifacts, expected_artifacts)
+        self.assertEqual(required_producers, expected_producers)
 
     def test_release_is_verified_before_the_draft_becomes_public(self):
         workflow = (REPO_ROOT / ".github/workflows/macos-release.yml").read_text()

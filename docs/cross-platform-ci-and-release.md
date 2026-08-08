@@ -54,8 +54,8 @@ contract. A fake result must not be reported as hardware qualification.
 
 ## Release producer/publisher boundary
 
-The tag workflow requires macOS and Linux release artifacts. It has three
-stages:
+The tag workflow requires macOS arm64, Linux x64, and Windows x64 release
+artifacts. It has five stages:
 
 1. `validate` accepts only a calendar-version `v*` tag whose commit is contained
    in `main`.
@@ -68,7 +68,17 @@ stages:
    x86_64 AppImage on Ubuntu 22.04 (glibc 2.35), verifies its desktop/resource
    layout and ELF dependencies, performs an isolated-XDG virtual-X11 smoke, and
    uploads the AppImage with the same checksum/tag/revision contract.
-3. `publish` is the only job with `contents: write`. It downloads every required
+3. `produce_linux` builds the x86_64 AppImage on Ubuntu 22.04 (glibc 2.35),
+   verifies its desktop/resource layout and ELF dependencies, performs an
+   isolated-XDG virtual-X11 smoke, and uploads the AppImage with the same
+   checksum/tag/revision contract.
+4. `produce_windows` waits behind the protected `windows-release` Environment,
+   requires the selected provider's protected one-file signing interface, builds
+   the per-user NSIS installer, verifies the exact Authenticode identity and
+   timestamp on the installer and installed executable payloads, and exercises
+   preservation/removal before uploading its producer bundle. Until a provider
+   and CI identity are selected, this job intentionally fails at preflight.
+5. `publish` is the only job with `contents: write`. It downloads every required
    producer bundle, requires the producer set to match exactly, recomputes all
    sizes and SHA-256 digests, and verifies tag/revision/platform metadata before
    it creates a GitHub Release.
@@ -90,9 +100,9 @@ replacement draft. A failure before publication keeps the release private and
 attempts to remove only the draft created by that run. An existing release is
 never overwritten.
 
-Signing and notarization secrets exist only in the macOS producer. The
-publisher receives no signing credentials, and producers never receive
-`contents: write`.
+Signing and notarization secrets exist only in their protected platform
+producer. The publisher receives no signing credentials, and producers never
+receive `contents: write`.
 
 ## Adding a release platform
 
