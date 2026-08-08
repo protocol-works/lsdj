@@ -13,7 +13,7 @@ import sys
 
 import pytest
 
-from lsdj import sa3
+from lsdj import runtime_paths, sa3
 
 FAKE_WAV = b"RIFFfakewavdata"
 
@@ -52,21 +52,20 @@ time.sleep(30)
 def make_checkout(root: pathlib.Path, stub_body: str) -> pathlib.Path:
     """Lay out <root>/optimized/mlx with a portable fake CLI runtime."""
     mlx_dir = root / "optimized" / "mlx"
-    (mlx_dir / ".venv" / "bin").mkdir(parents=True)
+    venv = mlx_dir / ".venv"
+    python = runtime_paths.venv_python(venv)
+    python.parent.mkdir(parents=True)
     (mlx_dir / "scripts").mkdir()
     (mlx_dir / "scripts" / "sa3_mlx.py").write_text(stub_body)
-    (mlx_dir / ".venv" / "pyvenv.cfg").write_text(
+    (venv / "pyvenv.cfg").write_text(
         f"home = {sys.base_prefix}\n"
         "include-system-site-packages = false\n"
         f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
     )
-    python = mlx_dir / ".venv" / "bin" / "python"
     if os.name == "nt":
         # Creating symlinks normally requires elevated Windows privileges.
-        # Keep the extensionless contract probe and the executable name that
-        # CreateProcess appends when an argv program has no extension.
+        # A copied interpreter plus pyvenv.cfg exercises the real Scripts layout.
         shutil.copyfile(sys.executable, python)
-        shutil.copyfile(sys.executable, python.with_suffix(".exe"))
     else:
         # Preserve relocatable interpreter/library relationships on Unix.
         python.symlink_to(sys.executable)
@@ -74,6 +73,10 @@ def make_checkout(root: pathlib.Path, stub_body: str) -> pathlib.Path:
 
 
 class TestResolveMlxDir:
+    def test_fixture_uses_the_platform_native_venv_interpreter(self, tmp_path):
+        mlx_dir = make_checkout(tmp_path / "checkout", SUCCESS_STUB)
+        assert runtime_paths.venv_python(mlx_dir / ".venv").is_file()
+
     def test_env_override_wins(self, tmp_path):
         mlx_dir = make_checkout(tmp_path / "elsewhere", SUCCESS_STUB)
         resolved = sa3.resolve_mlx_dir(
