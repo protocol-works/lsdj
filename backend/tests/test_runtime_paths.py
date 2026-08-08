@@ -28,16 +28,31 @@ def test_all_roots_preserve_spaces_and_non_ascii():
     )
 
 
-def test_compatibility_overrides_win_without_home_guessing():
+def test_backend_neutral_override_wins_without_home_guessing():
     env = {
         "LSDJ_ASSETS_HOME": "/host/assets",
-        "SA3_MLX_HOME": "/custom/SA 3",
+        "SA3_HOME": "/custom/portable SA 3",
+        "SA3_TFLITE_HOME": "/custom/TFLite SA 3",
+        "SA3_MLX_HOME": "/custom/MLX SA 3",
+    }
+    assert runtime_paths.sa3_home(env) == pathlib.Path("/custom/portable SA 3")
+
+
+def test_backend_specific_compatibility_overrides_win_without_home_guessing():
+    env = {
+        "LSDJ_ASSETS_HOME": "/host/assets",
+        "SA3_TFLITE_HOME": "/custom/TFLite SA 3",
+        "SA3_MLX_HOME": "/custom/MLX SA 3",
         "SA3_LORAS_HOME": "/custom/适配器",
     }
-    assert runtime_paths.sa3_home(env) == pathlib.Path("/custom/SA 3")
+    assert runtime_paths.sa3_home(env) == pathlib.Path("/custom/TFLite SA 3")
     assert runtime_paths.loras_home(env) == pathlib.Path("/custom/适配器")
     assert runtime_paths.sa3_home({}) is None
     assert runtime_paths.loras_home({}) is None
+
+    assert runtime_paths.sa3_home({"SA3_MLX_HOME": "/custom/MLX SA 3"}) == (
+        pathlib.Path("/custom/MLX SA 3")
+    )
 
 
 def test_venv_interpreter_layout_is_platform_specific_and_structured():

@@ -18,6 +18,7 @@
 //! four readiness states). The webview never gets filesystem access — the same
 //! trust boundary as the rest of the library surface.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +30,9 @@ use tauri::{AppHandle, Emitter};
 use crate::child_process::{
     read_bounded_lines, sanitize_diagnostic, DiagnosticTail, SupervisedChild,
 };
-use crate::runtime_installer::archive::{extract_tar_gz_cancellable, ArchiveLimits};
+use crate::runtime_installer::archive::{
+    extract_tar_gz_cancellable, extract_zip_cancellable, ArchiveLimits,
+};
 use crate::runtime_installer::download::{
     client as installer_client, download_verified, link_or_copy_verified, verify_file_cancellable,
     PinnedArtifact,
@@ -46,6 +49,7 @@ const SA3_MISSING: &str = "missing";
 const SA3_VENV_MISSING: &str = "venv_missing";
 const SA3_NOT_WARMED: &str = "not_warmed";
 const SA3_READY: &str = "ready";
+const SA3_FAILED: &str = "failed";
 
 const WARMED_STAMP: &str = ".lsdj-warmed";
 
@@ -55,7 +59,57 @@ const WARMED_STAMP: &str = ".lsdj-warmed";
 // installer doesn't know the commit). Lives beside `.lsdj-warmed` in optimized/mlx.
 const SOURCE_STAMP: &str = ".lsdj-source.json";
 const INSTALL_MANIFEST_STAMP: &str = ".lsdj-install-manifest.json";
-const REQUIREMENTS_LOCK: &str = include_str!("../../scripts/sa3-requirements.lock");
+const MLX_REQUIREMENTS_LOCK: &str = include_str!("../../scripts/sa3-requirements.lock");
+const TFLITE_REQUIREMENTS_LOCK: &str = include_str!("../../scripts/sa3-tflite-requirements.lock");
+const TFLITE_PROVENANCE_STAMP: &str = ".lsdj-provenance.json";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sa3Backend {
+    Mlx,
+    Tflite,
+}
+
+impl Sa3Backend {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Mlx => "mlx",
+            Self::Tflite => "tflite",
+        }
+    }
+
+    fn runtime_dir(self, checkout: &Path) -> PathBuf {
+        checkout.join("optimized").join(match self {
+            Self::Mlx => "mlx",
+            Self::Tflite => "tflite",
+        })
+    }
+
+    fn script(self) -> &'static str {
+        match self {
+            Self::Mlx => "sa3_mlx.py",
+            Self::Tflite => "sa3_tflite.py",
+        }
+    }
+
+    fn requirements(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Mlx => ("sa3-requirements.lock", MLX_REQUIREMENTS_LOCK),
+            Self::Tflite => ("sa3-tflite-requirements.lock", TFLITE_REQUIREMENTS_LOCK),
+        }
+    }
+}
+
+fn sa3_backend_for(os: &str, arch: &str) -> Result<Sa3Backend, String> {
+    match (os, arch) {
+        ("macos", "aarch64") => Ok(Sa3Backend::Mlx),
+        ("linux", "x86_64") | ("windows", "x86_64") => Ok(Sa3Backend::Tflite),
+        _ => Err(format!("Stable Audio 3 is unsupported on {os}/{arch}")),
+    }
+}
+
+fn host_sa3_backend() -> Result<Sa3Backend, String> {
+    sa3_backend_for(std::env::consts::OS, std::env::consts::ARCH)
+}
 
 // --- Host-resolved paths (mirrors the explicit Python environment) --------
 
@@ -89,18 +143,19 @@ fn sa3_candidates() -> Vec<PathBuf> {
     vec![sa3_app_home()]
 }
 
-/// The SA3 install state + the resolved checkout root (mirrors `sa3.readiness`):
-/// the first candidate with an `optimized/mlx` dir, classified `missing` /
-/// `venv_missing` / `not_warmed` / `ready`.
+/// The SA3 install state + resolved checkout for this platform's backend.
 fn sa3_status() -> (&'static str, Option<PathBuf>) {
-    let mut first_with_mlx: Option<PathBuf> = None;
+    let Ok(backend) = host_sa3_backend() else {
+        return (SA3_FAILED, None);
+    };
+    let mut first_with_runtime: Option<PathBuf> = None;
     for checkout in sa3_candidates() {
-        let mlx = checkout.join("optimized").join("mlx");
-        if !mlx.is_dir() {
+        let runtime = backend.runtime_dir(&checkout);
+        if !runtime.is_dir() {
             continue;
         }
-        if first_with_mlx.is_none() {
-            first_with_mlx = Some(checkout.clone());
+        if first_with_runtime.is_none() {
+            first_with_runtime = Some(checkout.clone());
         }
 
         // A manifest marks an app-managed install. Never let its legacy stamps
@@ -113,26 +168,31 @@ fn sa3_status() -> (&'static str, Option<PathBuf>) {
             std::fs::symlink_metadata(&manifest),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound
         ) {
-            let state = if validate_sa3_install(&checkout, &sa3_pin()).is_ok() {
+            let state = if validate_sa3_install(&checkout, &sa3_pin(), backend).is_ok() {
                 SA3_READY
             } else {
-                SA3_NOT_WARMED
+                SA3_FAILED
             };
             return (state, Some(checkout));
         }
-        let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
-        let script = mlx.join("scripts").join("sa3_mlx.py");
+        // Preserve the historical hand-installed MLX probe on macOS. Portable
+        // installs require the authenticated app manifest and provenance stamp.
+        if backend == Sa3Backend::Tflite {
+            return (SA3_FAILED, Some(checkout));
+        }
+        let python = crate::platform_paths::venv_python(&runtime.join(".venv"));
+        let script = runtime.join("scripts").join(backend.script());
         if !(python.is_file() && script.is_file()) {
             continue;
         }
-        let state = if mlx.join(WARMED_STAMP).is_file() {
+        let state = if runtime.join(WARMED_STAMP).is_file() {
             SA3_READY
         } else {
             SA3_NOT_WARMED
         };
         return (state, Some(checkout));
     }
-    match first_with_mlx {
+    match first_with_runtime {
         Some(checkout) => (SA3_VENV_MISSING, Some(checkout)),
         None => (SA3_MISSING, None),
     }
@@ -150,7 +210,9 @@ pub struct Sa3Source {
 }
 
 fn source_stamp_path(checkout: &Path) -> PathBuf {
-    checkout.join("optimized").join("mlx").join(SOURCE_STAMP)
+    host_sa3_backend()
+        .map(|backend| backend.runtime_dir(checkout).join(SOURCE_STAMP))
+        .unwrap_or_else(|_| checkout.join(SOURCE_STAMP))
 }
 
 /// The source recorded in a checkout's stamp, or `None` when absent (a checkout
@@ -236,9 +298,12 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
 /// one is summed once.
 fn sa3_checkout_size(checkout: &Path) -> u64 {
     static CACHE: Mutex<Option<(PathBuf, std::time::SystemTime, u64)>> = Mutex::new(None);
-    let stamp_mtime = std::fs::metadata(checkout.join("optimized").join("mlx").join(WARMED_STAMP))
-        .and_then(|m| m.modified())
-        .ok();
+    let stamp_mtime = host_sa3_backend()
+        .ok()
+        .and_then(|backend| {
+            std::fs::metadata(backend.runtime_dir(checkout).join(WARMED_STAMP)).ok()
+        })
+        .and_then(|metadata| metadata.modified().ok());
     let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
     if let (Some(mtime), Some((path, cached_mtime, size))) = (stamp_mtime, cache.as_ref()) {
         if path == checkout && *cached_mtime == mtime {
@@ -301,7 +366,11 @@ pub struct MagentaStatus {
 #[serde(rename_all = "camelCase")]
 pub struct Sa3Status {
     state: &'static str,
+    backend: Option<&'static str>,
     size_bytes: u64,
+    /// Exact unique model bytes in the selected backend's pinned manifest. The
+    /// UI shows this before install; source/runtime/wheel overhead is additional.
+    download_bytes: u64,
     checkout: Option<String>,
     /// The source the installed checkout was fetched from (`None` when the
     /// checkout predates stamping or was placed by hand).
@@ -349,6 +418,10 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         })
         .collect();
     let (sa3_state, sa3_checkout) = sa3_status();
+    let backend = host_sa3_backend().ok();
+    let download_bytes = backend
+        .and_then(|backend| model_download_bytes(&sa3_pin(), backend).ok())
+        .unwrap_or(0);
     let sa3_size = sa3_checkout
         .as_ref()
         .map(|c| sa3_checkout_size(c))
@@ -366,7 +439,9 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         },
         sa3: Sa3Status {
             state: sa3_state,
+            backend: backend.map(Sa3Backend::wire_name),
             size_bytes: sa3_size,
+            download_bytes,
             checkout: sa3_checkout.map(|c| c.to_string_lossy().into_owned()),
             installed_source,
             pinned_source: pinned,
@@ -432,6 +507,12 @@ struct ArchivePin {
     archive_root: String,
     max_files: u64,
     max_expanded_bytes: u64,
+    #[serde(default = "default_archive_format")]
+    archive_format: String,
+}
+
+fn default_archive_format() -> String {
+    "tar.gz".into()
 }
 
 impl ArchivePin {
@@ -440,6 +521,37 @@ impl ArchivePin {
             max_files: self.max_files,
             max_expanded_bytes: self.max_expanded_bytes,
             materialize_safe_links: false,
+        }
+    }
+
+    fn extract(
+        &self,
+        source: std::fs::File,
+        destination: &Path,
+        materialize_safe_links: bool,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), String> {
+        let limits = ArchiveLimits {
+            materialize_safe_links,
+            ..self.limits()
+        };
+        match self.archive_format.as_str() {
+            "tar.gz" => extract_tar_gz_cancellable(
+                source,
+                destination,
+                &self.archive_root,
+                limits,
+                is_cancelled,
+            ),
+            "zip" if !materialize_safe_links => extract_zip_cancellable(
+                source,
+                destination,
+                &self.archive_root,
+                limits,
+                is_cancelled,
+            ),
+            "zip" => Err("ZIP runtime archives may not contain links".into()),
+            _ => Err("runtime archive format is unsupported".into()),
         }
     }
 }
@@ -525,9 +637,63 @@ struct Sa3Pin {
 }
 
 const SA3_PIN_JSON: &str = include_str!("../../sa3-pin.json");
+const TFLITE_PIN_JSON: &str = include_str!("../../sa3-tflite-pin.json");
 
 fn sa3_pin() -> Sa3Pin {
     serde_json::from_str(SA3_PIN_JSON).expect("sa3-pin.json is valid JSON")
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TfliteRuntimePin {
+    repo: String,
+    revision: String,
+    subdirectory: String,
+    entrypoint: String,
+    requirements_lock: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TfliteArtifactPin {
+    path: String,
+    install_path: String,
+    sha256: String,
+    size: u64,
+}
+
+impl TfliteArtifactPin {
+    fn artifact(&self, models: &TfliteModelsPin) -> PinnedArtifact {
+        PinnedArtifact {
+            url: format!(
+                "https://huggingface.co/{}/resolve/{}/{}?download=true",
+                models.repo, models.revision, self.path
+            ),
+            sha256: self.sha256.clone(),
+            size: self.size,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+struct TfliteModelsPin {
+    repo: String,
+    revision: String,
+    precision: String,
+    shared: Vec<TfliteArtifactPin>,
+    bundles: BTreeMap<String, Vec<TfliteArtifactPin>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TflitePin {
+    schema_version: u32,
+    runtime: TfliteRuntimePin,
+    models: TfliteModelsPin,
+}
+
+fn tflite_pin() -> TflitePin {
+    serde_json::from_str(TFLITE_PIN_JSON).expect("sa3-tflite-pin.json is valid JSON")
 }
 
 /// Shared install state: at most one install runs at a time; the running stage's
@@ -850,6 +1016,10 @@ fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Re
 fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Result<(), String> {
     let pin = sa3_pin();
     validate_sa3_pin(&pin)?;
+    let backend = host_sa3_backend()?;
+    if backend == Sa3Backend::Tflite {
+        validate_tflite_pin(&tflite_pin(), &pin)?;
+    }
     let uv = host_uv_pin(&pin)?;
     let python = host_python_pin(&pin)?;
     let staging = crate::platform_paths::get().staging().join("sa3");
@@ -868,14 +1038,22 @@ fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Re
     // renames before doing any network work.
     let install_cancelled = || shared.cancelled.load(Ordering::Acquire);
     promotion::recover(&home, &backup, |path| {
-        validate_sa3_install_cancellable(path, &pin, &install_cancelled)
+        validate_sa3_install_cancellable(path, &pin, backend, &install_cancelled)
     })?;
     cancelled(shared)?;
-    build_sa3_candidate(progress, shared, &pin, uv, python, &work, &candidate)?;
+    build_sa3_candidate(
+        progress,
+        shared,
+        &pin,
+        backend,
+        (uv, python),
+        &work,
+        &candidate,
+    )?;
     cancelled(shared)?;
     progress("promote", None, None);
     promotion::promote(&candidate, &home, &backup, |path| {
-        validate_sa3_install_cancellable(path, &pin, &install_cancelled)
+        validate_sa3_install_cancellable(path, &pin, backend, &install_cancelled)
     })?;
     // Verified blobs are hard-linked into the promoted tree. Removing retry
     // state here reclaims only the staging directory entries, not model bytes.
@@ -887,11 +1065,12 @@ fn build_sa3_candidate(
     progress: &Progress,
     shared: &InstallShared,
     pin: &Sa3Pin,
-    uv: &UvPin,
-    python: &PythonPin,
+    backend: Sa3Backend,
+    runtime_pins: (&UvPin, &PythonPin),
     work: &Path,
     candidate: &Path,
 ) -> Result<(), String> {
+    let (uv, python) = runtime_pins;
     let blobs = work.join("blobs");
     std::fs::create_dir_all(&blobs)
         .map_err(|error| format!("cannot create SA3 blob staging: {error}"))?;
@@ -911,14 +1090,10 @@ fn build_sa3_candidate(
     progress("extract", None, None);
     let source = std::fs::File::open(&source_archive)
         .map_err(|error| format!("cannot open verified SA3 source: {error}"))?;
-    extract_tar_gz_cancellable(
-        source,
-        candidate,
-        &pin.source.archive_root,
-        pin.source.limits(),
-        &|| shared.cancelled.load(Ordering::Acquire),
-    )?;
-    validate_source_layout(candidate)?;
+    pin.source.extract(source, candidate, false, &|| {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
+    validate_source_layout(candidate, backend)?;
     cancelled(shared)?;
 
     progress("fetch", None, Some(format!("uv {}", uv.version)));
@@ -933,13 +1108,9 @@ fn build_sa3_candidate(
     }
     let source = std::fs::File::open(&uv_archive)
         .map_err(|error| format!("cannot open verified uv archive: {error}"))?;
-    extract_tar_gz_cancellable(
-        source,
-        &uv_dir,
-        &uv.archive.archive_root,
-        uv.archive.limits(),
-        &|| shared.cancelled.load(Ordering::Acquire),
-    )?;
+    uv.archive.extract(source, &uv_dir, false, &|| {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
     let uv_executable = uv_dir.join(&uv.executable);
     if !uv_executable.is_file() {
         return Err("verified uv archive did not contain the pinned executable".into());
@@ -955,24 +1126,13 @@ fn build_sa3_candidate(
         None,
         || shared.cancelled.load(Ordering::Acquire),
     )?;
-    let mlx = candidate.join("optimized").join("mlx");
-    let python_dir = mlx.join(".python");
+    let runtime = backend.runtime_dir(candidate);
+    let python_dir = runtime.join(".python");
     let source = std::fs::File::open(&python_archive)
         .map_err(|error| format!("cannot open verified Python archive: {error}"))?;
-    extract_tar_gz_cancellable(
-        source,
-        &python_dir,
-        &python.archive.archive_root,
-        ArchiveLimits {
-            max_files: python.archive.max_files,
-            max_expanded_bytes: python.archive.max_expanded_bytes,
-            // python-build-standalone includes convenience symlinks. The
-            // extractor validates they remain inside the archive root and
-            // materializes them as regular files, never filesystem links.
-            materialize_safe_links: true,
-        },
-        &|| shared.cancelled.load(Ordering::Acquire),
-    )?;
+    python.archive.extract(source, &python_dir, true, &|| {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
     let python_executable = python_dir.join(&python.executable);
     if !python_executable.is_file() {
         return Err("verified Python archive did not contain the pinned executable".into());
@@ -982,44 +1142,137 @@ fn build_sa3_candidate(
     let hf_token = std::env::var("HF_TOKEN")
         .ok()
         .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok());
-    let model_blobs = blobs.join("models");
-    let model_dir = candidate
-        .join("optimized")
-        .join("mlx")
-        .join("models")
-        .join("mlx");
-    for model in &pin.models.artifacts {
-        cancelled(shared)?;
-        let filename = model.filename()?;
-        progress("fetch", None, Some(filename.into()));
-        let artifact = model.artifact(&pin.models)?;
-        let staged = model_blobs.join(filename);
-        download_verified(&client, &artifact, &staged, hf_token.as_deref(), || {
-            shared.cancelled.load(Ordering::Acquire)
-        })?;
-        link_or_copy_verified(&staged, &model_dir.join(filename), &artifact, &|| {
-            shared.cancelled.load(Ordering::Acquire)
-        })?;
-    }
+    install_sa3_models(
+        progress,
+        shared,
+        pin,
+        backend,
+        &blobs.join("models"),
+        candidate,
+        hf_token.as_deref(),
+    )?;
 
     progress("install", None, None);
-    let requirements = mlx.join(&pin.runtime.requirements);
-    write_synced(&requirements, REQUIREMENTS_LOCK.as_bytes())?;
+    let (requirements_name, requirements_lock) = backend.requirements();
+    let requirements = runtime.join(requirements_name);
+    write_synced(&requirements, requirements_lock.as_bytes())?;
     run_sa3_setup(
         shared,
         &uv_executable,
         &python_executable,
-        &mlx,
+        &runtime,
         work,
-        &pin.runtime,
+        requirements_name,
     )?;
-    warm_sa3(shared, &mlx, work)?;
+    warm_sa3(shared, &runtime, work, backend)?;
     write_source_stamp(candidate, &pinned_source())?;
+    if backend == Sa3Backend::Tflite {
+        write_tflite_provenance(&runtime, &tflite_pin())?;
+    }
     write_synced(
         &candidate.join(INSTALL_MANIFEST_STAMP),
-        SA3_PIN_JSON.as_bytes(),
+        install_manifest(backend).as_bytes(),
     )?;
-    validate_sa3_install_cancellable(candidate, pin, &|| shared.cancelled.load(Ordering::Acquire))
+    validate_sa3_install_cancellable(candidate, pin, backend, &|| {
+        shared.cancelled.load(Ordering::Acquire)
+    })
+}
+
+fn install_sa3_models(
+    progress: &Progress,
+    shared: &InstallShared,
+    pin: &Sa3Pin,
+    backend: Sa3Backend,
+    model_blobs: &Path,
+    candidate: &Path,
+    hf_token: Option<&str>,
+) -> Result<(), String> {
+    let client = installer_client()?;
+    let artifacts = model_artifacts(pin, backend)?;
+    for (install_path, artifact) in artifacts {
+        cancelled(shared)?;
+        progress(
+            "fetch",
+            None,
+            Some(install_path.to_string_lossy().into_owned()),
+        );
+        let staged = model_blobs.join(&install_path);
+        download_verified(&client, &artifact, &staged, hf_token, || {
+            shared.cancelled.load(Ordering::Acquire)
+        })?;
+        link_or_copy_verified(&staged, &candidate.join(&install_path), &artifact, &|| {
+            shared.cancelled.load(Ordering::Acquire)
+        })?;
+    }
+    Ok(())
+}
+
+fn model_artifacts(
+    pin: &Sa3Pin,
+    backend: Sa3Backend,
+) -> Result<BTreeMap<PathBuf, PinnedArtifact>, String> {
+    match backend {
+        Sa3Backend::Mlx => {
+            let mut artifacts = BTreeMap::new();
+            for model in &pin.models.artifacts {
+                let filename = model.filename()?;
+                let install_path = PathBuf::from("optimized/mlx/models/mlx").join(filename);
+                artifacts.insert(install_path, model.artifact(&pin.models)?);
+            }
+            Ok(artifacts)
+        }
+        Sa3Backend::Tflite => tflite_artifacts(&tflite_pin()),
+    }
+}
+
+fn model_download_bytes(pin: &Sa3Pin, backend: Sa3Backend) -> Result<u64, String> {
+    model_artifacts(pin, backend)?
+        .values()
+        .try_fold(0u64, |total, artifact| {
+            total
+                .checked_add(artifact.size)
+                .ok_or_else(|| "SA3 model download size overflow".to_string())
+        })
+}
+
+fn tflite_artifacts(pin: &TflitePin) -> Result<BTreeMap<PathBuf, PinnedArtifact>, String> {
+    let mut artifacts = BTreeMap::new();
+    for model in pin
+        .models
+        .shared
+        .iter()
+        .chain(pin.models.bundles.values().flatten())
+    {
+        let install_path = checked_install_path(&model.install_path)?;
+        let artifact = model.artifact(&pin.models);
+        artifact.validate()?;
+        if let Some(existing) = artifacts.insert(install_path.clone(), artifact.clone()) {
+            if existing.url != artifact.url
+                || existing.sha256 != artifact.sha256
+                || existing.size != artifact.size
+            {
+                return Err(format!(
+                    "TFLite model manifest disagrees about {}",
+                    install_path.display()
+                ));
+            }
+        }
+    }
+    Ok(artifacts)
+}
+
+fn checked_install_path(value: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if value.contains('\\')
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || !value.starts_with("models/tflite/")
+    {
+        return Err("TFLite model install path is unsafe".into());
+    }
+    Ok(PathBuf::from("optimized/tflite").join(path))
 }
 
 fn verify_uv_version(
@@ -1069,14 +1322,14 @@ fn run_sa3_setup(
     shared: &InstallShared,
     uv: &Path,
     runtime_python: &Path,
-    mlx: &Path,
+    runtime_dir: &Path,
     work: &Path,
-    runtime: &RuntimePin,
+    requirements_name: &str,
 ) -> Result<(), String> {
-    let venv = mlx.join(".venv");
+    let venv = runtime_dir.join(".venv");
     let cache = work.join("uv-cache");
 
-    let mut create_venv = uv_command(uv, mlx, &cache);
+    let mut create_venv = uv_command(uv, runtime_dir, &cache);
     create_venv.args([
         "venv",
         "--relocatable",
@@ -1095,8 +1348,8 @@ fn run_sa3_setup(
     if !python.is_file() {
         return Err("uv did not create the platform virtual-environment interpreter".into());
     }
-    let requirements = mlx.join(&runtime.requirements);
-    let mut install_dependencies = uv_command(uv, mlx, &cache);
+    let requirements = runtime_dir.join(requirements_name);
+    let mut install_dependencies = uv_command(uv, runtime_dir, &cache);
     install_dependencies
         .args(["pip", "install", "--python"])
         .arg(&python)
@@ -1131,9 +1384,14 @@ fn uv_command(uv: &Path, cwd: &Path, cache: &Path) -> Command {
     command
 }
 
-fn warm_sa3(shared: &InstallShared, mlx: &Path, work: &Path) -> Result<(), String> {
-    let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
-    let script = mlx.join("scripts").join("sa3_mlx.py");
+fn warm_sa3(
+    shared: &InstallShared,
+    runtime_dir: &Path,
+    work: &Path,
+    backend: Sa3Backend,
+) -> Result<(), String> {
+    let python = crate::platform_paths::venv_python(&runtime_dir.join(".venv"));
+    let script = runtime_dir.join("scripts").join(backend.script());
     let warm_dir = work.join("warm");
     if warm_dir.exists() {
         std::fs::remove_dir_all(&warm_dir)
@@ -1150,7 +1408,7 @@ fn warm_sa3(shared: &InstallShared, mlx: &Path, work: &Path) -> Result<(), Strin
         let output = warm_dir.join(format!("{dit}.wav"));
         let mut command = Command::new(&python);
         command
-            .current_dir(mlx)
+            .current_dir(runtime_dir)
             // All required weights were downloaded and verified by Rust. Force
             // the upstream helper offline so it cannot silently fetch a mutable
             // replacement during candidate validation.
@@ -1170,47 +1428,51 @@ fn warm_sa3(shared: &InstallShared, mlx: &Path, work: &Path) -> Result<(), Strin
                 "--out",
             ])
             .arg(&output);
+        if backend == Sa3Backend::Tflite {
+            command.args(["--precision", "fp32", "--threads", "4"]);
+        }
         stream_child(shared, "sa3-warm", command, |_| {})?;
         if !output.is_file() {
             return Err(format!("SA3 warm-up did not produce {dit} output"));
         }
     }
-    write_synced(&mlx.join(WARMED_STAMP), b"")?;
+    write_synced(&runtime_dir.join(WARMED_STAMP), b"")?;
     let _ = std::fs::remove_dir_all(warm_dir);
     Ok(())
 }
 
-fn validate_source_layout(checkout: &Path) -> Result<(), String> {
-    let mlx = checkout.join("optimized").join("mlx");
-    if !mlx.is_dir() || !mlx.join("scripts").join("sa3_mlx.py").is_file() {
+fn validate_source_layout(checkout: &Path, backend: Sa3Backend) -> Result<(), String> {
+    let runtime = backend.runtime_dir(checkout);
+    if !runtime.is_dir() || !runtime.join("scripts").join(backend.script()).is_file() {
         return Err("verified source archive has an unexpected SA3 layout".into());
     }
     Ok(())
 }
 
-fn validate_sa3_install(checkout: &Path, pin: &Sa3Pin) -> Result<(), String> {
-    validate_sa3_install_cancellable(checkout, pin, &|| false)
+fn validate_sa3_install(checkout: &Path, pin: &Sa3Pin, backend: Sa3Backend) -> Result<(), String> {
+    validate_sa3_install_cancellable(checkout, pin, backend, &|| false)
 }
 
 fn validate_sa3_install_cancellable(
     checkout: &Path,
     pin: &Sa3Pin,
+    backend: Sa3Backend,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     if is_cancelled() {
         return Err("cancelled".into());
     }
-    validate_source_layout(checkout)?;
-    let mlx = checkout.join("optimized").join("mlx");
-    let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
+    validate_source_layout(checkout, backend)?;
+    let runtime = backend.runtime_dir(checkout);
+    let python = crate::platform_paths::venv_python(&runtime.join(".venv"));
     if !python.is_file() {
         return Err("SA3 virtual-environment interpreter is missing".into());
     }
-    if !mlx.join(WARMED_STAMP).is_file() {
+    if !runtime.join(WARMED_STAMP).is_file() {
         return Err("SA3 warm-up stamp is missing".into());
     }
     let runtime_python = host_python_pin(pin)?;
-    if !mlx
+    if !runtime
         .join(".python")
         .join(&runtime_python.executable)
         .is_file()
@@ -1228,35 +1490,70 @@ fn validate_sa3_install_cancellable(
     }
     let installed_manifest = std::fs::read_to_string(&manifest_path)
         .map_err(|error| format!("cannot read SA3 install manifest: {error}"))?;
-    if installed_manifest != SA3_PIN_JSON {
+    if installed_manifest != install_manifest(backend) {
         return Err("SA3 install manifest does not match this application".into());
     }
-    validate_sa3_model_artifacts(checkout, pin, is_cancelled)
+    if backend == Sa3Backend::Tflite {
+        validate_tflite_provenance(&runtime, &tflite_pin())?;
+    }
+    validate_sa3_model_artifacts(checkout, pin, backend, is_cancelled)
 }
 
 fn validate_sa3_model_artifacts(
     checkout: &Path,
     pin: &Sa3Pin,
+    backend: Sa3Backend,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
-    let model_dir = checkout
-        .join("optimized")
-        .join("mlx")
-        .join("models")
-        .join("mlx");
-    for model in &pin.models.artifacts {
-        let filename = model.filename()?;
-        let artifact = model.artifact(&pin.models)?;
+    for (install_path, artifact) in model_artifacts(pin, backend)? {
         if let Err(error) =
-            verify_file_cancellable(&model_dir.join(filename), &artifact, is_cancelled)
+            verify_file_cancellable(&checkout.join(&install_path), &artifact, is_cancelled)
         {
             if error == "cancelled" {
                 return Err(error);
             }
             return Err(format!(
-                "SA3 model {filename} failed integrity validation: {error}"
+                "SA3 model {} failed integrity validation: {error}",
+                install_path.display()
             ));
         }
+    }
+    Ok(())
+}
+
+fn install_manifest(backend: Sa3Backend) -> &'static str {
+    match backend {
+        Sa3Backend::Mlx => SA3_PIN_JSON,
+        Sa3Backend::Tflite => TFLITE_PIN_JSON,
+    }
+}
+
+fn tflite_provenance(pin: &TflitePin) -> serde_json::Value {
+    serde_json::json!({
+        "runtime": {
+            "repo": pin.runtime.repo,
+            "revision": pin.runtime.revision,
+        },
+        "models": {
+            "repo": pin.models.repo,
+            "revision": pin.models.revision,
+        },
+    })
+}
+
+fn write_tflite_provenance(runtime: &Path, pin: &TflitePin) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(&tflite_provenance(pin))
+        .map_err(|error| format!("cannot serialize TFLite provenance: {error}"))?;
+    write_synced(&runtime.join(TFLITE_PROVENANCE_STAMP), &bytes)
+}
+
+fn validate_tflite_provenance(runtime: &Path, pin: &TflitePin) -> Result<(), String> {
+    let bytes = std::fs::read(runtime.join(TFLITE_PROVENANCE_STAMP))
+        .map_err(|error| format!("cannot read TFLite provenance: {error}"))?;
+    let actual: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("TFLite provenance is invalid: {error}"))?;
+    if actual != tflite_provenance(pin) {
+        return Err("TFLite runtime/model provenance does not match the application pin".into());
     }
     Ok(())
 }
@@ -1284,6 +1581,8 @@ fn validate_sa3_pin(pin: &Sa3Pin) -> Result<(), String> {
             || uv.executable.is_empty()
             || uv.executable.contains('/')
             || uv.executable.contains('\\')
+            || !matches!(uv.archive.archive_format.as_str(), "tar.gz" | "zip")
+            || (uv.archive.archive_format == "zip" && !uv.archive.artifact.url.ends_with(".zip"))
         {
             return Err("uv runtime pin is inconsistent".into());
         }
@@ -1337,6 +1636,52 @@ fn validate_sa3_pin(pin: &Sa3Pin) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_tflite_pin(pin: &TflitePin, source: &Sa3Pin) -> Result<(), String> {
+    if pin.schema_version != 1
+        || pin.runtime.repo != source.repo
+        || pin.runtime.revision != source.commit
+        || pin.runtime.subdirectory != "optimized/tflite"
+        || pin.runtime.entrypoint != "scripts/sa3_tflite.py"
+        || pin.runtime.requirements_lock != "scripts/sa3-tflite-requirements.lock"
+        || pin.models.revision.len() != 40
+        || !pin
+            .models
+            .revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || pin.models.repo.split('/').count() != 2
+        || pin.models.precision != "fp32"
+    {
+        return Err("TFLite runtime/model pin is inconsistent".into());
+    }
+    let artifacts = tflite_artifacts(pin)?;
+    if artifacts.len() != 8 {
+        return Err("TFLite manifest must cover exactly eight unique model artifacts".into());
+    }
+    let expected: std::collections::BTreeSet<_> = [
+        "optimized/tflite/models/tflite/t5gemma/encoder_fp16.tflite",
+        "optimized/tflite/models/tflite/sa3-sm-music/dit_fp32.tflite",
+        "optimized/tflite/models/tflite/sa3-sm-sfx/dit_fp32.tflite",
+        "optimized/tflite/models/tflite/sa3-m/dit_fp32.tflite",
+        "optimized/tflite/models/tflite/same-s/enc_fp32.tflite",
+        "optimized/tflite/models/tflite/same-s/dec_fp32.tflite",
+        "optimized/tflite/models/tflite/same-l/enc_fp32.tflite",
+        "optimized/tflite/models/tflite/same-l/dec_fp32.tflite",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect();
+    if artifacts
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
+    {
+        return Err("TFLite manifest does not cover every inference artifact".into());
+    }
+    Ok(())
+}
+
 fn host_uv_pin(pin: &Sa3Pin) -> Result<&UvPin, String> {
     let target = host_installer_target()?;
     let uv = pin
@@ -1367,9 +1712,15 @@ fn host_python_pin(pin: &Sa3Pin) -> Result<&PythonPin, String> {
 }
 
 fn host_installer_target() -> Result<&'static str, String> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
+    installer_target_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn installer_target_for(os: &str, arch: &str) -> Result<&'static str, String> {
+    match (os, arch) {
         ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
-        _ => Err("the pinned SA3 MLX runtime supports Apple Silicon only".into()),
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
+        (os, arch) => Err(format!("no pinned SA3 runtime exists for {os}/{arch}")),
     }
 }
 
@@ -1498,6 +1849,79 @@ mod tests {
         assert_eq!(pin.commit.len(), 40);
         assert_eq!(pin.models.artifacts.len(), 8);
         assert!(pin.source.artifact.url.starts_with("https://"));
+
+        let portable = tflite_pin();
+        validate_tflite_pin(&portable, &pin).unwrap();
+        assert_eq!(tflite_artifacts(&portable).unwrap().len(), 8);
+        assert_eq!(
+            model_download_bytes(&pin, Sa3Backend::Tflite).unwrap(),
+            14_138_994_904
+        );
+    }
+
+    #[test]
+    fn sa3_backend_mapping_is_explicit_and_fail_closed() {
+        assert_eq!(
+            sa3_backend_for("macos", "aarch64").unwrap(),
+            Sa3Backend::Mlx
+        );
+        for os in ["linux", "windows"] {
+            assert_eq!(sa3_backend_for(os, "x86_64").unwrap(), Sa3Backend::Tflite);
+        }
+        assert_eq!(
+            installer_target_for("macos", "aarch64").unwrap(),
+            "aarch64-apple-darwin"
+        );
+        assert_eq!(
+            installer_target_for("linux", "x86_64").unwrap(),
+            "x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            installer_target_for("windows", "x86_64").unwrap(),
+            "x86_64-pc-windows-msvc"
+        );
+        for target in [
+            ("macos", "x86_64"),
+            ("linux", "aarch64"),
+            ("freebsd", "x86_64"),
+        ] {
+            assert!(sa3_backend_for(target.0, target.1).is_err());
+        }
+    }
+
+    #[test]
+    fn tflite_provenance_round_trips_and_rejects_drift() {
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-tflite-provenance-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let pin = tflite_pin();
+        write_tflite_provenance(&root, &pin).unwrap();
+        validate_tflite_provenance(&root, &pin).unwrap();
+        std::fs::write(root.join(TFLITE_PROVENANCE_STAMP), b"{}").unwrap();
+        assert!(validate_tflite_provenance(&root, &pin)
+            .unwrap_err()
+            .contains("does not match"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tflite_install_paths_cannot_escape_the_runtime() {
+        assert_eq!(
+            checked_install_path("models/tflite/same-s/dec_fp32.tflite").unwrap(),
+            PathBuf::from("optimized/tflite/models/tflite/same-s/dec_fp32.tflite")
+        );
+        for unsafe_path in [
+            "../outside",
+            "/absolute",
+            "models/tflite/../../outside",
+            "models\\tflite\\outside",
+        ] {
+            assert!(checked_install_path(unsafe_path).is_err());
+        }
     }
 
     #[test]
@@ -1524,11 +1948,12 @@ mod tests {
             std::fs::write(model_dir.join(model.filename().unwrap()), bytes).unwrap();
         }
 
-        validate_sa3_model_artifacts(&root, &pin, &|| false).unwrap();
+        validate_sa3_model_artifacts(&root, &pin, Sa3Backend::Mlx, &|| false).unwrap();
         let tampered = pin.models.artifacts[3].filename().unwrap();
         let original_size = pin.models.artifacts[3].size as usize;
         std::fs::write(model_dir.join(tampered), vec![b'x'; original_size]).unwrap();
-        let error = validate_sa3_model_artifacts(&root, &pin, &|| false).unwrap_err();
+        let error =
+            validate_sa3_model_artifacts(&root, &pin, Sa3Backend::Mlx, &|| false).unwrap_err();
         assert!(error.contains("SHA-256"), "unexpected error: {error}");
         let _ = std::fs::remove_dir_all(root);
     }

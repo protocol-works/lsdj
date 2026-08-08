@@ -400,6 +400,7 @@
     "sa3": "Stable Audio 3",
     "none": "No models installed",
     "notInstalled": "Not installed",
+    "downloadSize": "{{size}} download",
     "needsResources": "Needs shared resources — repair to enable loading",
     "install": "Install",
     "repair": "Repair",
@@ -413,7 +414,8 @@
       "missing": "Not installed",
       "venv_missing": "Needs setup",
       "not_warmed": "Weights not downloaded",
-      "ready": "Ready"
+      "ready": "Ready",
+      "failed": "Verification failed — repair required"
     },
     "stage": {
       "init": "Fetching shared resources…",
