@@ -453,6 +453,25 @@ export function subscribeLoadSample(
   return listenTo('mcp://load-sample', onLoad)
 }
 
+/** An MCP agent's generation lifecycle (Rust emits `mcp://generation`): `start`
+ * mirrors a pending row in the Media Explorer so the co-DJ's multi-second work is
+ * visible; `done`/`error` retires it (`job` keys the pair; the library refresh
+ * surfaces the finished take). `deck` is the target for a track, null for a
+ * sample. */
+export function subscribeMcpGeneration(
+  onEvent: (payload: {
+    job: number
+    phase: 'start' | 'done' | 'error'
+    kind: string
+    prompt: string
+    title: string
+    deck: number | null
+    oneShot: boolean
+  }) => void,
+): () => void {
+  return listenTo('mcp://generation', onEvent)
+}
+
 /** An MCP agent's track-transport gesture (Rust emits `mcp://deck-command`): the
  * webview runs the deck's own method (seek / rate / sync / beatloop) so its state and
  * the UI follow. `value` is null for argument-less commands (sync). */
@@ -498,6 +517,9 @@ export function setDeckTransport(
     playheadSeconds: number
     rate: number
     loopRegion: { startSeconds: number; endSeconds: number } | null
+    /** Whether the playback transport is rolling — the deck-level `playing` is
+     * realtime-only, so agent observability of playback lives here (MCP #13). */
+    playing: boolean
   } | null,
 ): void {
   void invoke('set_deck_transport', { deck, transport }).catch(() => {})

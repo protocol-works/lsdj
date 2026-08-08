@@ -546,28 +546,41 @@ export function useDeck(deckId: DeckId): DeckControls {
     at: number
     rate: number | null
     loopKey: string
-  }>({ at: 0, rate: null, loopKey: '' })
+    playing: boolean | null
+  }>({ at: 0, rate: null, loopKey: '', playing: null })
   useEffect(() => {
     if (!track) {
       // Clear once on the transition to no-track; nothing to push while it stays null.
       if (transportMirrorRef.current.rate !== null) {
-        transportMirrorRef.current = { at: 0, rate: null, loopKey: '' }
+        transportMirrorRef.current = { at: 0, rate: null, loopKey: '', playing: null }
         setDeckTransport(deckIndex, null)
       }
       return
     }
     const loopKey = track.loop ? `${track.loop.start}:${track.loop.end}` : ''
     const last = transportMirrorRef.current
-    const changed = track.rate !== last.rate || loopKey !== last.loopKey
+    // Play/pause goes up at once like a rate or loop change — an agent polling
+    // the store must not see a rolling transport as paused for a throttle
+    // window (MCP finding #13).
+    const changed =
+      track.rate !== last.rate ||
+      loopKey !== last.loopKey ||
+      track.playing !== last.playing
     const now = performance.now()
     if (!changed && now - last.at < TRANSPORT_MIRROR_MS) return
-    transportMirrorRef.current = { at: now, rate: track.rate, loopKey }
+    transportMirrorRef.current = {
+      at: now,
+      rate: track.rate,
+      loopKey,
+      playing: track.playing,
+    }
     setDeckTransport(deckIndex, {
       playheadSeconds: track.position,
       rate: track.rate,
       loopRegion: track.loop
         ? { startSeconds: track.loop.start, endSeconds: track.loop.end }
         : null,
+      playing: track.playing,
     })
   }, [deckIndex, track])
 

@@ -180,6 +180,12 @@ pub struct TransportSnap {
     /// Varispeed rate (1.0 = as recorded); effective BPM is `track.bpm * rate`.
     pub rate: f64,
     pub loop_region: Option<LoopRegionSnap>,
+    /// Whether the playback transport is rolling. The deck-level `playing`
+    /// reflects only the realtime stream (MCP finding #13 — an agent watching
+    /// it saw a rolling track as idle), so playback observability lives here.
+    /// `default` keeps an older webview mirror payload deserialising.
+    #[serde(default)]
+    pub playing: bool,
 }
 
 /// A point on the 2D style pad (0..1 each axis). `Deserialize`/`JsonSchema` too — the
@@ -1718,12 +1724,14 @@ mod tests {
                     start_seconds: 8.0,
                     end_seconds: 16.0,
                 }),
+                playing: true,
             }),
         );
         let transport = state.decks[0].transport.as_ref().unwrap();
         assert_eq!(transport.playhead_seconds, 12.5);
         assert_eq!(transport.rate, 1.08);
         assert_eq!(transport.loop_region.unwrap().end_seconds, 16.0);
+        assert!(transport.playing);
         // The other deck is untouched.
         assert_eq!(state.decks[1].transport, None);
         // Unload / realtime clears it.

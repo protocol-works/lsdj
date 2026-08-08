@@ -79,15 +79,19 @@ impl SampleLibrary {
     }
 
     /// Reconcile the registry against the folder and return the current sample list.
-    /// Writes the reconciled registry back so a hand-added or hand-deleted file is
-    /// remembered. Called at webview startup and when the Samples tab opens.
+    /// Writes the reconciled registry back — only when the reconcile changed it —
+    /// so a hand-added or hand-deleted file is remembered without every read
+    /// becoming a write (see [`crate::songs::SongLibrary::list`]). Called at
+    /// webview startup and when the Samples tab opens.
     pub fn list(&self) -> Result<Vec<SampleEntry>, String> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("cannot create samples folder: {e}"))?;
-        let reconciled =
-            reconcile(library::load_registry(&self.dir), &library::audio_files(&self.dir)?);
-        library::save_registry(&self.dir, &reconciled)?;
+        let existing = library::load_registry(&self.dir);
+        let reconciled = reconcile(existing.clone(), &library::audio_files(&self.dir)?);
+        if reconciled != existing {
+            library::save_registry(&self.dir, &reconciled)?;
+        }
         Ok(reconciled)
     }
 

@@ -13,6 +13,7 @@ import {
   invoke,
   isTauri,
   subscribeLibraryChanged,
+  subscribeMcpGeneration,
   togglePianoWindow,
 } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
@@ -89,7 +90,9 @@ type GeneratedTrack =
       title: string
       prompt: string
       model: TrackEngine
-      recipe: SongGenerationRecipeV1
+      // Absent for an MCP agent's generation — the pending row is only a mirror
+      // of the shell-side job, retired on done/error, never flipped to ready.
+      recipe?: SongGenerationRecipeV1
     }
   | {
       id: number
@@ -122,7 +125,9 @@ type GeneratedSample =
       state: 'pending'
       title: string
       prompt: string
-      model: SampleEngine
+      // `magenta` only for an MCP agent's generation (the in-app Samples tab
+      // keeps the SFX/Music engines).
+      model: SampleEngine | 'magenta'
       oneShot: boolean
     }
   | {
@@ -704,6 +709,58 @@ export function MediaExplorer({
       subscribeLibraryChanged((library) =>
         library === 'songs' ? refreshSongs() : refreshSamples(),
       ),
+    [refreshSongs, refreshSamples],
+  )
+
+  // An MCP agent's generation (Rust emits mcp://generation): mirror the same
+  // pending row the in-app compose flows show, so the co-DJ's multi-second work
+  // is visible. done/error retires the row; the re-list (here and from the
+  // folder watcher) surfaces the finished take. `job` → row id lives in a ref —
+  // the pairing is bookkeeping, not render state.
+  const mcpJobsRef = useRef(new Map<number, number>())
+  useEffect(
+    () =>
+      subscribeMcpGeneration((event) => {
+        if (event.phase === 'start') {
+          const id = nextIdRef.current++
+          mcpJobsRef.current.set(event.job, id)
+          if (event.kind === 'track') {
+            setTracks((current) => [
+              {
+                id,
+                state: 'pending',
+                title: event.title,
+                prompt: event.prompt,
+                model: 'track',
+              },
+              ...current,
+            ])
+          } else {
+            setSamples((current) => [
+              {
+                id,
+                state: 'pending',
+                title: event.title,
+                prompt: event.prompt,
+                model: event.kind === 'magenta' ? 'magenta' : (event.kind as SampleEngine),
+                oneShot: event.oneShot,
+              },
+              ...current,
+            ])
+          }
+          return
+        }
+        const id = mcpJobsRef.current.get(event.job)
+        if (id == null) return
+        mcpJobsRef.current.delete(event.job)
+        if (event.kind === 'track') {
+          setTracks((current) => current.filter((track) => track.id !== id))
+          if (event.phase === 'done') refreshSongs()
+        } else {
+          setSamples((current) => current.filter((sample) => sample.id !== id))
+          if (event.phase === 'done') refreshSamples()
+        }
+      }),
     [refreshSongs, refreshSamples],
   )
 

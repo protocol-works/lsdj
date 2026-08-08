@@ -318,9 +318,12 @@ fn patch_wav_sizes<W: Write + Seek>(out: &mut W, total_samples: usize) -> std::i
 /// they carry a reply sender so the render thread can ship the captured `Vec`
 /// back to the waiting caller.
 enum Command {
-    SetCrossfade(f32),
+    /// Position + glide time in ms (0 = instant; MCP finding #10 — a ramped
+    /// move glides engine-side instead of stepping).
+    SetCrossfade(f32, f32),
     SetEq(usize, EqBand, f32),
-    SetVolume(usize, f32),
+    /// Deck, gain, glide time in ms (0 = instant).
+    SetVolume(usize, f32, f32),
     SetFx(usize, FxKind),
     SetFxAmount(usize, f32),
     ClearFx(usize),
@@ -660,7 +663,12 @@ impl Host {
     // --- Control surface (one method per Engine control op) ---
 
     pub fn set_crossfade(&self, position: f32) {
-        self.send(Command::SetCrossfade(position));
+        self.send(Command::SetCrossfade(position, 0.0));
+    }
+
+    /// `set_crossfade` with an engine-side glide over `ramp_ms` (0 = instant).
+    pub fn set_crossfade_ramped(&self, position: f32, ramp_ms: f32) {
+        self.send(Command::SetCrossfade(position, ramp_ms));
     }
 
     pub fn set_eq(&self, deck: usize, band: EqBand, value: f32) {
@@ -668,7 +676,12 @@ impl Host {
     }
 
     pub fn set_volume(&self, deck: usize, gain: f32) {
-        self.send(Command::SetVolume(deck, gain));
+        self.send(Command::SetVolume(deck, gain, 0.0));
+    }
+
+    /// `set_volume` with an engine-side glide over `ramp_ms` (0 = instant).
+    pub fn set_volume_ramped(&self, deck: usize, gain: f32, ramp_ms: f32) {
+        self.send(Command::SetVolume(deck, gain, ramp_ms));
     }
 
     pub fn set_fx(&self, deck: usize, kind: FxKind) {
@@ -1012,9 +1025,9 @@ impl RenderLoop {
     /// indices before sending so a webview cannot trip those panics.
     fn apply(&mut self, command: Command) {
         match command {
-            Command::SetCrossfade(p) => self.engine.set_crossfade(p),
+            Command::SetCrossfade(p, ramp_ms) => self.engine.set_crossfade_ramped(p, ramp_ms),
             Command::SetEq(d, band, v) => self.engine.set_eq(d, band, v),
-            Command::SetVolume(d, g) => self.engine.set_volume(d, g),
+            Command::SetVolume(d, g, ramp_ms) => self.engine.set_volume_ramped(d, g, ramp_ms),
             Command::SetFx(d, kind) => self.engine.set_fx(d, kind),
             Command::SetFxAmount(d, a) => self.engine.set_fx_amount(d, a),
             Command::SetBeatPeriod(d, p) => self.engine.set_beat_period(d, p),
@@ -1263,7 +1276,7 @@ mod tests {
         host.send(Command::LoadTrack(0, ramp_track(20_000)));
         host.send(Command::PlayTrack(0));
         // Full deck A: the track (on A) is audible.
-        host.send(Command::SetCrossfade(0.0));
+        host.send(Command::SetCrossfade(0.0, 0.0));
         host.pump();
         let energy_a: f64 = host
             .loop_state
@@ -1274,7 +1287,7 @@ mod tests {
         assert!(energy_a > 1e-6, "track audible with the crossfader on its deck");
 
         // Full deck B: deck A's track is faded out → near silence from A's content.
-        host.send(Command::SetCrossfade(1.0));
+        host.send(Command::SetCrossfade(1.0, 0.0));
         // Pump several blocks so the equal-power gain fully takes and the ramp
         // climbs; deck B has no source, so the mix collapses toward silence.
         for _ in 0..4 {
@@ -1300,7 +1313,7 @@ mod tests {
         // the feed + render through the host command channel.
         fn measure(kill: bool) -> f64 {
             let mut host = TestHost::new();
-            host.send(Command::SetCrossfade(0.0)); // full deck A
+            host.send(Command::SetCrossfade(0.0, 0.0)); // full deck A
             if kill {
                 host.send(Command::SetEq(0, EqBand::Low, 0.0));
             }

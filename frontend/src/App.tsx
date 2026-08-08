@@ -698,6 +698,11 @@ function App() {
         case 'beatloop':
           if (value != null) controls.beatLoop(value)
           break
+        // The pad-press gesture (MCP toggle_pad): same as a UI/hardware pad —
+        // a filled slot plays/stops, an empty slot captures a freeze.
+        case 'pad':
+          if (value != null) controls.toggleLoopPad(value)
+          break
         case 'sync':
           ;(deck === 0 ? handleSyncA : handleSyncB)()
           break
@@ -706,6 +711,17 @@ function App() {
           break
         case 'offair':
           void controls.prime()
+          break
+        // The playback-deck transport (the Rust tools route here when a track
+        // is loaded — play/stop are mode-aware) and the way back to realtime.
+        case 'play':
+          void controls.play()
+          break
+        case 'stop':
+          controls.stop()
+          break
+        case 'eject':
+          controls.leavePlayback()
           break
       }
     })
