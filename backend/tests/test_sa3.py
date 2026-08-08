@@ -27,6 +27,8 @@ runtime_dir = pathlib.Path(__file__).resolve().parent.parent
     f"offline={os.environ.get('HF_HUB_OFFLINE')}\n"
     f"token={os.environ.get('HF_TOKEN')}\n"
     f"threads={os.environ.get('OMP_NUM_THREADS')}\n"
+    f"pythonutf8={os.environ.get('PYTHONUTF8')}\n"
+    f"stdio={os.environ.get('PYTHONIOENCODING')}\n"
 )
 if "--init-audio" in sys.argv:
     source = pathlib.Path(sys.argv[sys.argv.index("--init-audio") + 1])
@@ -223,7 +225,9 @@ def test_runtime_resolution_uses_windows_venv_layout(tmp_path):
 
 
 def test_status_exposes_backend_capabilities_and_real_limitations(tmp_path):
-    selection = make_runtime(tmp_path / "sa3", BackendName.TFLITE)
+    selection = make_runtime(
+        tmp_path / "sa3", BackendName.TFLITE, platform_name="linux"
+    )
     result = sa3.status(
         {"SA3_HOME": str(selection.checkout)},
         platform_name="linux",
@@ -239,7 +243,9 @@ def test_status_exposes_backend_capabilities_and_real_limitations(tmp_path):
 
 
 def test_status_fails_closed_for_unverified_tflite_provenance(tmp_path):
-    selection = make_runtime(tmp_path / "sa3", BackendName.TFLITE)
+    selection = make_runtime(
+        tmp_path / "sa3", BackendName.TFLITE, platform_name="linux"
+    )
     (selection.runtime_dir / sa3.TFLITE_PROVENANCE_STAMP).write_text("{}")
     result = sa3.status(
         {"SA3_HOME": str(selection.checkout)},
@@ -348,6 +354,8 @@ def test_generate_returns_a_validated_wav_and_runs_offline(tflite_runtime):
     assert "offline=1" in env
     assert "token=None" in env
     assert "threads=4" in env
+    assert "pythonutf8=1" in env
+    assert "stdio=utf-8" in env
 
 
 def test_generate_passes_full_control_surface_and_normalized_input(tflite_runtime):

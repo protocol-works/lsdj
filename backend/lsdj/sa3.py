@@ -576,6 +576,10 @@ def _child_environment(selection: RuntimeSelection) -> dict[str, str]:
     env["HF_HUB_OFFLINE"] = "1"
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["DO_NOT_TRACK"] = "1"
+    # Windows otherwise inherits a legacy console/filesystem encoding (often
+    # cp1252), which can make valid Unicode asset paths fail before inference.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     env.pop("HF_TOKEN", None)
     env.pop("HUGGING_FACE_HUB_TOKEN", None)
     if selection.backend is BackendName.TFLITE:
