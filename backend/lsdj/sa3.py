@@ -22,7 +22,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from . import runtime_paths
+from . import runtime_paths, sa3_cuda
 from .sa3_audio import AudioFormatError, inspect_canonical_wav, normalize_wav
 from .sa3_audio import validate_output_wav as _validate_output_wav
 from .sa3_contract import (
@@ -58,6 +58,7 @@ MAX_GENERATE_METADATA_BYTES = 64 * 1024
 TIMEOUT_SECONDS = 120
 TFLITE_THREADS_DEFAULT = 4
 TFLITE_THREADS_MAX = 8
+SA3_PREFERENCE_ENV = "LSDJ_SA3_PREFERENCE"
 
 STATE_MISSING = "missing"
 STATE_VENV_MISSING = "venv_missing"
@@ -362,6 +363,7 @@ def status(
     platform_name: str | None = None,
     machine: str | None = None,
 ) -> dict:
+    env = os.environ if env is None else env
     ready = readiness(env, platform_name=platform_name, machine=machine)
     backend_value = ready["backend"]
     capabilities = (
@@ -369,8 +371,35 @@ def status(
         if backend_value is None
         else capabilities_for(BackendName(backend_value)).as_dict()
     )
+    platform_value = sys.platform if platform_name is None else platform_name
+    machine_value = host_platform.machine() if machine is None else machine
+    preference = env.get(SA3_PREFERENCE_ENV, sa3_cuda.BackendPreference.AUTO.value)
+    cuda = None
+    if platform_value == "win32" and _normalise_arch(machine_value) == "x86_64":
+        evidence = sa3_cuda.CudaEvidence(
+            platform=platform_value,
+            machine=machine_value,
+            runtime_ready=False,
+            provenance_complete=False,
+            packages={},
+            cuda_available=False,
+            cuda_runtime=None,
+            driver=None,
+            device=None,
+            compute_capability=None,
+            total_vram_bytes=None,
+            free_vram_bytes=None,
+            estimated_vram_bytes={"music": None, "sfx": None, "track": None},
+        )
+        cuda = sa3_cuda.diagnostic_manifest(
+            evidence, tflite_ready=ready["state"] == STATE_READY, env=env
+        )
     return {
         **ready,
+        "activeBackend": backend_value,
+        "preference": preference,
+        "preferenceChoices": [item.value for item in sa3_cuda.BackendPreference],
+        "cuda": cuda,
         "capabilities": capabilities,
         "generation": dict(_generation_state),
         "maxSeconds": dict(MAX_SECONDS_FOR),
@@ -683,6 +712,53 @@ async def generate(
         lora_dirs=lora_dirs,
         lora_strengths=lora_strengths,
     )
+    preference_value = os.environ.get(
+        SA3_PREFERENCE_ENV, sa3_cuda.BackendPreference.AUTO.value
+    )
+    try:
+        preference = sa3_cuda.BackendPreference(preference_value)
+    except ValueError:
+        raise GenerationUnavailable(
+            f"{SA3_PREFERENCE_ENV} must be auto, gpu, or cpu_tflite"
+        ) from None
+    if preference is sa3_cuda.BackendPreference.GPU:
+        platform_value, machine_value = sa3_cuda.host_identity()
+        evidence = sa3_cuda.CudaEvidence(
+            platform=platform_value,
+            machine=machine_value,
+            runtime_ready=False,
+            provenance_complete=False,
+            packages={},
+            cuda_available=False,
+            cuda_runtime=None,
+            driver=None,
+            device=None,
+            compute_capability=None,
+            total_vram_bytes=None,
+            free_vram_bytes=None,
+            estimated_vram_bytes={kind: None},
+        )
+        try:
+            sa3_cuda.choose_backend(
+                preference,
+                kind=kind,
+                cuda=evidence,
+                tflite_ready=resolve_runtime() is not None,
+            )
+        except sa3_cuda.CudaUnavailable as error:
+            fallback = (
+                " Choose CPU/TFLite to confirm the fallback."
+                if error.fallback_available
+                else ""
+            )
+            raise GenerationUnavailable(f"{error}{fallback}") from None
+        # The release gate currently makes this unreachable.  Do not start the
+        # experimental worker through the public endpoint until the installer
+        # can produce a complete provenance stamp and hardware evidence flips
+        # HARDWARE_QUALIFIED in the same reviewed change.
+        raise GenerationUnavailable(
+            "the CUDA worker is not exposed until its release gates are complete"
+        )
     try:
         selection = resolve_runtime()
     except GenerationUnavailable:

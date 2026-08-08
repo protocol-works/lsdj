@@ -238,6 +238,36 @@ def test_status_exposes_backend_capabilities_and_real_limitations(tmp_path):
     )
 
 
+def test_windows_status_exposes_conservative_backend_choices_and_cuda_blockers(
+    tmp_path,
+):
+    selection = make_runtime(
+        tmp_path / "sa3", BackendName.TFLITE, platform_name="win32"
+    )
+    result = sa3.status(
+        {"SA3_HOME": str(selection.checkout)},
+        platform_name="win32",
+        machine="AMD64",
+    )
+
+    assert result["preference"] == "auto"
+    assert result["preferenceChoices"] == ["auto", "gpu", "cpu_tflite"]
+    assert result["activeBackend"] == "tflite"
+    assert result["cuda"]["release_ready"] is False
+    assert result["cuda"]["tflite_fallback_ready"] is True
+    assert any("gated" in item for item in result["cuda"]["qualification_blockers"])
+
+
+def test_explicit_gpu_fails_before_start_and_requires_confirmed_tflite_fallback(
+    tflite_runtime, monkeypatch
+):
+    tflite_runtime()
+    monkeypatch.setenv(sa3.SA3_PREFERENCE_ENV, "gpu")
+
+    with pytest.raises(sa3.GenerationUnavailable, match="Choose CPU/TFLite"):
+        asyncio.run(sa3.generate("kick", 0.5, "sfx"))
+
+
 def test_status_fails_closed_for_unverified_tflite_provenance(tmp_path):
     selection = make_runtime(tmp_path / "sa3", BackendName.TFLITE)
     (selection.runtime_dir / sa3.TFLITE_PROVENANCE_STAMP).write_text("{}")
