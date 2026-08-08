@@ -4,7 +4,6 @@ import re
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
 
 
@@ -26,20 +25,31 @@ class ReleaseArtifactTest(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.asset = self.root / "LSDJ_2026.08.7_aarch64.dmg"
         self.asset.write_bytes(b"verified dmg bytes")
+        self.windows_asset = self.root / "LSDJ_2026.08.7_x64-setup.exe"
+        self.windows_asset.write_bytes(b"verified signed nsis bytes")
 
     def tearDown(self):
         self.temporary.cleanup()
 
-    def create_bundle(self):
-        bundle = self.root / "incoming" / "macos-arm64"
+    def create_bundle(self, producer="macos-arm64"):
+        asset = {
+            "macos-arm64": self.asset,
+            "windows-x64": self.windows_asset,
+        }[producer]
+        bundle = self.root / "incoming" / producer
         release_artifact.create_bundle(
-            producer="macos-arm64",
+            producer=producer,
             release_tag=TAG,
             revision=REVISION,
-            assets=[self.asset],
+            assets=[asset],
             output_dir=bundle,
         )
         return bundle
+
+    def create_all_bundles(self):
+        self.create_bundle("macos-arm64")
+        self.create_bundle("windows-x64")
+        return self.root / "incoming"
 
     def draft_release(self, assets, **updates):
         data = {
@@ -54,12 +64,12 @@ class ReleaseArtifactTest(unittest.TestCase):
         return data
 
     def test_create_and_verify_bundle(self):
-        bundle = self.create_bundle()
+        incoming = self.create_all_bundles()
         output = self.root / "verified"
 
         release_artifact.verify_bundles(
-            input_root=bundle.parent,
-            required_producers=["macos-arm64"],
+            input_root=incoming,
+            required_producers=["macos-arm64", "windows-x64"],
             release_tag=TAG,
             revision=REVISION,
             output_dir=output,
@@ -69,24 +79,28 @@ class ReleaseArtifactTest(unittest.TestCase):
             {path.name for path in output.iterdir()},
             {
                 self.asset.name,
+                self.windows_asset.name,
                 "macos-arm64-release-metadata.json",
                 "macos-arm64-SHA256SUMS.txt",
+                "windows-x64-release-metadata.json",
+                "windows-x64-SHA256SUMS.txt",
                 "release-index.json",
             },
         )
         index = json.loads((output / "release-index.json").read_text())
         self.assertEqual(index["release_tag"], TAG)
         self.assertEqual(index["revision"], REVISION)
-        self.assertEqual(index["producers"], ["macos-arm64"])
+        self.assertEqual(index["producers"], ["macos-arm64", "windows-x64"])
 
     def test_tampered_asset_fails_closed(self):
-        bundle = self.create_bundle()
+        incoming = self.create_all_bundles()
+        bundle = incoming / "macos-arm64"
         (bundle / self.asset.name).write_bytes(b"tampered")
 
         with self.assertRaisesRegex(release_artifact.ArtifactError, "size|checksum"):
             release_artifact.verify_bundles(
-                input_root=bundle.parent,
-                required_producers=["macos-arm64"],
+                input_root=incoming,
+                required_producers=["macos-arm64", "windows-x64"],
                 release_tag=TAG,
                 revision=REVISION,
                 output_dir=self.root / "verified",
@@ -115,60 +129,49 @@ class ReleaseArtifactTest(unittest.TestCase):
         with self.assertRaisesRegex(release_artifact.ArtifactError, "producer set"):
             release_artifact.verify_bundles(
                 input_root=incoming,
-                required_producers=["macos-arm64"],
+                required_producers=["macos-arm64", "windows-x64"],
                 release_tag=TAG,
                 revision=REVISION,
                 output_dir=self.root / "verified",
             )
 
     def test_unexpected_bundle_file_fails_closed(self):
-        bundle = self.create_bundle()
+        incoming = self.create_all_bundles()
+        bundle = incoming / "macos-arm64"
         (bundle / "surprise.txt").write_text("not declared")
 
         with self.assertRaisesRegex(release_artifact.ArtifactError, "unexpected"):
             release_artifact.verify_bundles(
-                input_root=bundle.parent,
-                required_producers=["macos-arm64"],
+                input_root=incoming,
+                required_producers=["macos-arm64", "windows-x64"],
                 release_tag=TAG,
                 revision=REVISION,
                 output_dir=self.root / "verified",
             )
 
     def test_wrong_release_identity_fails_closed(self):
-        bundle = self.create_bundle()
+        incoming = self.create_all_bundles()
 
         with self.assertRaisesRegex(release_artifact.ArtifactError, "release_tag"):
             release_artifact.verify_bundles(
-                input_root=bundle.parent,
-                required_producers=["macos-arm64"],
+                input_root=incoming,
+                required_producers=["macos-arm64", "windows-x64"],
                 release_tag="v2026.08.8",
                 revision=REVISION,
                 output_dir=self.root / "verified",
             )
 
     def test_required_producer_arguments_must_exactly_match_policy(self):
-        bundle = self.create_bundle()
-        windows_policy = release_artifact.ProducerPolicy(
-            platform="windows",
-            architecture="x86_64",
-            asset_suffix=".exe",
-            asset_count=1,
-        )
+        incoming = self.create_all_bundles()
 
-        with mock.patch.dict(
-            release_artifact.PRODUCER_POLICIES,
-            {"windows-x64": windows_policy},
-        ):
-            with self.assertRaisesRegex(
-                release_artifact.ArtifactError, "release policy"
-            ):
-                release_artifact.verify_bundles(
-                    input_root=bundle.parent,
-                    required_producers=["macos-arm64"],
-                    release_tag=TAG,
-                    revision=REVISION,
-                    output_dir=self.root / "verified",
-                )
+        with self.assertRaisesRegex(release_artifact.ArtifactError, "release policy"):
+            release_artifact.verify_bundles(
+                input_root=incoming,
+                required_producers=["macos-arm64"],
+                release_tag=TAG,
+                revision=REVISION,
+                output_dir=self.root / "verified",
+            )
 
     def test_draft_release_assets_must_match_exactly(self):
         verified = self.root / "verified"
@@ -329,7 +332,10 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertEqual(workflow.count("contents: write"), 1)
         self.assertEqual(len(re.findall(r"^  publish:$", workflow, re.MULTILINE)), 1)
         self.assertIn("needs.produce_macos.result == 'success'", workflow)
+        self.assertIn("needs.produce_windows.result == 'success'", workflow)
         self.assertIn("--required-producer macos-arm64", workflow)
+        self.assertIn("--required-producer windows-x64", workflow)
+        self.assertEqual(workflow.count("environment:\n      name: windows-release"), 1)
         self.assertRegex(workflow, r"(?m)^on:\n  push:\n    tags:$")
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("workflow_dispatch:", workflow)

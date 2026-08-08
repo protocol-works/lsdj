@@ -601,6 +601,12 @@ pub fn sidecar_base_command() -> io::Result<Command> {
     if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
         return Ok(Command::new(program));
     }
+    if std::env::var_os("LSDJ_MANAGED_BACKEND_REQUIRED").is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the verified app-managed backend runtime is not installed",
+        ));
+    }
 
     let overridden = std::env::var("LSDJ_SIDECAR_CMD");
     let spec = overridden

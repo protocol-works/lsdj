@@ -20,6 +20,12 @@ path = "src/main.rs"
 # runtime and startup must resolve it from Contents/Resources. Developer builds
 # omit the feature and retain the uv-based source-tree commands.
 bundled-backend = []
+# Windows/Linux packages install model runtimes under the host-owned assets root
+# after first launch.  This feature forbids the developer `uv` fallback and
+# resolves only the verified launcher promoted by the native runtime installer.
+# It is deliberately backend-neutral: #110 and #111 own what lives behind the
+# launcher; packaging owns only the stable executable seam.
+managed-backend = []
 
 # The cargo WORKSPACE. The app is the root package; the audio engine is a member
 # library crate so it stays headless-testable (`cargo test -p lsdj-engine`)

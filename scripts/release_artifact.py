@@ -51,14 +51,20 @@ class ProducerPolicy:
     asset_count: int
 
 
-# macOS is the sole required release producer initially.  Adding a platform is
-# an explicit policy change: add its producer here and to the publisher's
-# --required-producer list in the workflow in the same reviewed change.
+# Every policy entry is mandatory. Keep this set identical to the publisher's
+# --required-producer arguments; omission, duplication, or an unexpected bundle
+# fails before a GitHub Release is created.
 PRODUCER_POLICIES = {
     "macos-arm64": ProducerPolicy(
         platform="macos",
         architecture="arm64",
         asset_suffix=".dmg",
+        asset_count=1,
+    ),
+    "windows-x64": ProducerPolicy(
+        platform="windows",
+        architecture="x86_64",
+        asset_suffix=".exe",
         asset_count=1,
     ),
 }

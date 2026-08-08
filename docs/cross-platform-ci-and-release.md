@@ -54,8 +54,8 @@ contract. A fake result must not be reported as hardware qualification.
 
 ## Release producer/publisher boundary
 
-The tag workflow keeps macOS as the only required release artifact initially.
-It has three stages:
+The tag workflow requires macOS arm64 and Windows x64 release artifacts. It has
+four stages:
 
 1. `validate` accepts only a calendar-version `v*` tag whose commit is contained
    in `main`.
@@ -64,7 +64,13 @@ It has three stages:
    notarizes, staples, and verifies the app and DMG. It then uploads one Actions
    artifact containing the DMG, `SHA256SUMS.txt`, and metadata binding the
    producer to the tag and exact source revision.
-3. `publish` is the only job with `contents: write`. It downloads every required
+3. `produce_windows` waits behind the protected `windows-release` Environment,
+   requires the selected provider's protected one-file signing interface, builds
+   the per-user NSIS installer, verifies the exact Authenticode identity and
+   timestamp on the installer and installed executable payloads, and exercises
+   preservation/removal before uploading its producer bundle. Until a provider
+   and CI identity are selected, this job intentionally fails at preflight.
+4. `publish` is the only job with `contents: write`. It downloads every required
    producer bundle, requires the producer set to match exactly, recomputes all
    sizes and SHA-256 digests, and verifies tag/revision/platform metadata before
    it creates a GitHub Release.
@@ -82,9 +88,9 @@ replacement draft. A failure before publication keeps the release private and
 attempts to remove only the draft created by that run. An existing release is
 never overwritten.
 
-Signing and notarization secrets exist only in the macOS producer. The
-publisher receives no signing credentials, and producers never receive
-`contents: write`.
+Signing and notarization secrets exist only in their protected platform
+producer. The publisher receives no signing credentials, and producers never
+receive `contents: write`.
 
 ## Adding a release platform
 

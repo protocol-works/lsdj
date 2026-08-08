@@ -120,6 +120,12 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
         cmd.args(["--generation-server", "--port", &port.to_string()]);
         return Ok(cmd);
     }
+    if std::env::var_os("LSDJ_MANAGED_BACKEND_REQUIRED").is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the verified app-managed backend runtime is not installed",
+        ));
+    }
 
     let overridden = std::env::var("LSDJ_GENERATION_CMD");
     let spec = overridden
@@ -162,5 +168,13 @@ mod tests {
         assert_eq!(server.port(), None);
 
         std::env::remove_var("LSDJ_GENERATION_CMD");
+
+        // Packaged Windows/Linux builds never fall through to the developer
+        // `uv run` default while the first-run managed runtime is absent.
+        std::env::set_var("LSDJ_MANAGED_BACKEND_REQUIRED", "1");
+        let error = generation_command(5123).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("app-managed backend runtime"));
+        std::env::remove_var("LSDJ_MANAGED_BACKEND_REQUIRED");
     }
 }
