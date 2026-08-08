@@ -6,6 +6,7 @@
 
 !define LSDJ_DATA_ROOT "$LOCALAPPDATA\LSDJ"
 !define LSDJ_DATA_MARKER "${LSDJ_DATA_ROOT}\.lsdj-data-root"
+Var LsdjDeleteData
 Var LsdjDataRemovalFailed
 
 ; Return 1 in $R9 only when the marker contains LSDJ's exact application ID.
@@ -32,6 +33,7 @@ FunctionEnd
 !macro NSIS_HOOK_PREUNINSTALL
   ; The normal checkbox is deliberately unchecked by default. Silent removal
   ; must name the destructive option; /S alone always preserves user assets.
+  StrCpy $LsdjDeleteData 0
   StrCpy $LsdjDataRemovalFailed 0
   ClearErrors
   ${GetOptions} $CMDLINE "/PURGE-LSDJ-DATA" $R8
@@ -64,10 +66,17 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
   lsdj_data_decision_done:
+
+  ; Tauri's generic checkbox handling recursively removes its APPDATA and
+  ; LOCALAPPDATA bundle-ID roots. Those are not part of the path/size shown
+  ; above, so preserve the user's choice in our variable and suppress that
+  ; undisclosed built-in deletion. The post hook removes only LSDJ_DATA_ROOT.
+  StrCpy $LsdjDeleteData $DeleteAppDataCheckboxState
+  StrCpy $DeleteAppDataCheckboxState 0
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ${If} $DeleteAppDataCheckboxState = 1
+  ${If} $LsdjDeleteData = 1
   ${AndIf} $UpdateMode <> 1
     ; Re-check immediately before the destructive operation. Never broaden this
     ; target or replace it with a computed parent directory.
