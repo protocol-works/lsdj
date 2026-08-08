@@ -10,8 +10,10 @@
 //! ([`crate::generation`]): a disabled or failed start just leaves the endpoint
 //! unadvertised (`port() == None`).
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::Request;
 use axum::http::{header::AUTHORIZATION, StatusCode};
@@ -364,6 +366,98 @@ fn next_generation_job() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// How many generation jobs `GenerationJobs` remembers. A show generates a
+/// handful; the cap only bounds a runaway session.
+const MAX_TRACKED_JOBS: usize = 16;
+
+/// The agent generation jobs the MCP surface tracks (#8): `generate_track`
+/// answers immediately with a job id and the work continues in a spawned task —
+/// a full track generates at ~2.3 s of audio per wall-clock second, which
+/// outlives MCP client timeouts (observed live: a 240 s track killed the tool
+/// call at 60 s). Tauri-managed (app-wide), so a reconnecting MCP session still
+/// sees jobs the previous session started. Ids are [`next_generation_job`]'s —
+/// the same ids the `mcp://generation` UI events carry.
+#[derive(Default)]
+pub struct GenerationJobs(Mutex<VecDeque<GenerationJob>>);
+
+struct GenerationJob {
+    id: u64,
+    kind: &'static str,
+    title: String,
+    prompt: String,
+    deck: Option<usize>,
+    started: Instant,
+    /// `None` while running; then the tool-style result and how long it took.
+    outcome: Option<(Result<String, String>, Duration)>,
+}
+
+impl GenerationJobs {
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<GenerationJob>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Record a job as running. Evicts the oldest *finished* job past the cap
+    /// (running jobs are never dropped — their `finish` must still land).
+    fn begin(&self, id: u64, kind: &'static str, title: &str, prompt: &str, deck: Option<usize>) {
+        let mut jobs = self.lock();
+        if jobs.len() >= MAX_TRACKED_JOBS {
+            if let Some(oldest_done) = jobs.iter().position(|j| j.outcome.is_some()) {
+                jobs.remove(oldest_done);
+            }
+        }
+        jobs.push_back(GenerationJob {
+            id,
+            kind,
+            title: title.to_string(),
+            prompt: prompt.to_string(),
+            deck,
+            started: Instant::now(),
+            outcome: None,
+        });
+    }
+
+    /// Record a running job's result (the message `generate_track` would have
+    /// returned synchronously, or the error).
+    fn finish(&self, id: u64, result: Result<String, String>) {
+        let mut jobs = self.lock();
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            let took = job.started.elapsed();
+            job.outcome = Some((result, took));
+        }
+    }
+
+    /// The `generation_status` payload: every tracked job, newest first.
+    fn report(&self) -> String {
+        let jobs: Vec<_> = self
+            .lock()
+            .iter()
+            .rev()
+            .map(|job| {
+                let (status, detail, elapsed) = match &job.outcome {
+                    None => ("running", None, job.started.elapsed()),
+                    Some((Ok(message), took)) => ("done", Some(message.clone()), *took),
+                    Some((Err(message), took)) => ("failed", Some(message.clone()), *took),
+                };
+                json!({
+                    "job": job.id,
+                    "kind": job.kind,
+                    "title": job.title,
+                    "prompt": job.prompt,
+                    "deck": job.deck,
+                    "status": status,
+                    "elapsedSeconds": elapsed.as_secs(),
+                    "detail": detail,
+                })
+            })
+            .collect();
+        if jobs.is_empty() {
+            "no generation jobs yet — generate_track starts one".to_string()
+        } else {
+            json!({ "jobs": jobs }).to_string()
+        }
+    }
+}
+
 /// The MCP path's counterpart of the webview's `randomSongTitle()`
 /// (`frontend/src/media/songTitle.ts`, same word lists): a throwaway-but-pleasant
 /// two-word name, so a long prompt never becomes the row title or the on-disk
@@ -391,7 +485,9 @@ fn pleasant_title() -> String {
     )
 }
 
-/// Inline each tool schema's local `#/$defs/*` refs and drop `$defs`.
+/// Normalise every tool's input schema into the plainest shape MCP clients
+/// handle: inline local `#/$defs/*` refs, then strip the `null` variants
+/// schemars emits for `Option<…>` params.
 ///
 /// schemars emits nested param types (`PadPointSnap`, `StyleTargetSnap`, the
 /// enum args…) as `$ref`s into `$defs`, and rmcp 1.8 hardcodes its schemars
@@ -400,13 +496,13 @@ fn pleasant_title() -> String {
 /// leaving those params untyped — the model then sends a JSON *string* where
 /// a struct is expected (observed live with `set_style`'s cursor). With every
 /// ref inlined there is nothing to strip.
-fn inline_local_refs(router: &mut ToolRouter<McpHandler>) {
+fn normalize_tool_schemas(router: &mut ToolRouter<McpHandler>) {
     for route in router.map.values_mut() {
         let mut schema = serde_json::Value::Object(route.attr.input_schema.as_ref().clone());
-        let Some(defs) = schema.get("$defs").and_then(|d| d.as_object()).cloned() else {
-            continue;
-        };
-        inline_refs(&mut schema, &defs, 0);
+        if let Some(defs) = schema.get("$defs").and_then(|d| d.as_object()).cloned() {
+            inline_refs(&mut schema, &defs, 0);
+        }
+        strip_null_variants(&mut schema, 0);
         let serde_json::Value::Object(mut object) = schema else {
             unreachable!("schema root stays an object");
         };
@@ -455,11 +551,63 @@ fn inline_refs(
     }
 }
 
+/// Strip the `null` variants schemars emits for `Option<…>` params:
+/// `"type": ["number", "null"]` and `anyOf: [X, {"type": "null"}]`. At least
+/// one MCP client (Claude Code) drops array-valued `type`s and `anyOf`
+/// wrappers when surfacing the schema, leaving the param untyped — the model
+/// then sends the value as a JSON *string* the server's serde rejects
+/// (observed live with `ramp_ms` and `loras`, session 4). Optionality already
+/// lives in `required`, and serde accepts an explicit null regardless of the
+/// schema, so the null variant carries nothing a tool-calling client needs.
+fn strip_null_variants(value: &mut serde_json::Value, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Array(types)) = map.get_mut("type") {
+                types.retain(|t| t != "null");
+                if let [only] = types.as_slice() {
+                    let only = only.clone();
+                    map.insert("type".to_owned(), only);
+                }
+            }
+            // `anyOf: [X, {"type": "null"}]` collapses to X merged under the
+            // field's own siblings (siblings win — the per-field doc is there,
+            // same rule as inline_refs).
+            let sole_branch = map.get("anyOf").and_then(|v| v.as_array()).and_then(|branches| {
+                let mut real = branches
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) != Some("null"));
+                match (real.next().and_then(|b| b.as_object()), real.next()) {
+                    (Some(only), None) if branches.len() > 1 => Some(only.clone()),
+                    _ => None,
+                }
+            });
+            if let Some(branch) = sole_branch {
+                map.remove("anyOf");
+                for (key, sub) in branch {
+                    map.entry(key).or_insert(sub);
+                }
+            }
+            for sub in map.values_mut() {
+                strip_null_variants(sub, depth + 1);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for sub in items {
+                strip_null_variants(sub, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tool_router]
 impl McpHandler {
     pub fn new(app: AppHandle) -> Self {
         let mut tool_router = Self::tool_router();
-        inline_local_refs(&mut tool_router);
+        normalize_tool_schemas(&mut tool_router);
         Self { app, tool_router }
     }
 
@@ -1312,11 +1460,19 @@ impl McpHandler {
     /// Generate a full track and load it onto a deck (the user's "compose a track and
     /// drop it on a deck"). Saves to the songs library, then asks the webview to load
     /// it — the same path as `load_track`, so the deck flips to playback and shows it.
+    ///
+    /// Async (#8): answers immediately with a job id and spawns the work — a full
+    /// track generates at ~2.3 s of audio per wall-clock second, which outlives MCP
+    /// client timeouts (a 240 s track died at the client's 60 s live). The spawned
+    /// task lands its result in [`GenerationJobs`] for `generation_status`.
     #[tool(
         description = "Generate a full track (Stable Audio 3, long-form) from a text \
                        prompt, save it to the songs library, and load it onto a deck \
-                       (flipping it to playback). Optional `loras` applies installed \
-                       style adapters (see list_loras). deck 0 = A, 1 = B."
+                       (flipping it to playback). Returns immediately with a job id — \
+                       generation runs in the background at roughly 2.3 s of audio per \
+                       second, so keep mixing and poll generation_status (or watch \
+                       get_state for the deck to flip). Optional `loras` applies \
+                       installed style adapters (see list_loras). deck 0 = A, 1 = B."
     )]
     async fn generate_track(
         &self,
@@ -1333,21 +1489,43 @@ impl McpHandler {
         let job = next_generation_job();
         let title = pleasant_title();
         self.emit_generation(job, "start", "track", &prompt, &title, Some(deck), false);
-        let result = self
-            .generate_track_inner(deck, prompt.clone(), seconds, &title, &loras.unwrap_or_default())
-            .await;
-        self.emit_generation(
-            job,
-            if result.is_ok() { "done" } else { "error" },
-            "track",
-            &prompt,
-            &title,
-            Some(deck),
-            false,
-        );
-        match result {
-            Ok(message) | Err(message) => message,
-        }
+        self.app
+            .state::<GenerationJobs>()
+            .begin(job, "track", &title, &prompt, Some(deck));
+        let handler = self.clone();
+        let loras = loras.unwrap_or_default();
+        let spawned_title = title.clone();
+        let spawned_prompt = prompt.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = handler
+                .generate_track_inner(deck, spawned_prompt.clone(), seconds, &spawned_title, &loras)
+                .await;
+            handler.emit_generation(
+                job,
+                if result.is_ok() { "done" } else { "error" },
+                "track",
+                &spawned_prompt,
+                &spawned_title,
+                Some(deck),
+                false,
+            );
+            handler.app.state::<GenerationJobs>().finish(job, result);
+        });
+        let eta = (seconds / 2.3).round() as u32;
+        format!(
+            "track generation started as job {job}: \"{title}\" ({seconds:.0}s) will load \
+             onto deck {deck} when done, roughly {eta}s from now. Keep mixing — poll \
+             generation_status to see it land."
+        )
+    }
+
+    #[tool(
+        description = "Status of this app run's generation jobs (generate_track runs in \
+                       the background): running/done/failed per job with elapsed seconds \
+                       and, once finished, what loaded where. No arguments."
+    )]
+    async fn generation_status(&self) -> String {
+        self.app.state::<GenerationJobs>().report()
     }
 
     /// The fallible body of [`generate_track`].
@@ -1762,7 +1940,8 @@ fn generate_token() -> String {
 mod tests {
     use super::{
         constant_time_eq, generate_request_body, generate_token, inline_refs,
-        load_or_generate_token, pleasant_title, save_token, LoraArg,
+        load_or_generate_token, normalize_tool_schemas, pleasant_title, save_token,
+        strip_null_variants, GenerationJobs, LoraArg, McpHandler, MAX_TRACKED_JOBS,
     };
     use serde_json::json;
 
@@ -1801,6 +1980,137 @@ mod tests {
         assert_eq!(items["required"], json!(["x", "y"]));
         // Enum defs surface their values — the client can finally see them.
         assert_eq!(schema["properties"]["band"]["enum"], json!(["low", "mid", "high"]));
+    }
+
+    #[test]
+    fn strip_null_variants_types_optional_params() {
+        // The session-4 live failure: schemars emits Option<…> params as
+        // draft-2020-12 nullable shapes, a client drops the array-valued
+        // `type`/`anyOf`, and the untyped param arrives as a string.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "ramp_ms": { "format": "float", "type": ["number", "null"] },
+                "loras": {
+                    "items": {
+                        "type": "object",
+                        "properties": { "sample": { "type": ["string", "null"] } }
+                    },
+                    "type": ["array", "null"]
+                },
+                "mode": {
+                    "anyOf": [
+                        { "description": "the type doc", "enum": ["chord", "onset"], "type": "string" },
+                        { "type": "null" }
+                    ],
+                    "description": "the field doc"
+                }
+            }
+        });
+        strip_null_variants(&mut schema, 0);
+        assert_eq!(schema["properties"]["ramp_ms"]["type"], "number");
+        assert_eq!(schema["properties"]["loras"]["type"], "array");
+        // Nested optional fields normalise too.
+        let sample = &schema["properties"]["loras"]["items"]["properties"]["sample"];
+        assert_eq!(sample["type"], "string");
+        // The Option anyOf collapses onto the field; the per-field doc wins.
+        let mode = &schema["properties"]["mode"];
+        assert!(mode.get("anyOf").is_none());
+        assert_eq!(mode["type"], "string");
+        assert_eq!(mode["enum"], json!(["chord", "onset"]));
+        assert_eq!(mode["description"], "the field doc");
+    }
+
+    #[test]
+    fn normalized_schemas_carry_no_client_hostile_shapes() {
+        // Walk every real tool schema post-normalisation: no $ref/$defs, no
+        // nullable type array, no Option anyOf — the shapes MCP clients have
+        // been observed to strip (sessions 3 and 4).
+        fn check(tool: &str, value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    assert!(
+                        !map.contains_key("$ref") && !map.contains_key("$defs"),
+                        "{tool}: $ref/$defs survived normalisation"
+                    );
+                    if let Some(types) = map.get("type").and_then(|t| t.as_array()) {
+                        assert!(
+                            !types.iter().any(|t| t == "null"),
+                            "{tool}: nullable type array survived"
+                        );
+                    }
+                    if let Some(branches) = map.get("anyOf").and_then(|b| b.as_array()) {
+                        assert!(
+                            !branches
+                                .iter()
+                                .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("null")),
+                            "{tool}: Option anyOf survived"
+                        );
+                    }
+                    map.values().for_each(|sub| check(tool, sub));
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|sub| check(tool, sub)),
+                _ => {}
+            }
+        }
+        let mut router = McpHandler::tool_router();
+        normalize_tool_schemas(&mut router);
+        for route in router.map.values() {
+            let schema = serde_json::Value::Object(route.attr.input_schema.as_ref().clone());
+            check(route.attr.name.as_ref(), &schema);
+        }
+        // And the live-failure params specifically end up plainly typed.
+        let schema_of = |name: &str| {
+            let route = router.map.values().find(|r| r.attr.name == name).unwrap();
+            serde_json::Value::Object(route.attr.input_schema.as_ref().clone())
+        };
+        assert_eq!(schema_of("set_crossfade")["properties"]["ramp_ms"]["type"], "number");
+        assert_eq!(schema_of("generate_track")["properties"]["loras"]["type"], "array");
+    }
+
+    #[test]
+    fn generation_jobs_report_running_then_finished() {
+        let jobs = GenerationJobs::default();
+        assert!(jobs.report().starts_with("no generation jobs"));
+        jobs.begin(7, "track", "Velvet Mirage", "hyperfocus chiptune", Some(1));
+        let running: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        assert_eq!(running["jobs"][0]["job"], 7);
+        assert_eq!(running["jobs"][0]["status"], "running");
+        assert_eq!(running["jobs"][0]["deck"], 1);
+        assert_eq!(running["jobs"][0]["detail"], json!(null));
+        jobs.finish(7, Ok("loaded onto deck 1".to_string()));
+        let done: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        assert_eq!(done["jobs"][0]["status"], "done");
+        assert_eq!(done["jobs"][0]["detail"], "loaded onto deck 1");
+        jobs.begin(8, "track", "Neon Halo", "acid techno", Some(0));
+        jobs.finish(8, Err("generation failed (500)".to_string()));
+        // Newest first, failures surfaced as such.
+        let both: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        assert_eq!(both["jobs"][0]["job"], 8);
+        assert_eq!(both["jobs"][0]["status"], "failed");
+        assert_eq!(both["jobs"][1]["job"], 7);
+    }
+
+    #[test]
+    fn generation_jobs_evict_finished_before_running() {
+        let jobs = GenerationJobs::default();
+        // Job 0 finished, the rest still running — past the cap the finished
+        // one goes; a running job must never be dropped mid-flight.
+        for id in 0..MAX_TRACKED_JOBS as u64 {
+            jobs.begin(id, "track", "t", "p", None);
+        }
+        jobs.finish(0, Ok("done".to_string()));
+        jobs.begin(99, "track", "t", "p", None);
+        let report: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        let ids: Vec<_> = report["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["job"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids.len(), MAX_TRACKED_JOBS);
+        assert!(!ids.contains(&0), "the finished job should have been evicted");
+        assert!(ids.contains(&99) && ids.contains(&1));
     }
 
     #[test]

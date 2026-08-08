@@ -76,21 +76,47 @@ working notes — commit or fold into issues as you see fit.
     with a pointer). Wire contract unit-tested. NOT yet fired end-to-end
     against the backend — see "What's left".
 
+- **DONE (2026-08-08 session 5) — the two reasons the show-night agent had to
+  script around MCP, fixed. Not yet live-verified:**
+  - **#15 Option params schema fix** — session 4's live failure: schemars 1.x
+    emits `Option<…>` params as draft-2020-12 nullable shapes
+    (`"type": ["number", "null"]` for `ramp_ms`, `["array", "null"]` for
+    `loras`, an `anyOf`+null for `set_notes.mode`), and the Claude Code
+    harness drops array-valued `type`s/`anyOf` wrappers — the param surfaces
+    untyped, the model sends a JSON *string*, server serde rejects it.
+    `inline_local_refs` became `normalize_tool_schemas`: refs inline as
+    before, then `strip_null_variants` removes the null variants (optionality
+    already lives in `required`; serde accepts null regardless). Router-wide
+    regression test asserts no client-hostile shape survives on any tool.
+  - **#8 async generate_track** — `generate_track` now returns immediately
+    with a job id (+ ETA at ~2.3 s audio/s) and spawns the
+    generate→save→load work; results land in a Tauri-managed `GenerationJobs`
+    registry (app-wide, survives MCP session reconnects; running jobs never
+    evicted). New no-arg `generation_status` tool reports every job newest
+    first (running/done/failed, elapsed seconds, result message). The
+    `mcp://generation` UI events fire exactly as before. The 380 s server cap
+    is now reachable through any MCP client.
+
 ## What's left (next session)
 
-1. **Fire a LoRA generation end-to-end** — the tool surface is live, the
-   request contract is unit-tested, but no adapter-stacked generation has hit
-   the backend yet. Jake wants a hyperfocus chiptune:
-   `generate_track` deck 1, ~60 s, `loras: [{"name":
+1. **Live-verify session 5** (needs a rebuilt app + fresh MCP session):
+   `generate_track` returns the job id immediately; `generation_status` shows
+   running → done; the deck flips when the track lands; `ramp_ms`/`loras`
+   accepted as *typed* params through the Claude Code harness (no
+   stringification, no raw JSON-RPC workaround).
+2. **Fire a LoRA generation end-to-end** — now unblocked by #15. Jake wants a
+   hyperfocus chiptune: `generate_track` deck 1, ~60 s, `loras: [{"name":
    "medium/zentai-chiptune-step-20000-epoch-909", "strength": 1.0}]`.
    (Adapters are per-base: the two installed ride "medium" → tracks only.)
-2. **#8 async generation job** — still the biggest structural gap: a 45 s
-   track = ~20 s generation (~2.3× realtime), so ~2-minute tracks trip a 60 s
-   MCP client; the 380 s server cap is unreachable without a job id + progress.
 3. **#10 remainder** — optional: `ramp_ms` on `set_fx_amount` (needs the FX
    curves driven audio-rate, like the EQ's `Shared`+`follow()` pattern).
 4. **co-DJ SKILL.md** (below) — now should also cover `ramp_ms`, `toggle_pad`,
-   `transport.playing`, and the LoRA flow (`list_loras` → generate).
+   `transport.playing`, the LoRA flow (`list_loras` → generate), and the async
+   generate_track → generation_status loop.
+5. **Session-4 leftovers:** first MCP call after an idle stretch sometimes
+   times out (-32001; immediate retry succeeds) — worth a look at keep-alives;
+   `get_state` intermittently shows `mainDevice: ""` while audio works
+   (display bug).
 
 ### Workflow gotchas (learned the hard way, session 3)
 
@@ -189,12 +215,16 @@ working notes — commit or fold into issues as you see fit.
   **Extends to samples:** `generate_sample` filenames are the raw prompt
   truncated mid-word (e.g. `…club techno transiti.wav`), punctuation swapped to
   `-`. Same fix: short auto-title, keep the prompt as metadata.
-- **#8 Long `generate_track` may trip the ~60s MCP client timeout.** A 30s track
+- **#8 [FIXED, session 5 — async job + `generation_status`] Long `generate_track` may trip the ~60s MCP client timeout.** A 30s track
   returned fine; the server allows up to 380s. If confirmed, make generation
   async (job id / progress) instead of one blocking request. Ties to #4/#6.
   **Timing data (session 3):** a 45 s track generated in ~19.7 s wall clock
   (~2.3× realtime), so the ~60 s client timeout bites around the ~2-minute-track
   mark; the 380 s server cap is unreachable without the async job.
+  **Confirmed live (session 4):** a 240 s track through the Claude Code client
+  died at 60 s (the raw JSON-RPC workaround completed it in ~2 min). Fixed by
+  spawning the work and answering with the job id — see the session-5 status
+  entry.
 - **#13 [FIXED, session 3 part 2 — `transport.playing`] `get_state` deck `playing` is false while a playback
   transport rolls — MED.** Loaded "Burning Spire" on A, transport playing
   (playhead 1.9 s → 17.6 s, audible), but the deck's `playing` flag stayed
