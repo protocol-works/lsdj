@@ -158,6 +158,11 @@ fn pcm_from_le_bytes(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+type StatusSink = Box<dyn FnMut(String) + Send>;
+type PcmSink = Box<dyn FnMut(&[u8]) + Send>;
+type DeckStatusSinks = [StatusSink; lsdj_engine::DECK_COUNT];
+type DeckPcmSinks = [PcmSink; lsdj_engine::DECK_COUNT];
+
 /// The read loop: drain frames from the sidecar until EOF/error. PCM frames are
 /// posted to the deck's ring (the non-RT producer side) and then TEED to `on_pcm`
 /// (gap 1: the analysis feed to the webview); status frames go to `on_status` (the
@@ -198,6 +203,41 @@ pub fn run_reader(
     deck_handle
 }
 
+/// Shared-worker variant of [`run_reader`].  Every PCM/status payload starts
+/// with a deck byte (`0` or `1`); the remaining bytes are exactly the existing
+/// per-deck payload.  Invalid deck indices are ignored without disturbing the
+/// other stream.
+pub fn run_shared_reader(
+    mut stream: impl Read,
+    mut deck_handles: [DeckHandle; lsdj_engine::DECK_COUNT],
+    on_status: &mut DeckStatusSinks,
+    on_pcm: &mut DeckPcmSinks,
+) -> [DeckHandle; lsdj_engine::DECK_COUNT] {
+    while let Ok(Some((frame_type, payload))) = read_frame(&mut stream) {
+        let Some((&deck, body)) = payload.split_first() else {
+            continue;
+        };
+        let deck = deck as usize;
+        if deck >= lsdj_engine::DECK_COUNT {
+            continue;
+        }
+        match frame_type {
+            FRAME_PCM => {
+                let samples = pcm_from_le_bytes(body);
+                deck_handles[deck].post_pcm(&samples);
+                on_pcm[deck](body);
+            }
+            FRAME_STATUS => {
+                if let Ok(text) = String::from_utf8(body.to_vec()) {
+                    on_status[deck](text);
+                }
+            }
+            _ => {}
+        }
+    }
+    deck_handles
+}
+
 /// What a reader thread hands back when its sidecar connection ends: the deck
 /// ring producer ([`DeckHandle`]) and the status sink. The engine's input ring is
 /// PERMANENT across a sidecar exit (the consumer lives inside the engine), so the
@@ -205,7 +245,7 @@ pub fn run_reader(
 /// a model switch. [`Sidecar::restart`] joins the reader to take these back.
 struct ReaderExit {
     handle: DeckHandle,
-    on_status: Box<dyn FnMut(String) + Send>,
+    on_status: StatusSink,
 }
 
 /// The freshly-built control writer, child handle, stop flag, and reader thread —
@@ -215,6 +255,18 @@ struct ReaderParts {
     child: Arc<Mutex<Option<SupervisedChild>>>,
     stop: Arc<AtomicBool>,
     reader: JoinHandle<ReaderExit>,
+}
+
+struct SharedReaderExit {
+    handles: [DeckHandle; lsdj_engine::DECK_COUNT],
+    on_status: DeckStatusSinks,
+}
+
+struct SharedReaderParts {
+    control: Arc<Mutex<Option<TcpStream>>>,
+    child: Arc<Mutex<Option<SupervisedChild>>>,
+    stop: Arc<AtomicBool>,
+    reader: JoinHandle<SharedReaderExit>,
 }
 
 /// One supervised deck sidecar: the spawned Python process, the control writer
@@ -285,7 +337,7 @@ fn start_reader(
     deck_id: &str,
     child: SupervisedChild,
     handle: DeckHandle,
-    mut on_status: Box<dyn FnMut(String) + Send>,
+    mut on_status: StatusSink,
     mut on_pcm: impl FnMut(&[u8]) + Send + 'static,
 ) -> ReaderParts {
     let control: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
@@ -329,6 +381,69 @@ fn start_reader(
         })
         .expect("failed to spawn lsdj sidecar reader thread");
     ReaderParts {
+        control,
+        child: Arc::new(Mutex::new(Some(child))),
+        stop,
+        reader,
+    }
+}
+
+fn bind_and_launch_shared(
+    models: &[String; lsdj_engine::DECK_COUNT],
+) -> io::Result<(TcpListener, SupervisedChild)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(false).ok();
+    let port = listener.local_addr()?.port();
+    let mut command = shared_sidecar_command(models, port)?;
+    let child = crate::child_process::spawn_grouped(&mut command)?;
+    Ok((listener, child))
+}
+
+fn start_shared_reader(
+    listener: TcpListener,
+    child: SupervisedChild,
+    handles: [DeckHandle; lsdj_engine::DECK_COUNT],
+    mut on_status: DeckStatusSinks,
+    mut on_pcm: DeckPcmSinks,
+) -> SharedReaderParts {
+    let control: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+    let stop = Arc::new(AtomicBool::new(false));
+    let control_for_reader = control.clone();
+    let stop_for_reader = stop.clone();
+    let reader = thread::Builder::new()
+        .name("lsdj-sidecar-shared".to_string())
+        .spawn(move || {
+            let stream = match accept_with_timeout(&listener, &stop_for_reader, ACCEPT_TIMEOUT) {
+                Some(stream) => stream,
+                None => {
+                    eprintln!("lsdj-sidecar-shared: sidecar never connected");
+                    return SharedReaderExit { handles, on_status };
+                }
+            };
+            stream.set_nodelay(true).ok();
+            match stream.try_clone() {
+                Ok(writer) => {
+                    *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = Some(writer)
+                }
+                Err(error) => {
+                    eprintln!("lsdj-sidecar-shared: cannot split socket: {error}");
+                    return SharedReaderExit { handles, on_status };
+                }
+            }
+            let handles = run_shared_reader(stream, handles, &mut on_status, &mut on_pcm);
+            *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            if !stop_for_reader.load(Ordering::Acquire) {
+                for (deck, sink) in on_status.iter_mut().enumerate() {
+                    sink(format!(
+                        "{{\"event\":\"worker_died\",\"deck\":\"{}\"}}",
+                        ["a", "b"][deck]
+                    ));
+                }
+            }
+            SharedReaderExit { handles, on_status }
+        })
+        .expect("failed to spawn shared LSDJ sidecar reader thread");
+    SharedReaderParts {
         control,
         child: Arc::new(Mutex::new(Some(child))),
         stop,
@@ -406,7 +521,12 @@ impl Sidecar {
         // the socket open and the reader blocked in `read_frame`; `shutdown` tears
         // down the SHARED socket so the reader's read returns EOF at once (and
         // signals the old sidecar to exit). The child kill then terminates it.
-        if let Some(writer) = self.control.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(writer) = self
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
         if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
@@ -474,25 +594,200 @@ impl Sidecar {
     }
 }
 
-/// All per-deck sidecars, held in Tauri managed state. The deck-control commands
+/// One supervised PyTorch process owning both deck states.  Different model
+/// selections remain legal, but load two model instances inside this one process;
+/// equal selections share one upstream model and keep independent continuation.
+pub struct SharedSidecar {
+    models: [String; lsdj_engine::DECK_COUNT],
+    taps: PcmTaps,
+    feed: AnalysisFeed,
+    control: Arc<Mutex<Option<TcpStream>>>,
+    child: Arc<Mutex<Option<SupervisedChild>>>,
+    stop: Arc<AtomicBool>,
+    reader: Option<JoinHandle<SharedReaderExit>>,
+}
+
+impl SharedSidecar {
+    pub fn spawn(
+        models: [String; lsdj_engine::DECK_COUNT],
+        handles: [DeckHandle; lsdj_engine::DECK_COUNT],
+        on_status: DeckStatusSinks,
+        taps: PcmTaps,
+        feed: AnalysisFeed,
+    ) -> Result<Self, (io::Error, [DeckHandle; lsdj_engine::DECK_COUNT])> {
+        let (listener, child) = match bind_and_launch_shared(&models) {
+            Ok(launch) => launch,
+            Err(error) => return Err((error, handles)),
+        };
+        let on_pcm: DeckPcmSinks = [
+            Box::new(pcm_tee(taps.clone(), feed.clone(), 0)),
+            Box::new(pcm_tee(taps.clone(), feed.clone(), 1)),
+        ];
+        let parts = start_shared_reader(listener, child, handles, on_status, on_pcm);
+        Ok(Self {
+            models,
+            taps,
+            feed,
+            control: parts.control,
+            child: parts.child,
+            stop: parts.stop,
+            reader: Some(parts.reader),
+        })
+    }
+
+    fn send_control(&self, deck: usize, json: &str) {
+        if deck >= lsdj_engine::DECK_COUNT {
+            return;
+        }
+        let mut payload = Vec::with_capacity(1 + json.len());
+        payload.push(deck as u8);
+        payload.extend_from_slice(json.as_bytes());
+        let mut guard = self.control.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(stream) = guard.as_mut() {
+            if let Err(error) = write_frame(stream, FRAME_CONTROL, &payload) {
+                eprintln!("lsdj-sidecar-shared: control write failed: {error}");
+                *guard = None;
+            }
+        }
+    }
+
+    fn send_embed(&self, deck: usize, id: &str, pcm: &[u8]) {
+        if deck >= lsdj_engine::DECK_COUNT {
+            return;
+        }
+        let mut payload = Vec::with_capacity(1 + 4 + id.len() + pcm.len());
+        payload.push(deck as u8);
+        payload.extend_from_slice(&(id.len() as u32).to_le_bytes());
+        payload.extend_from_slice(id.as_bytes());
+        payload.extend_from_slice(pcm);
+        let mut guard = self.control.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(stream) = guard.as_mut() {
+            if let Err(error) = write_frame(stream, FRAME_EMBED, &payload) {
+                eprintln!("lsdj-sidecar-shared: embed write failed: {error}");
+                *guard = None;
+            }
+        }
+    }
+
+    fn restart(&mut self, deck: usize, model: &str) -> io::Result<()> {
+        if deck >= lsdj_engine::DECK_COUNT {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid deck"));
+        }
+        let mut models = self.models.clone();
+        models[deck] = model.to_string();
+        let (listener, child) = bind_and_launch_shared(&models)?;
+
+        self.stop.store(true, Ordering::Release);
+        if let Some(writer) = self
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            crate::child_process::log_shutdown(
+                "shared sidecar restart",
+                old.shutdown(Duration::from_millis(500)),
+            );
+        }
+        let exit = self
+            .reader
+            .take()
+            .ok_or_else(|| io::Error::other("shared sidecar has no reader to reclaim"))?
+            .join()
+            .map_err(|_| io::Error::other("shared sidecar reader thread panicked"))?;
+
+        let mut on_status = exit.on_status;
+        for (index, sink) in on_status.iter_mut().enumerate() {
+            let deck = ["a", "b"][index];
+            let model = &models[index];
+            sink(
+                serde_json::json!({
+                    "event": "model_loading",
+                    "deck": deck,
+                    "model": model,
+                })
+                .to_string(),
+            );
+        }
+        let on_pcm: DeckPcmSinks = [
+            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 0)),
+            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 1)),
+        ];
+        let parts = start_shared_reader(listener, child, exit.handles, on_status, on_pcm);
+        self.models = models;
+        self.control = parts.control;
+        self.child = parts.child;
+        self.stop = parts.stop;
+        self.reader = Some(parts.reader);
+        Ok(())
+    }
+}
+
+impl Drop for SharedSidecar {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(writer) = self
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            crate::child_process::log_shutdown(
+                "shared sidecar",
+                child.shutdown(Duration::from_millis(500)),
+            );
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+/// All model sidecars, held in Tauri managed state. The deck-control commands
 /// forward validated JSON to the matching sidecar; a deck with no sidecar (spawn
 /// failed, or sidecars disabled) silently drops the command. Each slot is a
 /// `Mutex` so `deck_set_model` can mutate one sidecar (a model switch) through the
 /// shared `tauri::State` without a supervisor thread.
 pub struct Sidecars {
     decks: Vec<Mutex<Option<Sidecar>>>,
+    shared: Mutex<Option<SharedSidecar>>,
 }
 
 impl Sidecars {
     pub fn new(decks: Vec<Option<Sidecar>>) -> Self {
         Sidecars {
             decks: decks.into_iter().map(Mutex::new).collect(),
+            shared: Mutex::new(None),
+        }
+    }
+
+    pub fn new_shared(shared: SharedSidecar) -> Self {
+        Sidecars {
+            decks: (0..lsdj_engine::DECK_COUNT)
+                .map(|_| Mutex::new(None))
+                .collect(),
+            shared: Mutex::new(Some(shared)),
         }
     }
 
     /// Forward a JSON deck command to the sidecar for `deck` (a no-op for a deck
     /// without a live sidecar). `deck` is validated by the IPC layer.
     pub fn send(&self, deck: usize, json: &str) {
+        if let Some(shared) = self
+            .shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            shared.send_control(deck, json);
+            return;
+        }
         if let Some(slot) = self.decks.get(deck) {
             if let Some(sidecar) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
                 sidecar.send_control(json);
@@ -503,6 +798,15 @@ impl Sidecars {
     /// Route a style-sample embed (M15) to a deck's sidecar (a no-op for a deck
     /// without a live sidecar). `deck` is validated by the IPC layer.
     pub fn embed(&self, deck: usize, id: &str, pcm: &[u8]) {
+        if let Some(shared) = self
+            .shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            shared.send_embed(deck, id, pcm);
+            return;
+        }
         if let Some(slot) = self.decks.get(deck) {
             if let Some(sidecar) = slot.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
                 sidecar.send_embed(id, pcm);
@@ -515,6 +819,13 @@ impl Sidecars {
     /// (in which case the running sidecar is left untouched). `deck` is validated
     /// by the IPC layer.
     pub fn restart(&self, deck: usize, model: &str) -> Result<(), String> {
+        let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(shared) = shared.as_mut() {
+            return shared
+                .restart(deck, model)
+                .map_err(|error| error.to_string());
+        }
+        drop(shared);
         let slot = self.decks.get(deck).ok_or("invalid deck")?;
         let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
         match guard.as_mut() {
@@ -529,6 +840,7 @@ impl Sidecars {
     /// the Python sidecars also self-terminate on the socket EOF, but this makes
     /// the teardown deterministic.
     pub fn shutdown(&self) {
+        self.shared.lock().unwrap_or_else(|p| p.into_inner()).take();
         for slot in &self.decks {
             slot.lock().unwrap_or_else(|p| p.into_inner()).take();
         }
@@ -620,6 +932,29 @@ pub fn sidecar_base_command() -> io::Result<Command> {
     Ok(cmd)
 }
 
+/// Runtime selected by the native platform.  The value is always sent over the
+/// process boundary: Python never guesses and never falls back from CUDA to CPU.
+/// The override exists for model-free contract tests and qualification hosts;
+/// the Python policy layer still rejects an impossible platform/runtime pair.
+pub fn mrt2_runtime_for_platform() -> io::Result<String> {
+    let runtime = std::env::var("LSDJ_MRT2_RUNTIME").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "mlx".to_string()
+        } else if cfg!(any(target_os = "linux", target_os = "windows")) {
+            "pytorch-cuda".to_string()
+        } else {
+            "unsupported".to_string()
+        }
+    });
+    match runtime.as_str() {
+        "mlx" | "pytorch-cuda" => Ok(runtime),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("unsupported MRT2 runtime {runtime:?} for this platform"),
+        )),
+    }
+}
+
 /// Whether a status event ends the deck's transport: the worker stopped
 /// generating — it died, is reloading for a model switch, or halted ITSELF
 /// (`stopped`, a generation failure) — so the interface store's `playing`
@@ -633,7 +968,10 @@ pub fn sidecar_base_command() -> io::Result<Command> {
 pub fn transport_ended(status_json: &str) -> bool {
     matches!(
         status_event(status_json).as_deref(),
-        Some("worker_died") | Some("model_loading") | Some("stopped")
+        Some("worker_died")
+            | Some("startup_failed")
+            | Some("model_loading")
+            | Some("stopped")
     )
 }
 
@@ -651,11 +989,41 @@ pub fn status_event(status_json: &str) -> Option<String> {
 /// loopback `port` — the base command plus the deck-mode flags.
 pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Command> {
     let mut cmd = sidecar_base_command()?;
+    let runtime = mrt2_runtime_for_platform()?;
     cmd.args([
         "--deck",
         deck_id,
         "--model",
         model,
+        "--runtime",
+        &runtime,
+        "--port",
+        &port.to_string(),
+    ]);
+    Ok(cmd)
+}
+
+/// Build the one-process/two-deck PyTorch worker command selected by #109.
+pub fn shared_sidecar_command(
+    models: &[String; lsdj_engine::DECK_COUNT],
+    port: u16,
+) -> io::Result<Command> {
+    let mut cmd = sidecar_base_command()?;
+    let runtime = mrt2_runtime_for_platform()?;
+    if runtime != "pytorch-cuda" {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("shared MRT2 worker requires pytorch-cuda, got {runtime}"),
+        ));
+    }
+    cmd.args([
+        "--shared",
+        "--model-a",
+        &models[0],
+        "--model-b",
+        &models[1],
+        "--runtime",
+        &runtime,
         "--port",
         &port.to_string(),
     ]);
@@ -671,9 +1039,22 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn native_platform_selects_one_explicit_mrt2_runtime() {
+        let runtime = mrt2_runtime_for_platform().expect("supported build target");
+        if cfg!(target_os = "macos") {
+            assert_eq!(runtime, "mlx");
+        } else {
+            assert_eq!(runtime, "pytorch-cuda");
+        }
+    }
+
+    #[test]
     fn transport_ended_matches_only_worker_end_events() {
         // The three events after which the worker is no longer generating.
         assert!(transport_ended(r#"{"event":"worker_died","deck":"a"}"#));
+        assert!(transport_ended(
+            r#"{"event":"startup_failed","deck":"a","error":"CUDA unavailable"}"#
+        ));
         assert!(transport_ended(r#"{"event":"model_loading","deck":"a","model":"mrt2_base"}"#));
         // The worker halting itself (a generation failure) ends the transport
         // too — missing it wedged the play button behind a stale store.
@@ -752,6 +1133,53 @@ mod tests {
             "the deck ring should hold exactly the posted PCM"
         );
         assert_eq!(statuses, vec!["{\"event\":\"chunk\"}".to_string()]);
+    }
+
+    #[test]
+    fn shared_reader_routes_prefixed_frames_to_independent_decks() {
+        let mut engine = Engine::new();
+        let handles = [engine.create_deck(0), engine.create_deck(1)];
+        let free_before = [handles[0].free_samples(), handles[1].free_samples()];
+        let pcm = [0.25f32, -0.25f32]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut wire = Vec::new();
+        let mut deck_one_pcm = vec![1u8];
+        deck_one_pcm.extend_from_slice(&pcm);
+        write_frame(&mut wire, FRAME_PCM, &deck_one_pcm).unwrap();
+        let mut deck_zero_status = vec![0u8];
+        deck_zero_status.extend_from_slice(br#"{"event":"ready"}"#);
+        write_frame(&mut wire, FRAME_STATUS, &deck_zero_status).unwrap();
+
+        let statuses = Arc::new(Mutex::new(Vec::<(usize, String)>::new()));
+        let teed = Arc::new(Mutex::new(Vec::<(usize, Vec<u8>)>::new()));
+        let statuses_zero = statuses.clone();
+        let statuses_one = statuses.clone();
+        let teed_zero = teed.clone();
+        let teed_one = teed.clone();
+        let mut status_sinks: DeckStatusSinks = [
+            Box::new(move |value| statuses_zero.lock().unwrap().push((0, value))),
+            Box::new(move |value| statuses_one.lock().unwrap().push((1, value))),
+        ];
+        let mut pcm_sinks: DeckPcmSinks = [
+            Box::new(move |value| teed_zero.lock().unwrap().push((0, value.to_vec()))),
+            Box::new(move |value| teed_one.lock().unwrap().push((1, value.to_vec()))),
+        ];
+        let handles = run_shared_reader(
+            std::io::Cursor::new(wire),
+            handles,
+            &mut status_sinks,
+            &mut pcm_sinks,
+        );
+
+        assert_eq!(handles[0].free_samples(), free_before[0]);
+        assert_eq!(free_before[1] - handles[1].free_samples(), 2);
+        assert_eq!(
+            *statuses.lock().unwrap(),
+            vec![(0, "{\"event\":\"ready\"}".to_string())]
+        );
+        assert_eq!(*teed.lock().unwrap(), vec![(1, pcm)]);
     }
 
     /// A status frame arriving over a real loopback socket reaches the sink — the

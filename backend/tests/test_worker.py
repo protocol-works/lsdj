@@ -33,6 +33,13 @@ class FakeEngine:
         self.fail_set_notes = False
         self.fail_set_chunk_frames = False
         self.fail_set_generation = False
+        self.resets = []
+
+    def diagnostics(self):
+        return {"runtime": "fake", "hardware_qualified": False}
+
+    def reset(self, *, seed=None):
+        self.resets.append(seed)
 
     def render_clip(self, prompt, seconds):
         if self.fail_render:
@@ -126,7 +133,50 @@ def deck():
 def test_play_emits_audio(deck):
     deck.send(type="play")
     assert deck.next_event("audio") == FAKE_PCM
-    assert deck.next_event("chunk")["index"] == 0
+    chunk = deck.next_event("chunk")
+    assert chunk["index"] == 0
+    assert chunk["generation_latency_ms"] >= 0
+    assert chunk["queue_depth"] is not None
+    assert chunk["rtf"] is not None
+
+
+def test_ready_carries_runtime_diagnostics():
+    harness = DeckHarness()
+    harness.thread.start()
+    ready = harness.next_event("ready")
+    assert ready["runtime"] == {
+        "runtime": "fake",
+        "hardware_qualified": False,
+    }
+    harness.send(type="shutdown")
+    harness.thread.join(timeout=2)
+
+
+def test_startup_failure_is_structured_and_worker_exits():
+    out_queue = queue.Queue()
+
+    def fail(**_kwargs):
+        raise RuntimeError("CUDA unavailable")
+
+    run_deck_worker("a", "mrt2_small", queue.Queue(), out_queue, engine_factory=fail)
+    kind, status = out_queue.get_nowait()
+    assert kind == "status"
+    assert status == {
+        "event": "startup_failed",
+        "deck": "a",
+        "model": "mrt2_small",
+        "error": (
+            "RuntimeError: MRT2 worker startup failed; "
+            "inspect the local application log for details"
+        ),
+    }
+
+
+def test_reset_to_reseed_stops_generation_and_reports_contract(deck):
+    deck.send(type="reset", seed=42)
+    status = deck.next_event("reset")
+    assert status["seed"] == 42
+    assert deck.engine.resets == [42]
 
 
 def test_set_prompt_applies_as_single_prompt_style(deck):

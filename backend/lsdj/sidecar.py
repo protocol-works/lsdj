@@ -1,10 +1,10 @@
-"""Per-deck inference sidecar (Phase 2 part 4, ADR-0019).
+"""Native inference sidecar transport (ADR-0019 and ADR-0037).
 
-The Rust shell (`src-tauri/src/sidecar.rs`) spawns this process per deck and
-accepts its loopback-TCP connection. It runs the UNCHANGED `run_deck_worker`
-generation loop (`worker.py`) with its `cmd_queue` / `out_queue` bridged to the
-socket — so the inference loop is identical to the multiprocessing path; only the
-transport differs.
+The Rust shell (`src-tauri/src/sidecar.rs`) spawns one process per MLX deck on
+macOS, or one shared PyTorch/CUDA process holding two independent deck states on
+Linux and Windows. It accepts a loopback-TCP connection and runs the unchanged
+`run_deck_worker` generation loop (`worker.py`) with its `cmd_queue` / `out_queue`
+bridged to the socket. Only transport and process topology differ.
 
 Wire protocol (mirrors `src-tauri/src/sidecar.rs`):
 
@@ -15,6 +15,9 @@ Wire protocol (mirrors `src-tauri/src/sidecar.rs`):
 - STATUS (sidecar → engine): the worker's ``('status', dict)`` as UTF-8 JSON.
 - CONTROL (engine → sidecar): a deck command (``play``/``stop``/``set_style``…)
   as UTF-8 JSON.
+
+Shared-worker frames prefix payloads with a single deck byte (0 or 1). The Rust
+and Python transport tests cover both forms without loading either model stack.
 
 The transport (framing + the queue adapters) is testable against a socketpair
 with a fake engine — no model, no Rust; see `tests/test_sidecar.py`. The
@@ -30,7 +33,13 @@ import struct
 import sys
 import threading
 
-from .engine import DeckEngine
+from .mrt2 import (
+    AUTO_RUNTIME,
+    RUNTIME_CHOICES,
+    create_engine,
+    public_startup_error,
+    runtime_manifest,
+)
 from .worker import run_deck_worker
 
 FRAME_PCM = 1
@@ -127,15 +136,169 @@ class SocketCmdQueue:
         return self._queue.get_nowait()
 
 
+class SharedSocketOutQueue:
+    """Multiplex one worker process's per-deck output onto one socket."""
+
+    def __init__(self, sock: socket.socket, deck: int, lock: threading.Lock) -> None:
+        self._sock = sock
+        self._deck = deck
+        self._lock = lock
+
+    def put(self, item: tuple[str, object]) -> None:
+        kind, payload = item
+        if kind == "audio":
+            frame_type = FRAME_PCM
+            encoded = payload
+        elif kind == "status":
+            frame_type = FRAME_STATUS
+            encoded = json.dumps(payload).encode("utf-8")
+        else:
+            return
+        with self._lock:
+            write_frame(self._sock, frame_type, bytes([self._deck]) + encoded)
+
+
+class SharedSocketCmdQueues:
+    """Demultiplex deck-prefixed control/embed frames for a shared worker."""
+
+    def __init__(self, reader, deck_count: int = 2) -> None:
+        self.queues = [queue.Queue() for _ in range(deck_count)]
+        self._reader = reader
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self) -> None:
+        while True:
+            frame = read_frame(self._reader)
+            if frame is None:
+                for target in self.queues:
+                    target.put({"type": "shutdown"})
+                return
+            frame_type, payload = frame
+            if not payload or payload[0] >= len(self.queues):
+                continue
+            target = self.queues[payload[0]]
+            body = payload[1:]
+            if frame_type == FRAME_EMBED:
+                if len(body) < 4:
+                    continue
+                id_len = int.from_bytes(body[:4], "little")
+                if id_len > len(body) - 4:
+                    continue
+                sample_id = body[4 : 4 + id_len].decode("utf-8", "replace")
+                target.put(
+                    {
+                        "type": "embed_sample",
+                        "id": sample_id,
+                        "pcm": bytes(body[4 + id_len :]),
+                    }
+                )
+                continue
+            if frame_type != FRAME_CONTROL:
+                continue
+            try:
+                command = json.loads(body)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(command, dict) and "type" in command:
+                target.put(command)
+
+
 def run_sidecar(
-    sock: socket.socket, deck_id: str, model: str, engine_factory=DeckEngine
+    sock: socket.socket,
+    deck_id: str,
+    model: str,
+    *,
+    runtime: str = AUTO_RUNTIME,
+    engine_factory=None,
 ) -> None:
     """Bridge `sock` to `run_deck_worker` for `deck_id` and run the generation loop
     until the socket closes. `engine_factory` is injectable for tests."""
     reader = sock.makefile("rb")
     cmd_queue = SocketCmdQueue(reader)
     out_queue = SocketOutQueue(sock)
+    if engine_factory is None:
+
+        def engine_factory(*, model):
+            return create_engine(model=model, runtime=runtime)
+
     run_deck_worker(deck_id, model, cmd_queue, out_queue, engine_factory=engine_factory)
+
+
+def run_shared_sidecar(
+    sock: socket.socket,
+    models: tuple[str, str],
+    *,
+    runtime: str,
+    engine_factory=None,
+) -> None:
+    """Run both decks in one process, sharing a model when their pins match."""
+
+    reader = sock.makefile("rb")
+    commands = SharedSocketCmdQueues(reader)
+    send_lock = threading.Lock()
+    outputs = [SharedSocketOutQueue(sock, deck, send_lock) for deck in range(2)]
+    for deck, model in enumerate(models):
+        outputs[deck].put(
+            (
+                "status",
+                {"event": "warming", "deck": "ab"[deck], "model": model},
+            )
+        )
+    try:
+        if engine_factory is not None:
+            engines = [engine_factory(model=model) for model in models]
+        elif models[0] == models[1]:
+            primary = create_engine(model=models[0], runtime=runtime)
+            shared_deck = getattr(primary, "shared_deck", None)
+            if not callable(shared_deck):
+                raise RuntimeError(
+                    f"runtime {runtime!r} does not implement shared two-state topology"
+                )
+            engines = [primary, shared_deck()]
+        else:
+            # Preserve independent per-deck model selection.  Two different
+            # models share one supervised process but necessarily load twice.
+            engines = [create_engine(model=model, runtime=runtime) for model in models]
+
+        # Warm each distinct loaded model once before either deck can report
+        # readiness.  The shared clone marks itself as a non-owner/no-op warmup.
+        for engine in engines:
+            warm_up = getattr(engine, "warm_up", None)
+            if callable(warm_up):
+                warm_up()
+            if hasattr(engine, "_warmup_owner"):
+                engine._warmup_owner = False
+    except Exception as error:
+        for deck, model in enumerate(models):
+            outputs[deck].put(
+                (
+                    "status",
+                    {
+                        "event": "startup_failed",
+                        "deck": "ab"[deck],
+                        "model": model,
+                        "error": public_startup_error(error),
+                    },
+                )
+            )
+        return
+
+    threads = []
+    for deck, (model, engine) in enumerate(zip(models, engines, strict=True)):
+        thread = threading.Thread(
+            target=run_deck_worker,
+            args=("ab"[deck], model, commands.queues[deck], outputs[deck]),
+            kwargs={
+                "engine_factory": lambda *, model, value=engine: value,
+                "perform_warmup": False,
+            },
+            name=f"mrt2-deck-{'ab'[deck]}",
+        )
+        thread.start()
+        threads.append(thread)
+    for thread in threads:
+        thread.join()
 
 
 # --- Model tooling (the in-app model manager, issue #43) -------------------
@@ -235,6 +398,17 @@ def main(argv=None) -> None:
     parser.add_argument("--deck", help="deck id (e.g. a or b)")
     parser.add_argument("--model", help="model name (e.g. mrt2_small)")
     parser.add_argument(
+        "--shared", action="store_true", help="run both decks in one worker"
+    )
+    parser.add_argument("--model-a", help="shared-worker model for deck a")
+    parser.add_argument("--model-b", help="shared-worker model for deck b")
+    parser.add_argument(
+        "--runtime",
+        choices=RUNTIME_CHOICES,
+        default=AUTO_RUNTIME,
+        help="explicit MRT2 implementation selected by the native host",
+    )
+    parser.add_argument(
         "--port",
         type=int,
         help="loopback TCP port the shell is listening on",
@@ -249,12 +423,41 @@ def main(argv=None) -> None:
         metavar="NAME",
         help="download an exported Magenta model, emit JSON progress, then exit",
     )
+    parser.add_argument(
+        "--runtime-info",
+        action="store_true",
+        help="emit immutable PyTorch runtime/install metadata, then exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.runtime_info:
+        _emit(runtime_manifest())
+        return
 
     if args.init_resources or args.download_model:
         run_model_tooling(
             init_resources=args.init_resources,
             download_model=args.download_model,
+        )
+        return
+
+    if args.shared:
+        missing = [
+            name
+            for name in ("model_a", "model_b", "port")
+            if getattr(args, name) is None
+        ]
+        if missing:
+            parser.error(
+                "the following arguments are required in shared mode: "
+                + ", ".join("--" + name.replace("_", "-") for name in missing)
+            )
+        sock = socket.create_connection(("127.0.0.1", args.port))
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        run_shared_sidecar(
+            sock,
+            (args.model_a, args.model_b),
+            runtime=args.runtime,
         )
         return
 
@@ -269,7 +472,7 @@ def main(argv=None) -> None:
 
     sock = socket.create_connection(("127.0.0.1", args.port))
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    run_sidecar(sock, args.deck, args.model)
+    run_sidecar(sock, args.deck, args.model, runtime=args.runtime)
 
 
 if __name__ == "__main__":
