@@ -54,20 +54,28 @@ contract. A fake result must not be reported as hardware qualification.
 
 ## Release producer/publisher boundary
 
-The tag workflow keeps macOS as the only required release artifact initially.
-It has three stages:
+The tag workflow requires macOS and Linux release artifacts. It has three
+stages:
 
 1. `validate` accepts only a calendar-version `v*` tag whose commit is contained
    in `main`.
-2. `produce-macos` waits behind the protected `macos-release` Environment,
+2. Independent producers build their platform artifacts. `produce-macos` waits
+   behind the protected `macos-release` Environment,
    freezes the backend, imports ephemeral signing material, builds, signs,
    notarizes, staples, and verifies the app and DMG. It then uploads one Actions
    artifact containing the DMG, `SHA256SUMS.txt`, and metadata binding the
-   producer to the tag and exact source revision.
+   producer to the tag and exact source revision. `produce-linux` builds the
+   x86_64 AppImage on Ubuntu 22.04 (glibc 2.35), verifies its desktop/resource
+   layout and ELF dependencies, performs an isolated-XDG virtual-X11 smoke, and
+   uploads the AppImage with the same checksum/tag/revision contract.
 3. `publish` is the only job with `contents: write`. It downloads every required
    producer bundle, requires the producer set to match exactly, recomputes all
    sizes and SHA-256 digests, and verifies tag/revision/platform metadata before
    it creates a GitHub Release.
+
+Linux is fail-closed: a skipped or failed producer prevents the publisher from
+running. This automated package smoke does not replace issue #112's NVIDIA,
+Wayland/Xorg, audio, MIDI/FLX4, or suspend/resume hardware gate.
 
 The publisher creates an unpublished draft, uploads the complete verified file
 set, checks GitHub's returned asset names, sizes, upload state, and SHA-256

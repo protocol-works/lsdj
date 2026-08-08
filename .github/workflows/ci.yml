@@ -94,12 +94,16 @@ jobs:
       - name: Check release tooling formatting
         run: >-
           uv run --project backend --frozen --only-group ci ruff format --check
-          scripts/release_artifact.py scripts/tests/test_release_artifact.py
+          scripts/release_artifact.py scripts/verify_linux_appimage.py
+          scripts/tests/test_release_artifact.py
+          scripts/tests/test_verify_linux_appimage.py
 
       - name: Lint release tooling
         run: >-
           uv run --project backend --frozen --only-group ci ruff check
-          scripts/release_artifact.py scripts/tests/test_release_artifact.py
+          scripts/release_artifact.py scripts/verify_linux_appimage.py
+          scripts/tests/test_release_artifact.py
+          scripts/tests/test_verify_linux_appimage.py
 
       - name: Check portable Python formatting
         working-directory: backend
@@ -197,3 +201,91 @@ jobs:
         run: >-
           cargo clippy --locked --workspace --all-targets
           --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+  linux_appimage:
+    name: Linux AppImage contract (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source and test corpus
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install pinned native build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes \
+            binutils \
+            build-essential \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            libgtk-3-dev \
+            libssl-dev \
+            libudev-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            xvfb
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          cargo install tauri-cli --version '=2.11.2' --locked
+          npm ci --prefix frontend
+
+      - name: Build and audit AppImage
+        env:
+          LSDJ_LINUX_AUDIT_PATH: ${{ runner.temp }}/linux-package-audit.json
+        shell: bash
+        run: scripts/build-linux-appimage.sh
+
+      - name: Smoke AppImage with spaces, Unicode, and isolated XDG roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          APPIMAGES=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          [[ "${#APPIMAGES[@]}" -eq 1 ]]
+
+          PROFILE="$RUNNER_TEMP/DJ Name 音楽"
+          export HOME="$PROFILE/home"
+          export XDG_CONFIG_HOME="$PROFILE/config 空間"
+          export XDG_DATA_HOME="$PROFILE/data 音楽"
+          export XDG_CACHE_HOME="$PROFILE/cache 音楽"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg-runtime"
+          mkdir -p \
+            "$HOME" \
+            "$XDG_CONFIG_HOME" \
+            "$XDG_DATA_HOME" \
+            "$XDG_CACHE_HOME" \
+            "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout --signal=TERM --kill-after=5s 15s \
+            xvfb-run --auto-servernum "${APPIMAGES[0]}"
+          STATUS=$?
+          set -e
+          [[ "$STATUS" -eq 0 || "$STATUS" -eq 124 || "$STATUS" -eq 143 ]]
+          test -d "$XDG_CONFIG_HOME/lsdj"
+          test -d "$XDG_DATA_HOME/lsdj"
+          test -d "$XDG_CACHE_HOME/lsdj"
+
+      - name: Upload package audit evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-package-audit
+          path: ${{ runner.temp }}/linux-package-audit.json
+          if-no-files-found: error
+          retention-days: 14

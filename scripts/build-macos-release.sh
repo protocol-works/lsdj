@@ -11,6 +11,7 @@ DMG_DIR="$REPO_ROOT/src-tauri/target/release/bundle/dmg"
 BACKEND_DIR="$REPO_ROOT/src-tauri/sidecar-dist/lsdj_backend"
 BACKEND_BIN="$BACKEND_DIR/lsdj_backend"
 RELEASE_CONFIG="$REPO_ROOT/src-tauri/tauri.release.conf.json"
+MACOS_CONFIG="$REPO_ROOT/src-tauri/tauri.macos.conf.json"
 ENTITLEMENTS="$REPO_ROOT/src-tauri/entitlements.plist"
 RELEASE_VERSION="${LSDJ_RELEASE_VERSION:-}"
 EXPECTED_BUNDLE_ID="works.protocol.lsdj"
@@ -136,11 +137,13 @@ echo "macOS release: building, signing, notarizing, and stapling"
   if [ -n "$RELEASE_VERSION" ]; then
     cargo tauri build --ci \
       --features bundled-backend \
+      --config "$MACOS_CONFIG" \
       --config "$RELEASE_CONFIG" \
       --config "{\"version\":\"$RELEASE_VERSION\"}"
   else
     cargo tauri build --ci \
       --features bundled-backend \
+      --config "$MACOS_CONFIG" \
       --config "$RELEASE_CONFIG"
   fi
 )

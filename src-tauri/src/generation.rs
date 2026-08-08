@@ -384,6 +384,7 @@ mod tests {
 
         std::env::remove_var("LSDJ_GENERATION_CMD");
     }
+
 }
 
 #[cfg(test)]

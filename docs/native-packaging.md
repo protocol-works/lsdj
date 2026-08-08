@@ -8,6 +8,16 @@ Spike C ([`docs/spike-c-midi.md`](spike-c-midi.md), the Tauri MIDI app) — so t
 steps below are reproducible on a Mac with an Apple Developer ID and are also
 enforced by the protected release workflow.
 
+Linux uses the same shared Tauri base with
+[`tauri.linux.conf.json`](../src-tauri/tauri.linux.conf.json), while macOS-only
+window and bundle settings live in
+[`tauri.macos.conf.json`](../src-tauri/tauri.macos.conf.json). The Linux
+AppImage is built on Ubuntu 22.04 through `just tauri-linux-release`. Its
+`managed-runtime` feature refuses every developer-tool fallback until #110/#111
+supply an explicit verified adapter executable. Packaging, XDG/audio/MIDI
+diagnostics, and qualification details are in
+[`linux.md`](linux.md).
+
 ## 1. Freeze the backend runtime
 
 ```sh

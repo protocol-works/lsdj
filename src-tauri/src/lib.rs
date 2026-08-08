@@ -53,6 +53,7 @@ mod managed_runtime;
 mod mcp;
 mod midi;
 mod models;
+mod platform_diagnostics;
 mod platform_paths;
 mod runtime_installer;
 mod samples;
@@ -829,6 +830,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            platform_diagnostics::platform_diagnostics,
             rotate_mcp_token,
             set_mcp_port,
             list_output_devices,
