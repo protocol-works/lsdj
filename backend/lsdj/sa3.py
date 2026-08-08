@@ -52,10 +52,11 @@ MAX_GENERATE_METADATA_BYTES = 64 * 1024
 # (see SETUP_HINT).
 TIMEOUT_SECONDS = 120
 
-# Extra deadline when a LoRA stack rides: the CLI merges adapter deltas into
-# the DiT at load — measured 127.7 s for one adapter on the medium DiT
-# (M-series, warm cache) against a 12.6 s sample. The cost is dominated by
-# the base-DiT dequant/merge, so one flat allowance covers any stack size.
+# Extra deadline per LoRA adapter: the CLI merges adapter deltas into the
+# DiT at load — measured 127.7 s for ONE adapter on the medium DiT
+# (M-series, warm cache) against a 12.6 s sample. Scaling is worse than
+# linear: a two-adapter merge was still running at ~570 s live (2026-08-08),
+# so the allowance is per adapter, not flat.
 LORA_TIMEOUT_SECONDS = 300
 
 SETUP_HINT = (
@@ -70,9 +71,10 @@ def timeout_for(seconds: float, lora_count: int = 0) -> float:
     The published medium benchmark is ~15 s wall for a 2-minute track on
     M4-Pro-class hardware, so a second of deadline per second of audio is
     ~8x slack on top of the flat base — a wedge kill-switch, not a UX
-    promise (ADR-0013). A LoRA stack adds the flat merge allowance
-    (LORA_TIMEOUT_SECONDS)."""
-    return TIMEOUT_SECONDS + seconds + (LORA_TIMEOUT_SECONDS if lora_count else 0)
+    promise (ADR-0013). Each LoRA adapter adds its own merge allowance
+    (LORA_TIMEOUT_SECONDS — the merge scales super-linearly with the
+    stack, see the constant's note)."""
+    return TIMEOUT_SECONDS + seconds + LORA_TIMEOUT_SECONDS * lora_count
 
 
 _generation_lock = asyncio.Semaphore(1)

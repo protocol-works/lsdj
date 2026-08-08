@@ -126,6 +126,15 @@ working notes — commit or fold into issues as you see fit.
   - The remaining session-4 leftovers are now tracked as issues: #124
     (`set_fx_amount` ramp), #125 (idle -32001), #126 (`mainDevice: ""` —
     reproduced live this session).
+  - **#17 (found closing out a live set, same day): the LoRA merge scales
+    worse than linearly with the stack.** One adapter merges in ~128 s; a
+    TWO-adapter `generate_track` (150 s) was still merging when the #16
+    deadline (flat +300 s) killed it at 574 s. Fixed: `timeout_for` charges
+    `LORA_TIMEOUT_SECONDS * lora_count` (and the MCP ETA likewise scales per
+    adapter); the skill's SA3 guide now warns to prefer a single adapter
+    live. The full set (open → realtime interlude → landed track → auto
+    outro) otherwise ran hands-off through the new async flow, including a
+    graceful ambient ending when the stacked closer died.
   - Agent skill added at `.agents/skills/lsdj/SKILL.md` (served to Claude
     Code via the `.claude/skills` symlink). Named `lsdj`, not `co-dj` — the
     skill covers both solo driving and working beside the human ("Who's

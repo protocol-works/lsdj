@@ -67,7 +67,11 @@ With a LoRA stacked (`list_loras` → `loras: [{name, strength}]`):
   1 (up to 4) exaggerates, and artifacts grow with it. 0 is a bit-exact
   bypass.
 - Stacks (max 4) blend adapters — same averaging intuition as the style
-  pad: expect *between*, not *both*.
+  pad: expect *between*, not *both*. **But stacking is expensive:** the
+  merge scales worse than linearly (one adapter ≈ 2 min; a two-adapter
+  merge ran past 9 minutes live and lost the set's closer to the
+  deadline). Live, prefer ONE adapter; stack only when the set can afford
+  a long wait.
 - Bases must match the tool: `medium/…` adapters → `generate_track`;
   `small/…` → `generate_sample` sfx/music.
 

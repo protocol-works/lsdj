@@ -51,9 +51,11 @@ use lsdj_engine::FxKind;
 /// can't leave a fader gliding for minutes.
 const MAX_RAMP_MS: f32 = 60_000.0;
 
-/// ETA surcharge when a `generate_track` request stacks LoRAs: the SA3 CLI
-/// merges adapter deltas into the DiT at load — a flat per-generation cost,
-/// measured at ~128 s for one adapter on the medium DiT.
+/// Per-adapter ETA surcharge when a `generate_track` request stacks LoRAs:
+/// the SA3 CLI merges adapter deltas into the DiT at load — measured ~128 s
+/// for one adapter on the medium DiT, and worse than linear beyond one (a
+/// two-adapter merge ran past 570 s live), so this is per adapter and still
+/// optimistic for big stacks.
 const LORA_MERGE_ETA_SECONDS: u32 = 130;
 
 /// The MCP request handler. Holds the [`AppHandle`] so a tool reaches the same
@@ -1499,7 +1501,7 @@ impl McpHandler {
             .begin(job, "track", &title, &prompt, Some(deck));
         let handler = self.clone();
         let loras = loras.unwrap_or_default();
-        let lora_merge = if loras.is_empty() { 0 } else { LORA_MERGE_ETA_SECONDS };
+        let lora_merge = LORA_MERGE_ETA_SECONDS * loras.len() as u32;
         let spawned_title = title.clone();
         let spawned_prompt = prompt.clone();
         tauri::async_runtime::spawn(async move {

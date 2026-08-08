@@ -209,12 +209,14 @@ class TestGenerate:
         assert sa3.timeout_for(3.0) == sa3.TIMEOUT_SECONDS + 3.0
         assert sa3.timeout_for(380.0) == sa3.TIMEOUT_SECONDS + 380.0
 
-    def test_timeout_adds_the_flat_lora_merge_allowance(self):
-        # The DiT-load merge is a flat per-generation cost (measured ~128 s
-        # for one adapter), so any stack gets one allowance — not per adapter.
+    def test_timeout_adds_a_merge_allowance_per_lora_adapter(self):
+        # Originally a flat allowance (one adapter merged in ~128 s), but a
+        # two-adapter merge blew through flat+300 live (still merging at
+        # ~570 s, 2026-08-08) — the merge scales with the stack, so the
+        # allowance is per adapter.
         base = sa3.TIMEOUT_SECONDS + 60.0
         assert sa3.timeout_for(60.0, lora_count=1) == base + sa3.LORA_TIMEOUT_SECONDS
-        assert sa3.timeout_for(60.0, lora_count=4) == base + sa3.LORA_TIMEOUT_SECONDS
+        assert sa3.timeout_for(60.0, lora_count=4) == base + 4 * sa3.LORA_TIMEOUT_SECONDS
         assert sa3.timeout_for(60.0, lora_count=0) == base
 
     def test_no_checkout_raises_unavailable(self, monkeypatch, tmp_path):
