@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
+import hmac
 import importlib.metadata
 import json
 import os
 import pathlib
 import platform as host_platform
+import re
 import sys
+import threading
 import wave
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -32,7 +36,11 @@ SCHEMA_VERSION = 1
 SAMPLE_RATE = 44_100
 CHANNELS = 2
 MAX_JSON_BYTES = 64 * 1024
+MAX_LAUNCH_TOKEN_BYTES = 512
+LAUNCH_TOKEN_ENV = "LSDJ_WORKER_LAUNCH_TOKEN"
 MODEL_FOR_KIND = {"music": "small-music", "sfx": "small-sfx"}
+_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 class WorkerError(RuntimeError):
@@ -55,6 +63,8 @@ class ModelProtocol(Protocol):
 
 @dataclass(frozen=True)
 class WorkerRequest:
+    job_id: str
+    launch_token_sha256: str
     prompt: str
     seconds: float
     kind: str
@@ -76,11 +86,20 @@ class WorkerRequest:
         if value.get("schema_version") != SCHEMA_VERSION:
             raise WorkerError("unsupported CUDA worker request schema")
         prompt = value.get("prompt")
+        job_id = value.get("job_id")
+        launch_token_sha256 = value.get("launch_token_sha256")
         kind = value.get("kind")
         seconds = value.get("seconds")
         steps = value.get("steps")
         if not isinstance(prompt, str) or not prompt or len(prompt) > 32_000:
             raise WorkerError("prompt is invalid")
+        if not isinstance(job_id, str) or _JOB_ID.fullmatch(job_id) is None:
+            raise WorkerError("job_id is invalid")
+        if (
+            not isinstance(launch_token_sha256, str)
+            or _SHA256.fullmatch(launch_token_sha256) is None
+        ):
+            raise WorkerError("launch_token_sha256 is invalid")
         if kind not in MODEL_FOR_KIND:
             raise WorkerError("CUDA supports only Small Music and Small SFX")
         if (
@@ -130,6 +149,8 @@ class WorkerRequest:
         if inpaint is not None and init_audio is None:
             raise WorkerError("inpainting requires init_audio")
         return cls(
+            job_id=job_id,
+            launch_token_sha256=launch_token_sha256,
             prompt=prompt,
             seconds=float(seconds),
             kind=kind,
@@ -197,6 +218,18 @@ def read_request(path: pathlib.Path) -> WorkerRequest:
     if not isinstance(parsed, dict):
         raise WorkerError("CUDA worker request must be an object")
     return WorkerRequest.from_dict(parsed)
+
+
+def verify_launch_token(
+    request: WorkerRequest, env: Mapping[str, str] | None = None
+) -> None:
+    environment = os.environ if env is None else env
+    token = environment.get(LAUNCH_TOKEN_ENV)
+    if token is None or not 32 <= len(token.encode("utf-8")) <= MAX_LAUNCH_TOKEN_BYTES:
+        raise WorkerError("CUDA worker launch authorization is missing or invalid")
+    actual = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual, request.launch_token_sha256):
+        raise WorkerError("CUDA worker launch authorization does not match the request")
 
 
 def verify_provenance(path: pathlib.Path, request: WorkerRequest) -> dict[str, Any]:
@@ -447,6 +480,52 @@ def _emit(event: dict[str, object]) -> None:
     sys.stdout.flush()
 
 
+def _job_emitter(job_id: str) -> Callable[[dict[str, object]], None]:
+    def emit(event: dict[str, object]) -> None:
+        _emit({"jobId": job_id, **event})
+
+    return emit
+
+
+def start_broker_watchdog(
+    broker: GpuBroker,
+    lease: Lease,
+    emit: Callable[[dict[str, object]], None],
+    *,
+    poll_seconds: float = 0.05,
+    exit_process: Callable[[int], None] = os._exit,
+) -> tuple[threading.Event, threading.Thread]:
+    """Hard-stop model loading/decoding when realtime MRT2 needs the GPU.
+
+    The sampler callback provides graceful yield during diffusion. Loading and
+    decoding are upstream calls with no cancellation callback, so a daemon
+    watchdog terminates only this disposable worker. Process exit is the
+    reliable CUDA-context/VRAM release boundary.
+    """
+
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.wait(poll_seconds):
+            try:
+                should_yield = broker.should_yield(lease)
+            except Exception:
+                should_yield = True
+            if should_yield:
+                emit(
+                    {
+                        "event": "cancelled",
+                        "message": "Stable Audio yielded to realtime MRT2 generation",
+                    }
+                )
+                exit_process(2)
+                return
+
+    thread = threading.Thread(target=watch, name="sa3-gpu-yield", daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LSDJ disposable SA3 CUDA worker")
     parser.add_argument("--request", required=True)
@@ -455,12 +534,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--provenance", required=True)
     parser.add_argument("--reservation-bytes", required=True, type=int)
     args = parser.parse_args(argv)
-    request = read_request(pathlib.Path(args.request))
-    provenance = verify_provenance(pathlib.Path(args.provenance), request)
-    cancel_file = pathlib.Path(args.cancel_file)
+    request: WorkerRequest | None = None
+    emit = _emit
     model: ModelProtocol | None = None
     torch: Any | None = None
     try:
+        request = read_request(pathlib.Path(args.request))
+        emit = _job_emitter(request.job_id)
+        verify_launch_token(request)
+        # The token authenticates this one request/child pairing.  Upstream
+        # imports and any grandchildren must never inherit it.
+        os.environ.pop(LAUNCH_TOKEN_ENV, None)
+        provenance = verify_provenance(pathlib.Path(args.provenance), request)
+        cancel_file = pathlib.Path(args.cancel_file)
         torch, load_model = _load_production_runtime()
         versions = _package_versions()
         if not torch.cuda.is_available():
@@ -499,7 +585,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=120,
             cancelled=cancel_file.exists,
         ) as lease:
-            _emit(
+            emit(
                 {
                     "event": "progress",
                     "stage": "loading",
@@ -507,19 +593,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "total": None,
                 }
             )
-            model = load_model(request)
-            run_generation(
-                request,
-                model=model,
-                torch_module=torch,
-                cancelled=cancel_file.exists,
-                broker=broker,
-                lease=lease,
-                emit=_emit,
-            )
+            watchdog_stop, watchdog = start_broker_watchdog(broker, lease, emit)
+            try:
+                model = load_model(request)
+                run_generation(
+                    request,
+                    model=model,
+                    torch_module=torch,
+                    cancelled=cancel_file.exists,
+                    broker=broker,
+                    lease=lease,
+                    emit=emit,
+                )
+            finally:
+                watchdog_stop.set()
+                watchdog.join(timeout=1)
         return 0
     except WorkerCancelled as error:
-        _emit({"event": "cancelled", "message": str(error)})
+        emit({"event": "cancelled", "message": str(error)})
         return 2
     except Exception as error:
         # Only our bounded, path-free errors cross the worker boundary.  Unknown
@@ -530,7 +621,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if isinstance(error, WorkerError)
             else f"CUDA worker failed ({type(error).__name__})"
         )
-        _emit({"event": "error", "message": message})
+        emit({"event": "error", "message": message})
         return 1
     finally:
         model = None

@@ -26,6 +26,9 @@ release-ready.
   runtime. The #110 PyTorch 2.12.1/CUDA 13.0 results do not transfer.
 - [ ] Confirm the source/runtime/model provenance shown by diagnostics matches
   the compiled manifest and that an altered stamp fails before model import.
+- [x] Require a per-launch secret and bounded job ID before imports; echo only
+  the job ID on progress/terminal events and scrub the secret before upstream
+  code loads.
 - [ ] Complete #108 acknowledgement, attribution, and terms UX before exposing
   the CUDA download.
 
@@ -81,8 +84,8 @@ route it explicitly to TFLite.
 
 ## Broker, isolation, and lifecycle
 
-- [ ] Start SA3, then request MRT2 work. At the next sampler callback SA3 exits,
-  releases its lease/context, and MRT2 proceeds.
+- [ ] Start SA3, then request MRT2 work during loading, sampling, and decoding.
+  The watchdog/callback exits SA3, releases its lease/context, and MRT2 proceeds.
 - [ ] Queue SA3 while MRT2 holds a lease. SA3 waits without disturbing either
   deck or the native audio callback.
 - [ ] Cancel while waiting, loading, sampling, and decoding; no child or CUDA

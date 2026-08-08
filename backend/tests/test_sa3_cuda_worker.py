@@ -1,5 +1,7 @@
 import json
+import hashlib
 import pathlib
+import threading
 import wave
 
 import numpy as np
@@ -46,8 +48,11 @@ def pcm16_wav(path, seconds=0.5):
 
 
 def request(tmp_path, **updates):
+    launch_token = "qualification-token-with-32-bytes-minimum"
     value = {
         "schema_version": 1,
+        "job_id": "sa3-job-123",
+        "launch_token_sha256": hashlib.sha256(launch_token.encode()).hexdigest(),
         "prompt": "warm dub loop",
         "seconds": 0.5,
         "kind": "music",
@@ -187,6 +192,45 @@ def test_priority_waiter_cancels_the_disposable_worker(tmp_path):
 def test_request_contract_fails_closed(updates, message, tmp_path):
     with pytest.raises(worker.WorkerError, match=message):
         request(tmp_path, **updates)
+
+
+def test_launch_token_authenticates_one_private_request_without_storing_secret(
+    tmp_path,
+):
+    item = request(tmp_path)
+    token = "qualification-token-with-32-bytes-minimum"
+    worker.verify_launch_token(item, {worker.LAUNCH_TOKEN_ENV: token})
+    with pytest.raises(worker.WorkerError, match="does not match"):
+        worker.verify_launch_token(item, {worker.LAUNCH_TOKEN_ENV: "x" * 40})
+    with pytest.raises(worker.WorkerError, match="missing or invalid"):
+        worker.verify_launch_token(item, {})
+
+
+def test_broker_watchdog_hard_stops_disposable_worker_during_model_load():
+    exited = threading.Event()
+    events = []
+
+    class Broker:
+        @staticmethod
+        def should_yield(_lease):
+            return True
+
+    stop, thread = worker.start_broker_watchdog(
+        Broker(),
+        object(),
+        events.append,
+        poll_seconds=0.001,
+        exit_process=lambda code: exited.set() if code == 2 else None,
+    )
+    assert exited.wait(1)
+    thread.join(timeout=1)
+    stop.set()
+    assert events == [
+        {
+            "event": "cancelled",
+            "message": "Stable Audio yielded to realtime MRT2 generation",
+        }
+    ]
 
 
 def test_request_file_is_bounded_and_rejects_symlinks(tmp_path):

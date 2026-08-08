@@ -50,13 +50,20 @@ package versions, CUDA runtime, NVIDIA driver, device, reported memory, and the
 measured reservation before loading Small Music or Small SFX. It never invokes
 the Hub downloader and never falls back to PyTorch CPU.
 
+The managed launcher binds the private request to that child with an ephemeral
+secret inherited through an allowlisted environment entry; the request contains
+only its SHA-256. The worker verifies and removes the secret before importing
+upstream code. Every structured event carries a bounded job ID, while secrets,
+prompts, paths, and ambient credentials are excluded from diagnostics.
+
 The file-locked GPU broker is shared with MRT2 across processes. MRT2 leases
 have realtime priority. SA3 is admitted only when no MRT2 lease or waiter is
 present and its measured reservation fits the conservative budget. If MRT2
-arrives during sampling, the next upstream callback cancels the SA3 child;
-process exit releases the CUDA context. OOM, driver reset, worker crash, and app
-exit are contained by the same process boundary and the native process-tree
-supervisor.
+arrives during sampling, the next upstream callback cancels the SA3 child. A
+daemon watchdog provides the same hard process boundary while upstream model
+loading or decoding offers no callback. Process exit releases the CUDA context.
+OOM, driver reset, worker crash, and app exit are contained by the same process
+boundary and the native process-tree supervisor.
 
 The candidate lock resolves the pinned SA3 requirements as PyTorch/torchaudio
 2.7.1+cu126 and Hugging Face Hub 1.7.1. This differs from #110's MRT2 candidate,
