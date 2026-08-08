@@ -781,3 +781,13 @@ def test_models_endpoint_returns_list_and_ram(client, monkeypatch):
     assert body["sample_rate"] == 48000
     assert body["total_ram_gb"] > 0
     assert "mrt2_small" in body["model_ram_estimate_gb"]
+
+
+def test_windows_ram_detection_uses_global_memory_status() -> None:
+    class FakeKernel32:
+        @staticmethod
+        def GlobalMemoryStatusEx(status_pointer):
+            status_pointer._obj.ullTotalPhys = 16 * 1024**3
+            return 1
+
+    assert controller._windows_total_ram_bytes(FakeKernel32()) == 16 * 1024**3

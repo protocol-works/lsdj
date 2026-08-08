@@ -23,6 +23,18 @@ dev = [
     # scripts/freeze-sidecar.sh). A build tool, not a runtime dep.
     "pyinstaller>=6.21",
 ]
+# Model runtimes are platform-specific, but most controller, transport, and
+# validation tests are not. CI installs this locked group on every OS so those
+# shared contracts stay testable without pretending that MLX is portable.
+ci = [
+    "fastapi>=0.136.3",
+    "httpx>=0.27",
+    "numpy>=2.2",
+    "pytest>=8",
+    "python-multipart>=0.0.32",
+    "ruff>=0.8",
+    "uvicorn>=0.49.0",
+]
 
 [build-system]
 requires = ["hatchling"]
