@@ -32,9 +32,16 @@ change.
   allocation, and CUDA context creation occur only in that child. Completion,
   cancellation, broker yield, OOM, crash, backend switch, and app teardown end
   the process.
+- Bind each private request to its supervised child with a per-launch secret:
+  only its SHA-256 enters the bounded request file, the secret arrives through
+  an allowlisted inherited environment value, and the worker removes it before
+  upstream imports. A bounded job ID is attached to every progress/terminal
+  event; neither value enters argv or diagnostics.
 - Coordinate CUDA with a cross-process file-locked broker. MRT2 uses realtime
-  priority; background SA3 checks for a higher-priority waiter at every sampler
-  callback and exits so the MRT2 request can proceed.
+priority; background SA3 checks for a higher-priority waiter at every sampler
+callback. A daemon watchdog covers model loading and decoding, whose upstream
+calls have no callback, and hard-stops only the disposable SA3 process so the
+MRT2 request can proceed.
 - Expose Auto, GPU, and CPU/TFLite policy in the backend status contract. Auto
   remains on TFLite until the hardware gate is flipped with evidence. Explicit
   GPU fails before launch and asks for a confirmed TFLite fallback while the
