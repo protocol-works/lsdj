@@ -34,7 +34,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -44,6 +44,7 @@ use lsdj_engine::DeckHandle;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 use crate::analysis::live::AnalysisFeed;
+use crate::child_process::SupervisedChild;
 
 /// Per-deck analysis taps: a webview [`Channel`] each deck's realtime PCM is teed
 /// to (gap 1). The TS beat/loudness/band analysis (ADR-0017: stays in TypeScript)
@@ -211,7 +212,7 @@ struct ReaderExit {
 /// the pieces a (re)spawn produces and a [`Sidecar`] installs.
 struct ReaderParts {
     control: Arc<Mutex<Option<TcpStream>>>,
-    child: Arc<Mutex<Option<Child>>>,
+    child: Arc<Mutex<Option<SupervisedChild>>>,
     stop: Arc<AtomicBool>,
     reader: JoinHandle<ReaderExit>,
 }
@@ -231,7 +232,7 @@ pub struct Sidecar {
     /// The control-writer half of the socket; `None` until the sidecar connects,
     /// and after a teardown. Behind a `Mutex` so IPC callers serialise writes.
     control: Arc<Mutex<Option<TcpStream>>>,
-    child: Arc<Mutex<Option<Child>>>,
+    child: Arc<Mutex<Option<SupervisedChild>>>,
     stop: Arc<AtomicBool>,
     /// The accept+read thread; its result carries the reclaimable [`ReaderExit`].
     reader: Option<JoinHandle<ReaderExit>>,
@@ -241,7 +242,7 @@ pub struct Sidecar {
 /// FALLIBLE prefix, done BEFORE any [`DeckHandle`] is committed, so a bad launch
 /// (or a bind failure) never costs the deck its ring producer. [`Sidecar::restart`]
 /// runs this first and leaves the running sidecar untouched if it fails.
-fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, Child)> {
+fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, SupervisedChild)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(false).ok();
     let port = listener.local_addr()?.port();
@@ -282,7 +283,7 @@ fn pcm_tee(
 fn start_reader(
     listener: TcpListener,
     deck_id: &str,
-    child: Child,
+    child: SupervisedChild,
     handle: DeckHandle,
     mut on_status: Box<dyn FnMut(String) + Send>,
     mut on_pcm: impl FnMut(&[u8]) + Send + 'static,
@@ -409,7 +410,10 @@ impl Sidecar {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
         if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            crate::child_process::kill_group(&mut old);
+            crate::child_process::log_shutdown(
+                &format!("sidecar {} restart", self.deck_id),
+                old.shutdown(Duration::from_millis(500)),
+            );
         }
         let exit = self
             .reader
@@ -543,7 +547,10 @@ impl Drop for Sidecar {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
         if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            crate::child_process::kill_group(&mut child);
+            crate::child_process::log_shutdown(
+                &format!("sidecar {}", self.deck_id),
+                child.shutdown(Duration::from_millis(500)),
+            );
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -660,6 +667,7 @@ mod tests {
     use super::*;
     use lsdj_engine::Engine;
     use std::net::TcpStream;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -773,6 +781,7 @@ mod tests {
     /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only
     /// wrapper + Python stand-in (no models) via `LSDJ_SIDECAR_CMD`, matching the
     /// `uv run` parent/grandchild topology used in development.
+    #[cfg(unix)]
     #[test]
     fn restart_switches_model_without_a_worker_died() {
         // A stand-in sidecar: connect to --port, announce ready with --model, then
