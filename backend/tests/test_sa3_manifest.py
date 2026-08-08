@@ -52,7 +52,9 @@ def test_adapter_preflight_paths_match_the_pinned_manifest():
     required = set()
     for kind in ("sfx", "music", "track"):
         request = GenerationRequest("fixture", 0.5, kind, init_audio=b"wav")
-        required.update(str(path) for path in sa3._required_tflite_assets(request))
+        required.update(
+            path.as_posix() for path in sa3._required_tflite_assets(request)
+        )
     required.remove("models/tokenizer.model")
     assert required == installed
 
