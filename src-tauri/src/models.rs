@@ -1593,6 +1593,7 @@ mod tests {
     // ONLY on the child Command (never process-global), so they can't race the
     // sidecar tests that share this binary's environment.
 
+    #[cfg(unix)]
     fn shared() -> InstallShared {
         InstallShared {
             busy: AtomicBool::new(false),

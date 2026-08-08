@@ -133,7 +133,7 @@ pub struct AnalysisFeed {
 impl AnalysisFeed {
     /// A feed whose receivers are dropped — every send is a silent no-op. For
     /// tests that need the tee wiring without analysis threads (no `AppHandle`).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn disconnected(deck_count: usize) -> Self {
         AnalysisFeed {
             senders: Arc::new((0..deck_count).map(|_| sync_channel(1).0).collect()),
