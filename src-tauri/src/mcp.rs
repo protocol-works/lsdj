@@ -1071,12 +1071,11 @@ impl ServerHandler for McpHandler {
 pub struct McpServer {
     app: AppHandle,
     token: Arc<RwLock<String>>,
-    /// Where the token is persisted (under the app data dir); `None` if the dir can't
-    /// be resolved (then the token is in-memory only).
-    token_path: Option<PathBuf>,
+    /// Where the token is persisted under the resolved configuration root.
+    token_path: PathBuf,
     /// Where the chosen port is persisted, so it's stable across launches and the
-    /// config snippet doesn't churn; `None` if the dir can't be resolved.
-    port_path: Option<PathBuf>,
+    /// config snippet doesn't churn.
+    port_path: PathBuf,
     running: Mutex<RunningServer>,
 }
 
@@ -1095,19 +1094,16 @@ impl McpServer {
     /// carry the bearer token (also persisted).
     pub fn start(app: AppHandle) -> McpServer {
         let token_path = token_file(&app);
-        let token_string = match &token_path {
-            Some(path) => load_or_generate_token(path),
-            None => generate_token(),
-        };
+        let token_string = load_or_generate_token(&token_path);
         let token = Arc::new(RwLock::new(token_string));
 
         let port_path = port_file(&app);
-        let desired = port_path.as_deref().and_then(load_port);
+        let desired = load_port(&port_path);
         let running = spawn_server(&app, &token, desired);
 
         // Remember the actually-bound port so an ephemeral assignment is reused.
-        if let (Some(port), Some(path)) = (running.port, &port_path) {
-            save_port(path, port);
+        if let Some(port) = running.port {
+            save_port(&port_path, port);
         }
 
         McpServer {
@@ -1133,9 +1129,7 @@ impl McpServer {
     /// at once (a leaked token is invalidated without restarting). Returns the new token.
     pub fn rotate(&self) -> Option<String> {
         let next = generate_token();
-        if let Some(path) = &self.token_path {
-            save_token(path, &next);
-        }
+        save_token(&self.token_path, &next);
         *write_lock(&self.token) = next.clone();
         Some(next)
     }
@@ -1164,9 +1158,7 @@ impl McpServer {
             )
         };
         previous.cancel.cancel();
-        if let Some(path) = &self.port_path {
-            save_port(path, port);
-        }
+        save_port(&self.port_path, port);
         Ok(port)
     }
 
@@ -1312,20 +1304,14 @@ fn write_lock(lock: &RwLock<String>) -> std::sync::RwLockWriteGuard<'_, String> 
     lock.write().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The token file under the app data dir (`None` if it can't be resolved).
-fn token_file(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("mcp-token"))
+/// The token file under the host-resolved configuration root.
+fn token_file(_app: &AppHandle) -> PathBuf {
+    crate::platform_paths::get().config().join("mcp-token")
 }
 
-/// The port file under the app data dir (`None` if it can't be resolved).
-fn port_file(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("mcp-port"))
+/// The port file under the host-resolved configuration root.
+fn port_file(_app: &AppHandle) -> PathBuf {
+    crate::platform_paths::get().config().join("mcp-port")
 }
 
 /// Read the persisted port — a plain decimal `u16` ≥ 1024 (privileged ports are

@@ -50,7 +50,9 @@ combined selection looks tight for your RAM) and Stable Audio 3 (generated pads
 and tracks) land in the app-owned `~/Library/Application Support/LSDJ`
 (`MAGENTA_HOME` / `SA3_MLX_HOME` override the locations). `just migrate-models`
 relocates an existing install—including one under the previous app name—into
-that folder without re-downloading.
+that folder without re-downloading. The Rust host owns the cross-platform
+config/data/cache/assets/staging mapping and passes it explicitly to Python; see
+[the platform path contract](docs/platform-paths.md).
 
 ## Run
 

@@ -3,7 +3,7 @@
 //! Settings the SHELL consumes — the output devices and the recordings
 //! folder — used to live in webview localStorage, replayed into the engine
 //! at boot by App.tsx. Persistence follows ownership: they now persist here
-//! (a JSON file under the app data dir, beside the MCP token), hydrate into
+//! (a JSON file under the host-resolved config dir, beside the MCP token), hydrate into
 //! the engine and the interface store during `setup` — before the webview
 //! exists — and mutate through the same commands every controller uses. The
 //! webview's pickers become projections. Presentation-only preferences
@@ -15,7 +15,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::store::{GenerationSnap, InterfaceState, InterfaceStore};
 
@@ -101,8 +101,8 @@ impl Default for DeckMixerSetting {
     }
 }
 
-fn settings_file(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|dir| dir.join("settings.json"))
+fn settings_file() -> PathBuf {
+    crate::platform_paths::get().config().join("settings.json")
 }
 
 /// Load from a concrete path (the testable core): a missing or unreadable
@@ -141,8 +141,8 @@ pub fn save_to(path: &Path, settings: &ShellSettings) {
     }
 }
 
-pub fn load(app: &AppHandle) -> ShellSettings {
-    settings_file(app).map(|p| load_from(&p)).unwrap_or_default()
+pub fn load(_app: &AppHandle) -> ShellSettings {
+    load_from(&settings_file())
 }
 
 /// One writer at a time: `update` runs from the main thread (the device /
@@ -163,17 +163,8 @@ pub fn update_at(path: &Path, mutate: impl FnOnce(&mut ShellSettings)) -> ShellS
 }
 
 /// Read-modify-write one field; the single mutation path the commands use.
-pub fn update(app: &AppHandle, mutate: impl FnOnce(&mut ShellSettings)) -> ShellSettings {
-    match settings_file(app) {
-        Some(path) => update_at(&path, mutate),
-        // No data dir (boot-path edge): mutate the defaults so the caller
-        // still gets the value it wrote, exactly as before — just unsaved.
-        None => {
-            let mut settings = ShellSettings::default();
-            mutate(&mut settings);
-            settings
-        }
-    }
+pub fn update(_app: &AppHandle, mutate: impl FnOnce(&mut ShellSettings)) -> ShellSettings {
+    update_at(&settings_file(), mutate)
 }
 
 /// The settings-write debounce: a fader ride or a pad drag settles before it

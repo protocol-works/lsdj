@@ -1,9 +1,9 @@
 """Stable Audio 3 LoRA adapter registry — the read side (issue #66, ADR-0028).
 
-Adapters live on disk under the app-owned data dir, one directory per
-adapter, organised by the DiT family they ride:
+Adapters live under the host-resolved asset root, one directory per adapter,
+organised by the DiT family they ride:
 
-    ~/Library/Application Support/LSDJ/sa3-loras/<base>/<slug>/
+    $SA3_LORAS_HOME/<base>/<slug>/
 
 ``base`` is ``small`` (the 1024-wide sm-sfx / sm-music DiTs) or ``medium``
 (the 1536-wide track DiT). An adapter directory holds its ``.safetensors``
@@ -17,6 +17,8 @@ adapter name to the directory handed to ``sa3_mlx.py`` as ``--lora``.
 import os
 import pathlib
 import re
+
+from . import runtime_paths
 
 # The two DiT families an adapter can ride, and which generation kind uses
 # which. sm-sfx and sm-music share one architecture, so a "small" adapter
@@ -47,15 +49,13 @@ class UnknownAdapter(Exception):
 def loras_dir(
     env: dict | None = None, home: pathlib.Path | None = None
 ) -> pathlib.Path:
-    """The registry root. $SA3_LORAS_HOME wins (tests, dev overrides);
-    otherwise the app-owned data dir, beside the SA3 checkout. Mirrors the
-    Rust `loras::loras_dir`."""
+    """The registry root explicitly supplied by the Rust host."""
     env = os.environ if env is None else env
-    home = pathlib.Path.home() if home is None else home
-    override = env.get("SA3_LORAS_HOME", "")
-    if override:
-        return pathlib.Path(override).expanduser()
-    return home / "Library" / "Application Support" / "LSDJ" / "sa3-loras"
+    del home  # retained for API compatibility; platform paths come from Rust.
+    root = runtime_paths.loras_home(env)
+    if root is None:
+        raise RuntimeError("LSDJ asset roots were not supplied by the desktop host")
+    return root
 
 
 def _adapter_file(adapter_dir: pathlib.Path) -> pathlib.Path | None:

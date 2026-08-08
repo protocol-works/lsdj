@@ -61,25 +61,20 @@ class TestResolveMlxDir:
         )
         assert resolved == mlx_dir
 
-    def test_resolves_the_app_support_home(self, tmp_path):
-        # In-app installs (and `just setup-sa3`) put the checkout in the app-owned
-        # data dir — the only non-override candidate.
-        mlx_dir = make_checkout(
-            tmp_path / "Library" / "Application Support" / "LSDJ" / "stable-audio-3",
-            SUCCESS_STUB,
-        )
-        assert sa3.resolve_mlx_dir(env={}, home=tmp_path) == mlx_dir
+    def test_resolves_the_host_supplied_assets_home(self, tmp_path):
+        assets = tmp_path / "DJ Name" / "模型 assets"
+        mlx_dir = make_checkout(assets / "stable-audio-3", SUCCESS_STUB)
+        assert sa3.resolve_mlx_dir(env={"LSDJ_ASSETS_HOME": str(assets)}) == mlx_dir
 
     def test_checkout_without_venv_is_skipped(self, tmp_path):
-        checkout = (
-            tmp_path / "Library" / "Application Support" / "LSDJ" / "stable-audio-3"
-        )
+        assets = tmp_path / "assets"
+        checkout = assets / "stable-audio-3"
         (checkout / "optimized" / "mlx" / "scripts").mkdir(parents=True)
         (checkout / "optimized" / "mlx" / "scripts" / "sa3_mlx.py").write_text("#")
-        assert sa3.resolve_mlx_dir(env={}, home=tmp_path) is None
+        assert sa3.resolve_mlx_dir(env={"LSDJ_ASSETS_HOME": str(assets)}) is None
 
     def test_nothing_resolves_to_none(self, tmp_path):
-        assert sa3.resolve_mlx_dir(env={}, home=tmp_path) is None
+        assert sa3.resolve_mlx_dir(env={}) is None
 
 
 @pytest.fixture
@@ -211,7 +206,7 @@ class TestGenerate:
 
     def test_no_checkout_raises_unavailable(self, monkeypatch, tmp_path):
         monkeypatch.delenv("SA3_MLX_HOME", raising=False)
-        monkeypatch.setattr(sa3.pathlib.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("LSDJ_ASSETS_HOME", str(tmp_path / "assets"))
         with pytest.raises(sa3.GenerationUnavailable):
             asyncio.run(sa3.generate("anything", 3.0, "sfx"))
 

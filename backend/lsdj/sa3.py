@@ -14,6 +14,8 @@ import pathlib
 import tempfile
 from collections.abc import Sequence
 
+from . import runtime_paths
+
 # CLI vocabulary of scripts/sa3_mlx.py at the pinned commit (sa3-pin.json).
 # Pads use the small DiTs with the SAME-S decoder; tracks (M19, ADR-0013)
 # the medium DiT, which pairs with SAME-L.
@@ -89,18 +91,14 @@ STATE_READY = "ready"
 WARMED_STAMP = ".lsdj-warmed"
 
 
-def _checkout_candidates(env: dict, home: pathlib.Path) -> list[pathlib.Path]:
-    """Checkout roots to probe, in order. $SA3_MLX_HOME wins (pointing at the
-    checkout root); otherwise the app-owned data dir, where the in-app installer
-    puts the checkout. Mirrors the Rust `models::sa3_candidates`."""
-    candidates = []
-    override = env.get("SA3_MLX_HOME", "")
-    if override:
-        candidates.append(pathlib.Path(override).expanduser())
-    candidates.append(
-        home / "Library" / "Application Support" / "LSDJ" / "stable-audio-3"
-    )
-    return candidates
+def _checkout_candidates(env: dict) -> list[pathlib.Path]:
+    """The checkout root explicitly supplied by the Rust host.
+
+    No platform fallback lives here: independently rebuilding a macOS/XDG/
+    Windows location is precisely how the two sides drifted before issue #107.
+    """
+    checkout = runtime_paths.sa3_home(env)
+    return [] if checkout is None else [checkout]
 
 
 def resolve_mlx_dir(
@@ -108,10 +106,10 @@ def resolve_mlx_dir(
 ) -> pathlib.Path | None:
     """First checkout whose optimized/mlx has a venv and the CLI script."""
     env = os.environ if env is None else env
-    home = pathlib.Path.home() if home is None else home
-    for checkout in _checkout_candidates(env, home):
+    del home  # retained for API compatibility; platform paths come from Rust.
+    for checkout in _checkout_candidates(env):
         mlx_dir = checkout / "optimized" / "mlx"
-        python = mlx_dir / ".venv" / "bin" / "python"
+        python = runtime_paths.venv_python(mlx_dir / ".venv")
         script = mlx_dir / "scripts" / "sa3_mlx.py"
         if python.is_file() and script.is_file():
             return mlx_dir
@@ -133,16 +131,16 @@ def readiness(env: dict | None = None, home: pathlib.Path | None = None) -> dict
     Rust `model_status` mirrors this exact logic and these exact identifiers.
     """
     env = os.environ if env is None else env
-    home = pathlib.Path.home() if home is None else home
+    del home  # retained for API compatibility; platform paths come from Rust.
 
     first_with_mlx: tuple[pathlib.Path, pathlib.Path] | None = None
-    for checkout in _checkout_candidates(env, home):
+    for checkout in _checkout_candidates(env):
         mlx_dir = checkout / "optimized" / "mlx"
         if not mlx_dir.is_dir():
             continue
         if first_with_mlx is None:
             first_with_mlx = (checkout, mlx_dir)
-        python = mlx_dir / ".venv" / "bin" / "python"
+        python = runtime_paths.venv_python(mlx_dir / ".venv")
         script = mlx_dir / "scripts" / "sa3_mlx.py"
         if not (python.is_file() and script.is_file()):
             continue
@@ -191,7 +189,7 @@ async def generate(
         with tempfile.TemporaryDirectory(prefix="sa3-") as tmp:
             out_path = pathlib.Path(tmp) / "out.wav"
             argv = [
-                str(mlx_dir / ".venv" / "bin" / "python"),
+                str(runtime_paths.venv_python(mlx_dir / ".venv")),
                 str(mlx_dir / "scripts" / "sa3_mlx.py"),
                 "--prompt",
                 prompt,
