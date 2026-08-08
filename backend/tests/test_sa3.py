@@ -72,6 +72,10 @@ def make_checkout(root: pathlib.Path, stub_body: str) -> pathlib.Path:
     return mlx_dir
 
 
+def runtime_file(mlx_dir: pathlib.Path, name: str) -> pathlib.Path:
+    return runtime_paths.venv_python(mlx_dir / ".venv").parent / name
+
+
 class TestResolveMlxDir:
     def test_fixture_uses_the_platform_native_venv_interpreter(self, tmp_path):
         mlx_dir = make_checkout(tmp_path / "checkout", SUCCESS_STUB)
@@ -121,7 +125,7 @@ class TestGenerate:
     def test_default_cli_argv_is_unchanged(self, checkout):
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(sa3.generate("deep house loop", 7.74, "music"))
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        argv = runtime_file(mlx_dir, "argv.txt").read_text().splitlines()
         assert argv[:-1] == [
             str(mlx_dir / "scripts" / "sa3_mlx.py"),
             "--prompt",
@@ -155,7 +159,7 @@ class TestGenerate:
                 seed=12345,
             )
         )
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        argv = runtime_file(mlx_dir, "argv.txt").read_text().splitlines()
         init_index = argv.index("--init-audio")
         assert pathlib.Path(argv[init_index + 1]).name == "init.wav"
         assert argv[init_index + 2 :] == [
@@ -172,7 +176,7 @@ class TestGenerate:
             "--seed",
             "12345",
         ]
-        assert (mlx_dir / ".venv" / "bin" / "init.wav").read_bytes() == init_audio
+        assert runtime_file(mlx_dir, "init.wav").read_bytes() == init_audio
 
     def test_passes_one_lora_group_per_adapter_with_its_strength(self, checkout):
         # Issue #66 (ADR-0028): each adapter rides the argv as its own
@@ -188,7 +192,7 @@ class TestGenerate:
                 lora_strengths=[0.75, 1.5],
             )
         )
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        argv = runtime_file(mlx_dir, "argv.txt").read_text().splitlines()
         first = argv.index("--lora")
         assert argv[first : first + 6] == [
             "--lora",
@@ -207,7 +211,7 @@ class TestGenerate:
                 "vinyl spinback", 3.0, "sfx", lora_dirs=["/adapters/small/crackle"]
             )
         )
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        argv = runtime_file(mlx_dir, "argv.txt").read_text().splitlines()
         lora_index = argv.index("--lora")
         assert argv[lora_index + 1] == "/adapters/small/crackle"
         assert not any(arg.startswith("strength=") for arg in argv)
@@ -218,7 +222,7 @@ class TestGenerate:
         # pad kinds keep the small DiTs with SAME-S.
         mlx_dir = checkout(SUCCESS_STUB)
         asyncio.run(sa3.generate("late night dub techno", 120.0, "track"))
-        argv = (mlx_dir / ".venv" / "bin" / "argv.txt").read_text().splitlines()
+        argv = runtime_file(mlx_dir, "argv.txt").read_text().splitlines()
         assert argv[argv.index("--dit") + 1] == "medium"
         assert argv[argv.index("--decoder") + 1] == "same-l"
         assert argv[argv.index("--seconds") + 1] == "120"
