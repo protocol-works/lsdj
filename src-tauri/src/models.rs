@@ -582,6 +582,23 @@ pub(crate) fn cancelled(shared: &InstallShared) -> Result<(), String> {
     }
 }
 
+/// Publish a newly spawned child to cancellation and close the spawn/park race.
+///
+/// `cancel()` stores the flag before taking `current_child`. If cancellation
+/// lands after the process is spawned but before this lock is acquired, the
+/// second flag check below takes responsibility for terminating the child.
+fn park_child(shared: &InstallShared, child: SupervisedChild) -> Result<(), String> {
+    let mut current = shared.current_child.lock().unwrap_or_else(|p| p.into_inner());
+    *current = Some(child);
+    if shared.cancelled.load(Ordering::Acquire) {
+        let mut child = current.take().expect("newly parked child is present");
+        drop(current);
+        let _ = child.force_kill();
+        return Err("cancelled".into());
+    }
+    Ok(())
+}
+
 /// Run `cmd` to completion, feeding each stdout line to `on_line` and draining
 /// stderr to the app log (so the pipe cannot fill and deadlock). Parks the child
 /// in `shared` so cancel/shutdown can kill it. Returns an error on a non-zero
@@ -592,12 +609,13 @@ pub(crate) fn stream_child(
     mut cmd: Command,
     mut on_line: impl FnMut(&str),
 ) -> Result<(), String> {
+    cancelled(shared)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = crate::child_process::spawn_grouped(&mut cmd)
         .map_err(|error| sanitize_diagnostic(&format!("{label}: cannot spawn ({error})")))?;
     let stdout = child.take_stdout().expect("piped stdout");
     let stderr = child.take_stderr().expect("piped stderr");
-    *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
+    park_child(shared, child)?;
 
     let drain_label = label.to_string();
     let stderr_drain = std::thread::spawn(move || {
@@ -958,6 +976,27 @@ mod tests {
             current_child: Mutex::new(None),
             active: Mutex::new(None),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_between_spawn_and_park_terminates_the_child() {
+        let shared = shared();
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("sleep 30");
+        let child = crate::child_process::spawn_grouped(&mut command).expect("spawn child");
+        let pid = child.id() as libc::pid_t;
+
+        // Model the precise race: cancel() observed an empty slot after the OS
+        // spawn completed but before stream_child published the handle.
+        shared.cancelled.store(true, Ordering::Release);
+        assert_eq!(park_child(&shared, child), Err("cancelled".into()));
+        assert!(
+            shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+            "cancelled child must not remain parked"
+        );
+        // SAFETY: signal 0 only probes whether the already-recorded pid exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "child survived cancellation");
     }
 
     #[cfg(unix)]
