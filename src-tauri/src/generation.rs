@@ -14,16 +14,18 @@
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::child_process::{Readiness, SupervisedChild};
 
 /// The supervised generation server: its chosen loopback port (exposed to the
 /// webview via `app_info`) and the child process. Held in Tauri managed state;
 /// dropping it kills the child.
 pub struct GenerationServer {
     port: Option<u16>,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<SupervisedChild>>,
 }
 
 impl GenerationServer {
@@ -49,7 +51,7 @@ impl GenerationServer {
         }
     }
 
-    fn spawn() -> io::Result<(u16, Child)> {
+    fn spawn() -> io::Result<(u16, SupervisedChild)> {
         // Pick a free loopback port, then hand it to the child (uvicorn binds it).
         // The brief drop→rebind window on loopback is benign.
         let port = {
@@ -64,20 +66,18 @@ impl GenerationServer {
         // otherwise leave the app pointing the webview at a dead port. Bounded so
         // a slow-but-working server is reported optimistically rather than
         // blocking the window; a child that EXITS is reported as a failure.
-        let deadline = Instant::now() + Duration::from_millis(1500);
         let addr = ("127.0.0.1", port);
-        loop {
-            if TcpStream::connect(addr).is_ok() {
-                return Ok((port, child));
+        match child.wait_for_readiness(Duration::from_millis(1500), || {
+            Ok(TcpStream::connect(addr).is_ok())
+        })? {
+            Readiness::Ready | Readiness::TimedOut => {
+                // Preserve the existing macOS contract: a slow-but-running
+                // service is advertised optimistically after the bounded wait.
+                Ok((port, child))
             }
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                let _ = child.wait();
-                return Err(io::Error::other("generation server exited before binding"));
-            }
-            if Instant::now() >= deadline {
-                return Ok((port, child)); // still launching; advertise optimistically
-            }
-            std::thread::sleep(Duration::from_millis(50));
+            Readiness::Exited(status) => Err(io::Error::other(format!(
+                "generation server exited before binding ({status})"
+            ))),
         }
     }
 
@@ -93,7 +93,10 @@ impl GenerationServer {
     /// leak the process.
     pub fn shutdown(&self) {
         if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            crate::child_process::kill_group(&mut child);
+            crate::child_process::log_shutdown(
+                "generation server",
+                child.shutdown(Duration::from_millis(500)),
+            );
         }
     }
 }

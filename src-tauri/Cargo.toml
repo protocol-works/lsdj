@@ -96,6 +96,19 @@ rubato = { version = "=3.0.0", default-features = false, features = ["fft_resamp
 # instead of relying on rubato/realfft's transitive copy.
 rustfft = "=6.4.1"
 
+# Windows process-tree lifetime: Job Objects keep wrappers and every descendant
+# tied to the Rust host, including when it exits without running destructors.
+# The child is created suspended and resumed only after assignment, closing the
+# spawn/assign race. Target-scoped so Unix builds carry no Windows surface.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # The ADR-0025 corpus regression replays the spike WAVs (16-bit PCM) through
 # the Rust estimator; hound is the de-facto WAV codec — reputable, tiny, and

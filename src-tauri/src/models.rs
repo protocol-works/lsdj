@@ -17,14 +17,17 @@
 //! four readiness states). The webview never gets filesystem access — the same
 //! trust boundary as the rest of the library surface.
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+
+use crate::child_process::{
+    read_bounded_lines, sanitize_diagnostic, DiagnosticTail, SupervisedChild,
+};
 
 /// The official models the manager offers to download (mirrors
 /// `engine.KNOWN_MODELS`). This is the installable catalog, NOT a discovery gate:
@@ -372,15 +375,22 @@ struct ModelProgress {
     file: Option<String>,
 }
 
-fn emit(app: &AppHandle, family: Family, name: &str, stage: &str, message: Option<String>, file: Option<String>) {
+fn emit(
+    app: &AppHandle,
+    family: Family,
+    name: &str,
+    stage: &str,
+    message: Option<String>,
+    file: Option<String>,
+) {
     let _ = app.emit(
         "model://progress",
         ModelProgress {
             family,
             name: name.to_string(),
-            stage: stage.to_string(),
-            message,
-            file,
+            stage: sanitize_diagnostic(stage),
+            message: message.as_deref().map(sanitize_diagnostic),
+            file: file.as_deref().map(sanitize_diagnostic),
         },
     );
 }
@@ -413,7 +423,7 @@ fn sa3_install_script() -> PathBuf {
 pub(crate) struct InstallShared {
     busy: AtomicBool,
     cancelled: AtomicBool,
-    current_child: Mutex<Option<Child>>,
+    current_child: Mutex<Option<SupervisedChild>>,
     active: Mutex<Option<(Family, String)>>,
 }
 
@@ -541,7 +551,7 @@ impl InstallManager {
     pub fn cancel(&self) {
         self.shared.cancelled.store(true, Ordering::Release);
         if let Some(mut child) = self.shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            kill_group(&mut child);
+            let _ = child.force_kill();
         }
     }
 
@@ -564,36 +574,6 @@ impl Drop for InstallManager {
     }
 }
 
-/// Kill the child's whole process group (it was spawned as a group leader, so its
-/// pgid equals its pid), then reap the leader. This takes down `uv run`'s python
-/// grandchild and any shell descendants — killing only the leader would orphan
-/// them and leave the download running. The grandchildren are reparented to
-/// launchd, which reaps them.
-fn kill_group(child: &mut Child) {
-    let group = -(child.id() as libc::pid_t);
-    // SAFETY: `kill(2)` with a negative pid signals the process group; the pid is a
-    // live child we own. A failure (already-exited group) is ignored.
-    unsafe {
-        libc::kill(group, libc::SIGKILL);
-    }
-    let _ = child.wait();
-    // A descendant that was mid-fork during the sweep can miss the signal — but
-    // it is still IN the group (fork inherits the pgid), so re-sweep until the
-    // group has no members (signal 0 probes without signalling). One pass
-    // suffices in practice; the bound keeps a stray unkillable member from
-    // spinning this thread forever.
-    for _ in 0..100 {
-        // SAFETY: as above; signal 0 sends nothing.
-        if unsafe { libc::kill(group, 0) } == -1 {
-            break;
-        }
-        unsafe {
-            libc::kill(group, libc::SIGKILL);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
 pub(crate) fn cancelled(shared: &InstallShared) -> Result<(), String> {
     if shared.cancelled.load(Ordering::Acquire) {
         Err("cancelled".into())
@@ -613,38 +593,50 @@ pub(crate) fn stream_child(
     mut on_line: impl FnMut(&str),
 ) -> Result<(), String> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    // Run the child as its own process-group leader so a cancel can kill the whole
-    // tree: the install runs `uv run python …` (and sa3-install.sh shells further),
-    // and killing only the immediate child would orphan the real worker — which
-    // keeps the stdout pipe open and wedges the reader below. See `kill_group`.
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("{label}: cannot spawn ({e})"))?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
+    let mut child = crate::child_process::spawn_grouped(&mut cmd)
+        .map_err(|error| sanitize_diagnostic(&format!("{label}: cannot spawn ({error})")))?;
+    let stdout = child.take_stdout().expect("piped stdout");
+    let stderr = child.take_stderr().expect("piped stderr");
     *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
 
     let drain_label = label.to_string();
     let stderr_drain = std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            eprintln!("lsdj-app: {drain_label}: {line}");
+        let mut diagnostics = DiagnosticTail::default();
+        if let Err(error) = read_bounded_lines(stderr, |line| {
+            diagnostics.push(line);
+        }) {
+            diagnostics.push(&format!("stderr read failed: {error}"));
         }
+        (drain_label, diagnostics)
     });
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        on_line(&line);
-    }
-    let _ = stderr_drain.join();
+    let stdout_result = read_bounded_lines(stdout, |line| {
+        on_line(line);
+    });
+    let (drain_label, diagnostics) = stderr_drain
+        .join()
+        .unwrap_or_else(|_| (label.to_string(), DiagnosticTail::default()));
 
     // Reclaim the child to read its exit status; cancel() may have taken it.
     let Some(mut child) = shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).take() else {
         return Err("cancelled".into());
     };
-    let status = child.wait().map_err(|e| format!("{label}: wait failed ({e})"))?;
+    let status = child
+        .wait()
+        .map_err(|error| sanitize_diagnostic(&format!("{label}: wait failed ({error})")))?;
     cancelled(shared)?;
+    stdout_result
+        .map_err(|error| sanitize_diagnostic(&format!("{label}: stdout read failed ({error})")))?;
     if !status.success() {
-        return Err(format!("{label}: exited with {status}"));
+        let detail = diagnostics.render();
+        let message = if detail.is_empty() {
+            format!("{label}: exited with {status}")
+        } else {
+            format!("{label}: exited with {status}; diagnostics:\n{detail}")
+        };
+        return Err(sanitize_diagnostic(&message));
+    }
+    if !diagnostics.is_empty() {
+        eprintln!("lsdj-app: {drain_label}: {}", diagnostics.render());
     }
     Ok(())
 }
@@ -689,12 +681,16 @@ fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Re
             // (data) rides along. Upstream `message`/`done` lines are not shown.
             "stage" => progress(parsed.stage.as_deref().unwrap_or("download"), None, None),
             "file" => progress("download", None, parsed.file),
-            "error" => last_error = parsed.message.or(Some("download failed".into())),
+            "error" => {
+                last_error = Some(sanitize_diagnostic(
+                    parsed.message.as_deref().unwrap_or("download failed"),
+                ));
+            }
             _ => {}
         }
     });
     // Prefer the tooling's own error message over the generic non-zero exit.
-    result.map_err(|exit_err| last_error.unwrap_or(exit_err))
+    result.map_err(|exit_err| sanitize_diagnostic(&last_error.unwrap_or(exit_err)))
 }
 
 fn install_sa3(progress: &Progress, shared: &InstallShared, update: bool) -> Result<(), String> {
@@ -964,6 +960,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn write_exec(path: &Path, body: &str) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(path, body).unwrap();
@@ -972,6 +969,7 @@ mod tests {
 
     // A stand-in for the frozen sidecar's `--download-model` mode: writes the two
     // model files into $MAGENTA_HOME and emits the JSON progress contract.
+    #[cfg(unix)]
     const STUB_SIDECAR: &str = r#"#!/bin/sh
 name=""
 while [ $# -gt 0 ]; do
@@ -989,6 +987,7 @@ printf '{"event":"file","file":"models/%s/%s_state.safetensors"}\n' "$name" "$na
 printf '{"event":"done"}\n'
 "#;
 
+    #[cfg(unix)]
     #[test]
     fn install_magenta_runs_the_tooling_and_the_model_appears() {
         let tmp = std::env::temp_dir().join(format!("lsdj-install-test-{}", std::process::id()));
@@ -1022,6 +1021,7 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_download_reports_a_tooling_error() {
         let tmp = std::env::temp_dir().join(format!("lsdj-install-err-{}", std::process::id()));
@@ -1038,6 +1038,49 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_download_sanitizes_and_bounds_structured_tooling_errors() {
+        let tmp = std::env::temp_dir().join(format!("lsdj-install-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let stub = tmp.join("fail-secret.sh");
+        let message = format!(
+            "HF_TOKEN=hf-secret HUGGING_FACE_HUB_TOKEN=hub-secret \
+             client_secret=oauth-secret access_token=access-secret \
+             api_key=api-secret Authorization: Bearer auth-secret {}",
+            "x".repeat(5000)
+        );
+        let json = serde_json::json!({"event": "error", "message": message});
+        write_exec(
+            &stub,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\nexit 1\n", json),
+        );
+        let mut cmd = Command::new("sh");
+        cmd.arg(&stub);
+
+        let noop = |_: &str, _: Option<String>, _: Option<String>| {};
+        let error = run_download(&noop, &shared(), cmd).expect_err("stub must fail");
+        assert!(
+            error.len() <= 2048,
+            "unbounded error length: {}",
+            error.len()
+        );
+        for secret in [
+            "hf-secret",
+            "hub-secret",
+            "oauth-secret",
+            "access-secret",
+            "api-secret",
+            "auth-secret",
+        ] {
+            assert!(!error.contains(secret), "leaked {secret}: {error}");
+        }
+        assert!(error.contains("[REDACTED]"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn run_sa3_installer_runs_the_script_and_reports_the_stage() {
         let tmp = std::env::temp_dir().join(format!("lsdj-sa3install-test-{}", std::process::id()));
@@ -1063,6 +1106,7 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancel_kills_the_whole_process_group() {
         use std::time::Duration;
@@ -1111,7 +1155,7 @@ printf '{"event":"done"}\n'
                 .unwrap_or_else(|p| p.into_inner())
                 .take()
                 .expect("child parked before its stdout flowed");
-            kill_group(&mut child);
+            let _ = child.force_kill();
         });
 
         // The group kill signals the grandchild atomically; its reaping (by
