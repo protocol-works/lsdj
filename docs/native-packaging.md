@@ -231,10 +231,13 @@ fresh install and later top-ups:
   huggingface_hub`, `--collect-all fsspec`, `--hidden-import click`). A missing
   collection only fails at runtime in the packaged app — hence the checklist
   item below, which static analysis cannot cover.
-- Stable Audio 3 installs in-app too, into the app-owned data dir
-  (`~/Library/Application Support/LSDJ/stable-audio-3`, the resolver's first
-  candidate): the Rust shell fetches the pinned source
-  ([`sa3-pin.json`](../sa3-pin.json)) as a tarball (`curl`), extracts it (`tar`),
-  and runs [`scripts/sa3-install.sh`](../scripts/sa3-install.sh) — build+warm
-  steps with no git, no tty, no system Python 3.11 (`install.sh -y --python
-  3.11`). Both families' weights move there with `just migrate-models`.
+- Stable Audio 3 installs in-app too, into the app-owned assets dir. The Rust
+  worker treats [`sa3-pin.json`](../sa3-pin.json) as its trust root: native HTTPS
+  downloads the immutable source, `uv` runtime, and every model artifact;
+  application-controlled SHA-256 values are checked before bounded native
+  extraction or execution. Python dependencies come from the embedded
+  hash-locked requirements file. The complete candidate is built and warmed in
+  the host-resolved same-filesystem staging root, then atomically promoted while
+  the previous verified install remains available for rollback. No in-app step
+  invokes `bash`, `curl`, `tar`, `chmod`, shell activation, or a shell command
+  string. Both families' weights move there with `just migrate-models`.
