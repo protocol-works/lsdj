@@ -1,12 +1,15 @@
 """sa3 generation tests: checkout resolution and the subprocess contract.
 
-A stub `python` executable stands in for the sa3_mlx venv so the real
-spawn path — argument passing, --out handling, failure and timeout
-mapping — is exercised without MLX or weights.
+A copied or linked Python interpreter runs a fake sa3_mlx CLI so the real spawn
+path — argument passing, --out handling, failure, and timeout mapping — is
+exercised without MLX or weights.
 """
 
 import asyncio
+import os
 import pathlib
+import shutil
+import sys
 
 import pytest
 
@@ -15,41 +18,58 @@ from lsdj import sa3
 FAKE_WAV = b"RIFFfakewavdata"
 
 # Writes the fake WAV to whatever follows --out and records one argv element per
-# line beside itself (.venv/bin/argv.txt) so tests can assert the exact CLI
-# contract. If init audio is present, copy it before the temporary dir disappears.
-SUCCESS_STUB = """#!/bin/sh
-out=""
-prev=""
-: > "$(dirname "$0")/argv.txt"
-for arg in "$@"; do
-    if [ "$prev" = "--out" ]; then out="$arg"; fi
-    if [ "$prev" = "--init-audio" ]; then cp "$arg" "$(dirname "$0")/init.wav"; fi
-    printf '%s\\n' "$arg" >> "$(dirname "$0")/argv.txt"
-    prev="$arg"
-done
-printf 'RIFFfakewavdata' > "$out"
+# line beside the copied venv interpreter so tests can assert the exact CLI
+# contract. This is Python rather than a shell stub so the subprocess contract
+# runs unchanged on macOS, Linux, and Windows without a model runtime.
+SUCCESS_STUB = """import pathlib
+import shutil
+import sys
+
+args = [sys.argv[0], *sys.argv[1:]]
+runtime_dir = pathlib.Path(sys.executable).parent
+(runtime_dir / "argv.txt").write_text("\\n".join(args) + "\\n")
+out = pathlib.Path(sys.argv[sys.argv.index("--out") + 1])
+if "--init-audio" in sys.argv:
+    init_audio = pathlib.Path(sys.argv[sys.argv.index("--init-audio") + 1])
+    shutil.copyfile(init_audio, runtime_dir / "init.wav")
+out.write_bytes(b"RIFFfakewavdata")
 """
 
-FAILURE_STUB = """#!/bin/sh
-echo "error: no DiT weights found"
-exit 3
+FAILURE_STUB = """import sys
+print("error: no DiT weights found")
+sys.exit(3)
 """
 
 # Exits cleanly without writing the WAV.
-SILENT_STUB = """#!/bin/sh
-exit 0
+SILENT_STUB = """pass
+"""
+
+TIMEOUT_STUB = """import time
+time.sleep(30)
 """
 
 
 def make_checkout(root: pathlib.Path, stub_body: str) -> pathlib.Path:
-    """Lay out <root>/optimized/mlx with an executable python stub."""
+    """Lay out <root>/optimized/mlx with a portable fake CLI runtime."""
     mlx_dir = root / "optimized" / "mlx"
     (mlx_dir / ".venv" / "bin").mkdir(parents=True)
     (mlx_dir / "scripts").mkdir()
-    (mlx_dir / "scripts" / "sa3_mlx.py").write_text("# stub CLI\n")
+    (mlx_dir / "scripts" / "sa3_mlx.py").write_text(stub_body)
+    (mlx_dir / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {sys.base_prefix}\n"
+        "include-system-site-packages = false\n"
+        f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+    )
     python = mlx_dir / ".venv" / "bin" / "python"
-    python.write_text(stub_body)
-    python.chmod(0o755)
+    if os.name == "nt":
+        # Creating symlinks normally requires elevated Windows privileges.
+        # Keep the extensionless contract probe and the executable name that
+        # CreateProcess appends when an argv program has no extension.
+        shutil.copyfile(sys.executable, python)
+        shutil.copyfile(sys.executable, python.with_suffix(".exe"))
+    else:
+        # Preserve relocatable interpreter/library relationships on Unix.
+        python.symlink_to(sys.executable)
     return mlx_dir
 
 
@@ -228,7 +248,7 @@ class TestGenerate:
     def test_timeout_kills_and_raises(self, checkout, monkeypatch):
         # The deadline is base + seconds (timeout_for), so a short clip
         # keeps the test fast while exercising the real kill path.
-        checkout("#!/bin/sh\nsleep 30\n")
+        checkout(TIMEOUT_STUB)
         monkeypatch.setattr(sa3, "TIMEOUT_SECONDS", 0.2)
         with pytest.raises(sa3.GenerationFailed, match="timed out"):
             asyncio.run(sa3.generate("anything", 0.5, "sfx"))

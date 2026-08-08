@@ -39,7 +39,44 @@ DEFAULT_MODEL = "mrt2_small"
 MODEL_RAM_ESTIMATE_GB = {"mrt2_small": 2.0, "mrt2_base": 6.0}
 
 
+def _windows_total_ram_bytes(kernel32=None) -> int:
+    """Read physical RAM through the Windows kernel API.
+
+    ``os.sysconf`` is Unix-only. Keep this standard-library-only so the model
+    status endpoint remains available before any optional model runtime loads.
+    ``kernel32`` is injectable for a platform-independent contract test.
+    """
+    import ctypes
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    if kernel32 is None:
+        api = ctypes.windll.kernel32.GlobalMemoryStatusEx
+        api.argtypes = [ctypes.POINTER(MemoryStatusEx)]
+        api.restype = ctypes.c_int
+    else:
+        api = kernel32.GlobalMemoryStatusEx
+    if not api(ctypes.byref(status)):
+        raise OSError(ctypes.get_last_error(), "GlobalMemoryStatusEx failed")
+    return status.ullTotalPhys
+
+
 def _total_ram_gb() -> float:
+    if os.name == "nt":
+        return _windows_total_ram_bytes() / 1024**3
     return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
 
 
