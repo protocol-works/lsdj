@@ -214,9 +214,10 @@ if (Test-Path -LiteralPath $unicodeApp) {
     throw 'Unicode/space uninstall left the app binary behind.'
 }
 
-# The custom-location install still created the same preserved data marker. Use
-# a normal reinstall so the explicit purge path can clean the isolated runner.
-Invoke-CheckedProcess $newer.FullName @('/S')
+# The custom-location uninstall intentionally retains its remembered location.
+# Override it explicitly so the final purge cleans the isolated runner's normal
+# application/data root as well as the remembered-location registry state.
+Invoke-CheckedProcess $newer.FullName @('/S', "/D=$dataRoot")
 Invoke-CheckedProcess $uninstaller @('/S', '/PURGE-LSDJ-DATA')
 Start-Sleep -Milliseconds 500
 if (Test-Path -LiteralPath $dataRoot) {

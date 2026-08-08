@@ -36,6 +36,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("StrCpy $LsdjDeleteData $DeleteAppDataCheckboxState", hooks)
         self.assertIn("StrCpy $DeleteAppDataCheckboxState 0", hooks)
         self.assertIn("${If} $LsdjDeleteData = 1", hooks)
+        self.assertIn('DeleteRegKey SHCTX "${MANUPRODUCTKEY}"', hooks)
         self.assertIn('RMDir /r "${LSDJ_DATA_ROOT}"', hooks)
         self.assertNotIn('RMDir /r "$LOCALAPPDATA"', hooks)
 
