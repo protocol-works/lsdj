@@ -61,6 +61,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
             self.assertIn(name, signer)
         self.assertIn("TimeStamperCertificate", verifier)
         self.assertIn("signtool.exe", verifier)
+        self.assertIn("Get-Command 'signtool.exe'", signer)
         self.assertNotRegex(
             signer, r"(?i)certificate_base64|pfx_password|azure|digicert"
         )
@@ -72,6 +73,11 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("assert-windows-release-rejects-unsigned.ps1", workflow)
         self.assertIn("test-windows-installer.ps1", workflow)
         self.assertIn("windows-x64-unsigned-development", workflow)
+
+        rejection = (
+            REPO_ROOT / "scripts/assert-windows-release-rejects-unsigned.ps1"
+        ).read_text()
+        self.assertIn("Authenticode signature status is NotSigned", rejection)
 
     def test_release_producer_is_required_and_has_no_publish_permission(self):
         workflow = (REPO_ROOT / ".github/workflows/macos-release.yml").read_text()

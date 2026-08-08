@@ -35,6 +35,7 @@ $provider = Get-Item -LiteralPath $providerCommand -ErrorAction Stop
 if (($provider.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $provider.PSIsContainer) {
     throw 'The Windows signing provider command must be a plain executable file, not a link or directory.'
 }
+(Get-Command 'signtool.exe' -ErrorAction Stop) | Out-Null
 
 if ($Preflight) {
     Write-Host "Windows signing interface is configured for subject '$expectedSubject' and certificate $($expectedThumbprint.ToUpperInvariant())."

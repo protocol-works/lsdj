@@ -91,11 +91,12 @@ defines a provider-neutral, non-shell interface:
 
 The selected provider must provision its credentialed wrapper after Environment
 approval. The wrapper owns key access and timestamp-server configuration. The
-repo never accepts a command string, PFX, password, or unverified subject. Every
-sign operation immediately requires a valid Authenticode chain, exact leaf
-thumbprint and subject, a timestamp certificate, and successful `signtool /pa`
-verification. The installed app, uninstaller, executable payloads, and final
-NSIS installer are verified again before the producer bundle is uploaded.
+repo never accepts a command string, PFX, password, or unverified subject. The
+protected preflight also requires the Windows SDK `signtool.exe`. Every sign
+operation immediately requires a valid Authenticode chain, exact leaf thumbprint
+and subject, a timestamp certificate, and successful `signtool /pa` verification.
+The installed app, uninstaller, executable payloads, and final NSIS installer are
+verified again before the producer bundle is uploaded.
 
 No provider, certificate, publisher subject, protected CI identity, key storage,
 rotation process, or revocation process has been selected yet. Consequently the
