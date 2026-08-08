@@ -28,11 +28,15 @@ class TestLorasDir:
             == tmp_path / "elsewhere"
         )
 
-    def test_defaults_to_the_app_support_home(self, tmp_path):
+    def test_uses_the_host_supplied_assets_home(self, tmp_path):
         assert (
-            loras.loras_dir(env={}, home=tmp_path)
-            == tmp_path / "Library" / "Application Support" / "LSDJ" / "sa3-loras"
+            loras.loras_dir(env={"LSDJ_ASSETS_HOME": str(tmp_path / "assets")})
+            == tmp_path / "assets" / "sa3-loras"
         )
+
+    def test_refuses_to_guess_a_platform_home(self):
+        with pytest.raises(RuntimeError, match="desktop host"):
+            loras.loras_dir(env={})
 
 
 class TestResolve:

@@ -48,6 +48,7 @@ mod loras;
 mod mcp;
 mod midi;
 mod models;
+mod platform_paths;
 mod samples;
 mod settings;
 mod sidecar;
@@ -528,11 +529,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             configure_bundled_backend(app)?;
-            // Relocate the Magenta model weights out of ~/Documents (which users
-            // may sync to iCloud) into the app-owned data dir, migrating a prior
-            // install. MUST run before any backend process spawns so they — and
-            // magenta_rt.paths, read at import — inherit MAGENTA_HOME (issue #43).
-            models::ensure_magenta_home();
+            // Resolve every filesystem root once and pass the contract to Python
+            // through inherited environment variables. This also performs the
+            // restart-safe macOS model migration. MUST precede every service.
+            platform_paths::configure(app)?;
             // Start the audio host (engine + render thread + device), then spawn
             // the per-deck inference sidecars fed by the deck handles. Everything
             // is held in managed state for the app's lifetime.
@@ -585,36 +585,34 @@ pub fn run() {
             // The sa3/Magenta generation server (gap 2): the gen-only FastAPI on a
             // loopback port the webview fetches; started with the app.
             let generation_server = generation::GenerationServer::start();
-            // The generated-songs library: a fixed folder under the user's Documents
-            // (override never reaches it from the webview) plus a JSON registry the
-            // take list restores from. Auto-save / list / load / delete all go
-            // through it. Fall back to a relative path only if Documents can't be
-            // resolved (effectively never on macOS) so the app still runs.
-            let songs_dir = app
-                .path()
-                .document_dir()
-                .map(|d| {
-                    models::migrate_legacy_dir(
-                        &d.join("LSDJ").join("generated_songs"),
-                        &d.join("LSDJai").join("generated_songs"),
+            // The generated-songs library: the durable-data root from the platform
+            // contract plus a JSON registry the take list restores from. On macOS
+            // this remains Documents/LSDJ. Auto-save / list / load / delete all go
+            // through it.
+            let paths = platform_paths::get();
+            let songs_dir = paths.legacy_data().map_or_else(
+                || paths.data().join("generated_songs"),
+                |legacy| {
+                    platform_paths::migrate_legacy_dir(
+                        &paths.data().join("generated_songs"),
+                        &legacy.join("generated_songs"),
                     )
-                })
-                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJ/generated_songs"));
+                },
+            );
             app.manage(songs::SongLibrary::new(songs_dir.clone()));
             // The generated-samples library: the short-loop counterpart of the songs
             // folder (ADR-0022), the home for deck freezes / generated pads / composed
             // SFX-Music that used to die at session end. Same fixed-folder + registry
             // discipline.
-            let samples_dir = app
-                .path()
-                .document_dir()
-                .map(|d| {
-                    models::migrate_legacy_dir(
-                        &d.join("LSDJ").join("generated_samples"),
-                        &d.join("LSDJai").join("generated_samples"),
+            let samples_dir = paths.legacy_data().map_or_else(
+                || paths.data().join("generated_samples"),
+                |legacy| {
+                    platform_paths::migrate_legacy_dir(
+                        &paths.data().join("generated_samples"),
+                        &legacy.join("generated_samples"),
                     )
-                })
-                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJ/generated_samples"));
+                },
+            );
             app.manage(samples::SampleLibrary::new(samples_dir.clone()));
             // Watch both library folders so the Media Explorer tabs live-reload on a
             // change (a deck auto-saving a sample, a hand-drop/-delete); Rust owns the

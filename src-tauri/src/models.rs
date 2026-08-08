@@ -45,22 +45,14 @@ const WARMED_STAMP: &str = ".lsdj-warmed";
 // installer doesn't know the commit). Lives beside `.lsdj-warmed` in optimized/mlx.
 const SOURCE_STAMP: &str = ".lsdj-source.json";
 
-// --- Path resolution (mirrors backend/lsdj/paths.py + sa3.py) --------------
+// --- Host-resolved paths (mirrors the explicit Python environment) --------
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
-
-/// The `magenta-rt-v2` data root: `(MAGENTA_HOME or ~/Documents/Magenta)/
-/// magenta-rt-v2`. The `magenta-rt-v2` segment is ALWAYS appended, even when
-/// `MAGENTA_HOME` is set — matching `paths.magenta_home()`.
+/// The `magenta-rt-v2` data root. `MAGENTA_HOME`'s compatibility semantics
+/// append this segment; the host owns the resolved base.
 fn magenta_home() -> PathBuf {
-    let base = std::env::var_os("MAGENTA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join("Documents").join("Magenta"));
-    base.join("magenta-rt-v2")
+    crate::platform_paths::get()
+        .magenta_base()
+        .join("magenta-rt-v2")
 }
 
 /// The Magenta models dir (`paths.models_dir()`).
@@ -68,107 +60,9 @@ pub fn magenta_models_dir() -> PathBuf {
     magenta_home().join("models")
 }
 
-/// The app-owned data root for model weights — `~/Library/Application Support/
-/// LSDJ`. Kept out of `~/Documents` (which users may sync to iCloud, where
-/// multi-GB weights don't belong and Finder ops on offloaded files fail, -8013).
-pub(crate) fn app_support_base() -> PathBuf {
-    home_dir()
-        .join("Library")
-        .join("Application Support")
-        .join("LSDJ")
-}
-
-/// The app-owned home for the Stable Audio 3 checkout — where in-app installs go
-/// and the first place the resolver looks (kept out of `~/Documents`, like the
-/// Magenta weights).
+/// The host-owned home for the Stable Audio 3 checkout.
 fn sa3_app_home() -> PathBuf {
-    app_support_base().join("stable-audio-3")
-}
-
-/// Decide the one-time migration: `Some((from, to))` when a prior install lives
-/// at `old_rtv2` and `new_rtv2` doesn't exist yet, else `None`. Pure (no I/O
-/// beyond the existence checks) so the policy is unit-testable.
-fn migration_move(new_rtv2: &Path, old_rtv2: &Path) -> Option<(PathBuf, PathBuf)> {
-    (!new_rtv2.exists() && old_rtv2.is_dir())
-        .then(|| (old_rtv2.to_path_buf(), new_rtv2.to_path_buf()))
-}
-
-/// Move one directory from the previous brand root when its LSDJ destination
-/// does not exist yet. If the move fails, keep using the legacy directory so a
-/// branding change can never make installed models or adapters disappear.
-pub(crate) fn migrate_legacy_dir(new_dir: &Path, old_dir: &Path) -> PathBuf {
-    let Some((from, to)) = migration_move(new_dir, old_dir) else {
-        return new_dir.to_path_buf();
-    };
-    if let Some(parent) = to.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "lsdj-app: could not prepare branded data directory {}: {error}",
-                parent.display()
-            );
-            return from;
-        }
-    }
-    match std::fs::rename(&from, &to) {
-        Ok(()) => {
-            eprintln!("lsdj-app: migrated branded data → {}", to.display());
-            to
-        }
-        Err(error) => {
-            eprintln!(
-                "lsdj-app: could not migrate {} to {}: {error}",
-                from.display(),
-                to.display()
-            );
-            from
-        }
-    }
-}
-
-/// Point `MAGENTA_HOME` at the app-owned data dir and migrate a prior
-/// `~/Documents/Magenta` install into it (a same-volume rename — instant, no
-/// multi-GB copy). A pre-set `MAGENTA_HOME` (a dev/user override) wins. Must run
-/// once at startup BEFORE any backend process is spawned, so the children — and
-/// `magenta_rt.paths`, which reads the env at import — inherit the new location.
-pub fn ensure_magenta_home() {
-    let base = app_support_base();
-    let legacy_base = home_dir()
-        .join("Library")
-        .join("Application Support")
-        .join("LSDJai");
-    let branded_magenta = migrate_legacy_dir(
-        &base.join("magenta-rt-v2"),
-        &legacy_base.join("magenta-rt-v2"),
-    );
-    let branded_sa3 = migrate_legacy_dir(
-        &base.join("stable-audio-3"),
-        &legacy_base.join("stable-audio-3"),
-    );
-    let branded_loras = migrate_legacy_dir(&base.join("sa3-loras"), &legacy_base.join("sa3-loras"));
-    if branded_sa3.starts_with(&legacy_base) && std::env::var_os("SA3_MLX_HOME").is_none() {
-        std::env::set_var("SA3_MLX_HOME", branded_sa3);
-    }
-    if branded_loras.starts_with(&legacy_base) && std::env::var_os("SA3_LORAS_HOME").is_none() {
-        std::env::set_var("SA3_LORAS_HOME", branded_loras);
-    }
-    if std::env::var_os("MAGENTA_HOME").is_some() {
-        return; // respect an explicit override (dev, or a custom location)
-    }
-    if branded_magenta.starts_with(&legacy_base) {
-        std::env::set_var("MAGENTA_HOME", legacy_base);
-        return;
-    }
-    let old_base = home_dir().join("Documents").join("Magenta");
-    if let Some((from, to)) = migration_move(&base.join("magenta-rt-v2"), &old_base.join("magenta-rt-v2")) {
-        let _ = std::fs::create_dir_all(&base);
-        if std::fs::rename(&from, &to).is_err() {
-            // Cross-volume / perms: keep the existing install rather than strand it.
-            std::env::set_var("MAGENTA_HOME", &old_base);
-            return;
-        }
-        eprintln!("lsdj-app: migrated model weights → {}", to.display());
-    }
-    std::env::set_var("MAGENTA_HOME", &base);
+    crate::platform_paths::get().sa3_home().to_path_buf()
 }
 
 /// Whether the shared resources a model load needs are present — without these
@@ -180,14 +74,7 @@ fn resources_present() -> bool {
 
 /// SA3 checkout roots to probe, in order (mirrors `sa3._checkout_candidates`).
 fn sa3_candidates() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(override_home) = std::env::var_os("SA3_MLX_HOME") {
-        if !override_home.is_empty() {
-            candidates.push(PathBuf::from(override_home));
-        }
-    }
-    candidates.push(sa3_app_home()); // the app-owned home — where in-app installs go
-    candidates
+    vec![sa3_app_home()]
 }
 
 /// The SA3 install state + the resolved checkout root (mirrors `sa3.readiness`):
@@ -203,7 +90,7 @@ fn sa3_status() -> (&'static str, Option<PathBuf>) {
         if first_with_mlx.is_none() {
             first_with_mlx = Some(checkout.clone());
         }
-        let python = mlx.join(".venv").join("bin").join("python");
+        let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
         let script = mlx.join("scripts").join("sa3_mlx.py");
         if !(python.is_file() && script.is_file()) {
             continue;
@@ -1060,45 +947,6 @@ mod tests {
         // A trailing slash on the repo is ignored.
         let slash = Sa3Source { repo: format!("{}/", pin.repo), commit: pin.commit.clone() };
         assert!(!sa3_update_available(Some(&slash), &pin, true));
-    }
-
-    #[test]
-    fn migration_moves_a_prior_install_only_when_the_new_dir_is_absent() {
-        let tmp = std::env::temp_dir().join(format!("lsdj-migrate-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let new_rtv2 = tmp.join("new").join("magenta-rt-v2");
-        let old_rtv2 = tmp.join("old").join("magenta-rt-v2");
-
-        // No prior install → nothing to move.
-        assert_eq!(migration_move(&new_rtv2, &old_rtv2), None);
-
-        // Prior install present, new dir absent → move it.
-        std::fs::create_dir_all(&old_rtv2).unwrap();
-        assert_eq!(
-            migration_move(&new_rtv2, &old_rtv2),
-            Some((old_rtv2.clone(), new_rtv2.clone())),
-        );
-
-        // New dir already exists (already migrated) → leave the old one be.
-        std::fs::create_dir_all(&new_rtv2).unwrap();
-        assert_eq!(migration_move(&new_rtv2, &old_rtv2), None);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn legacy_brand_directory_is_moved_without_losing_its_contents() {
-        let tmp =
-            std::env::temp_dir().join(format!("lsdj-brand-migrate-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let old_dir = tmp.join("LSDJai").join("stable-audio-3");
-        let new_dir = tmp.join("LSDJ").join("stable-audio-3");
-        std::fs::create_dir_all(&old_dir).unwrap();
-        std::fs::write(old_dir.join("model.bin"), b"model").unwrap();
-
-        assert_eq!(migrate_legacy_dir(&new_dir, &old_dir), new_dir);
-        assert_eq!(std::fs::read(new_dir.join("model.bin")).unwrap(), b"model");
-        assert!(!old_dir.exists());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // --- End-to-end install: actually run the pipeline against a stub backend.

@@ -6,7 +6,7 @@
 //! models (no central index file):
 //!
 //! ```text
-//! ~/Library/Application Support/LSDJ/sa3-loras/<base>/<slug>/
+//! <host-resolved assets>/sa3-loras/<base>/<slug>/
 //!     adapter_model.safetensors      (the adapter — any single *.safetensors)
 //!     adapter_config.json            (PEFT convention only)
 //!     lora.json                      (import manifest: source / type / rank)
@@ -50,15 +50,10 @@ const MAX_HEADER_BYTES: u64 = 64 * 1024 * 1024;
 
 const MANIFEST: &str = "lora.json";
 
-/// The registry root. `$SA3_LORAS_HOME` wins (dev/test override); otherwise the
-/// app-owned data dir, beside the SA3 checkout. Mirrors `loras.loras_dir`.
+/// The registry root resolved by the Rust host. An explicit dev/user override is
+/// captured into this contract during startup; callers never guess an OS path.
 pub fn loras_dir() -> PathBuf {
-    if let Some(override_home) = std::env::var_os("SA3_LORAS_HOME") {
-        if !override_home.is_empty() {
-            return PathBuf::from(override_home);
-        }
-    }
-    crate::models::app_support_base().join("sa3-loras")
+    crate::platform_paths::get().loras_home().to_path_buf()
 }
 
 // --- Registry discovery ----------------------------------------------------
