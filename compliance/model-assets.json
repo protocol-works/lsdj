@@ -1,0 +1,1077 @@
+{
+  "schema_version": 1,
+  "inventory_revision": "2026-08-08.2",
+  "audited_at": "2026-08-08",
+  "audit_base_revision": "c9cd822ef6cbb86711e72d35f0f7e50a126d666f",
+  "purpose": "Revision-specific technical provenance and notice inputs for LSDJ model and model-runtime assets. This inventory records upstream statements and unresolved owner-review gates; it is not legal advice or a project-use approval.",
+  "project_use": {
+    "reported_context": "GitHub issue #108 describes LSDJ as open-source and non-commercial.",
+    "owner_confirmation_status": "pending",
+    "future_distribution_or_commercial_change_is_release_gate": true,
+    "public_record_must_exclude": [
+      "revenue details",
+      "account details",
+      "contracts",
+      "credentials"
+    ]
+  },
+  "catalogs": {
+    "bundled_lora_ids": [],
+    "official_lora_ids": [],
+    "documented_reference_lora_ids": [
+      "motif-maqam-lora"
+    ],
+    "note": "The application has no built-in or Stability-AI-official LoRA catalog at the audited revision. The Motif Maqam adapter is the sole public adapter named in LSDJ documentation and tests, so it is inventoried independently as a documented reference, not represented as an official Stability AI artifact."
+  },
+  "assets": [
+    {
+      "id": "lsdj-source",
+      "name": "LSDJ application source",
+      "family": "lsdj",
+      "asset_type": "application_code",
+      "support_status": "current",
+      "upstream": {
+        "project": "LSDJ",
+        "canonical_url": "https://github.com/protocol-works/lsdj"
+      },
+      "revision": {
+        "kind": "git_commit",
+        "value": "c9cd822ef6cbb86711e72d35f0f7e50a126d666f",
+        "url": "https://github.com/protocol-works/lsdj/tree/c9cd822ef6cbb86711e72d35f0f7e50a126d666f"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "unresolved",
+            "identifier": "NOASSERTION",
+            "name": "No project LICENSE or NOTICE file found at the audited revision",
+            "scope": "LSDJ-authored application code",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "This entry is application code, not model weights",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [],
+        "attribution": [],
+        "sources": []
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "bundled_in_application",
+        "source_url": "https://github.com/protocol-works/lsdj/tree/c9cd822ef6cbb86711e72d35f0f7e50a126d666f",
+        "installer_contains_asset": true,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "Project owners must select and add the LSDJ code license before a public source or binary release can claim a license."
+      },
+      "dependencies": [],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Select the LSDJ code license and copyright/notice text, then confirm how it is carried in source and packaged applications.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://github.com/protocol-works/lsdj/tree/c9cd822ef6cbb86711e72d35f0f7e50a126d666f"
+      ]
+    },
+    {
+      "id": "google-mrt2-runtime-code",
+      "name": "Google Magenta RealTime 2 Python runtime",
+      "family": "magenta-realtime-2",
+      "asset_type": "runtime_code",
+      "support_status": "current",
+      "upstream": {
+        "project": "magenta/magenta-realtime",
+        "canonical_url": "https://github.com/magenta/magenta-realtime"
+      },
+      "revision": {
+        "kind": "git_commit",
+        "value": "4bf995bdd9c29b818543574e1b3a6e67867c9a58",
+        "url": "https://github.com/magenta/magenta-realtime/tree/4bf995bdd9c29b818543574e1b3a6e67867c9a58"
+      },
+      "package": {
+        "name": "magenta-rt",
+        "version": "2.0.2",
+        "url": "https://pypi.org/project/magenta-rt/2.0.2/",
+        "wheel_sha256": "92df64a8150a6bff85ab9a0db0b54929a69b2538949df72677af2dc25a6a3845",
+        "sdist_sha256": "4f6241955094e5c38142deef820a03ce8e64bd1b300223e0d78a9195056c9b98"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "declared",
+            "identifier": "Apache-2.0",
+            "name": "Apache License 2.0",
+            "scope": "Magenta RealTime source and Python package",
+            "terms_url": "https://github.com/magenta/magenta-realtime/blob/4bf995bdd9c29b818543574e1b3a6e67867c9a58/LICENSE",
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Weights are inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Include the Apache-2.0 license with redistributed code and preserve applicable copyright, patent, trademark, and attribution notices."
+        ],
+        "attribution": [
+          "Copyright 2026 Google LLC"
+        ],
+        "sources": [
+          "https://github.com/magenta/magenta-realtime/blob/4bf995bdd9c29b818543574e1b3a6e67867c9a58/LICENSE"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "bundled_runtime_dependency",
+        "source_url": "https://github.com/magenta/magenta-realtime/tree/4bf995bdd9c29b818543574e1b3a6e67867c9a58",
+        "installer_contains_asset": true,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "The package is hash-locked in backend/uv.lock. Owner review must confirm the packaged third-party notice location before release."
+      },
+      "dependencies": [
+        "google-mrt2-weights"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Confirm the Apache-2.0 runtime notice is included in every packaged sidecar/application artifact.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://github.com/magenta/magenta-realtime/tree/4bf995bdd9c29b818543574e1b3a6e67867c9a58",
+        "https://pypi.org/project/magenta-rt/2.0.2/"
+      ]
+    },
+    {
+      "id": "google-mrt2-weights",
+      "name": "Google Magenta RealTime 2 weights and shared resources",
+      "family": "magenta-realtime-2",
+      "asset_type": "model_weights",
+      "support_status": "current",
+      "upstream": {
+        "project": "google/magenta-realtime-2",
+        "canonical_url": "https://huggingface.co/google/magenta-realtime-2"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc",
+        "url": "https://huggingface.co/google/magenta-realtime-2/tree/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc"
+      },
+      "included_artifacts": [
+        "models/mrt2_base/*",
+        "models/mrt2_small/*",
+        "resources/musiccoca/*",
+        "resources/spectrostream/*"
+      ],
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Runtime code is inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "declared",
+            "identifier": "CC-BY-4.0",
+            "name": "Creative Commons Attribution 4.0 International",
+            "scope": "MRT2 model weights and resource models in the Google snapshot",
+            "terms_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+            "notice_url": "https://huggingface.co/google/magenta-realtime-2/blob/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc/README.md"
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Attribute Google DeepMind and link the CC-BY-4.0 license and revision-specific model card.",
+          "Retain the model card's responsible-use statement with user-facing model notices."
+        ],
+        "attribution": [
+          "Magenta RealTime 2 — Authors: Google DeepMind",
+          "Copyright 2026 Google LLC"
+        ],
+        "sources": [
+          "https://huggingface.co/google/magenta-realtime-2/blob/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc/README.md",
+          "https://creativecommons.org/licenses/by/4.0/legalcode"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "downloaded_from_upstream",
+        "source_url": "https://huggingface.co/google/magenta-realtime-2/tree/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": false,
+        "release_gate": true,
+        "notes": "magenta-rt 2.0.2's Hugging Face downloader omits revision=, so the current application follows mutable repository state. A release must pin and verify this snapshot before download. Model weights must remain outside installers unless exact-revision redistribution is separately confirmed."
+      },
+      "dependencies": [],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Confirm the project-use and attribution path for CC-BY-4.0 weights and whether user acknowledgement is required before first download.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/google/magenta-realtime-2/tree/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc",
+        "https://github.com/magenta/magenta-realtime/blob/4bf995bdd9c29b818543574e1b3a6e67867c9a58/MODEL.md"
+      ]
+    },
+    {
+      "id": "pytorch-mrt2-port-code",
+      "name": "Apolinario / multimodalart Magenta RealTime 2 PyTorch port",
+      "family": "magenta-realtime-2-pytorch",
+      "asset_type": "runtime_code",
+      "support_status": "planned_conditional",
+      "upstream": {
+        "project": "multimodalart/magenta-realtime-torch",
+        "canonical_url": "https://github.com/multimodalart/magenta-realtime-torch"
+      },
+      "revision": {
+        "kind": "git_commit",
+        "value": "6d076baa3df3b10448876c400521a015a5137c59",
+        "url": "https://github.com/multimodalart/magenta-realtime-torch/tree/6d076baa3df3b10448876c400521a015a5137c59"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "declared",
+            "identifier": "Apache-2.0",
+            "name": "Apache License 2.0",
+            "scope": "PyTorch port source code",
+            "terms_url": "https://github.com/multimodalart/magenta-realtime-torch/blob/6d076baa3df3b10448876c400521a015a5137c59/LICENSE",
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Converted weights are inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Include the Apache-2.0 license with redistributed port code and preserve applicable upstream notices."
+        ],
+        "attribution": [
+          "PyTorch port by multimodalart / fffiloni (Apolinario)"
+        ],
+        "sources": [
+          "https://github.com/multimodalart/magenta-realtime-torch/blob/6d076baa3df3b10448876c400521a015a5137c59/LICENSE"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "planned_bundled_runtime_dependency",
+        "source_url": "https://github.com/multimodalart/magenta-realtime-torch/tree/6d076baa3df3b10448876c400521a015a5137c59",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "Issue #109 found no PyTorch-specific release/tag. Production may consume only the audited commit/snapshots and remains conditional on hardware and license gates."
+      },
+      "dependencies": [
+        "pytorch-mrt2-base-weights",
+        "pytorch-mrt2-small-weights",
+        "pytorch-musiccoca-processor",
+        "google-mrt2-weights"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Confirm the code notice path and that the port remains a thin pinned upstream dependency rather than copied code.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://github.com/multimodalart/magenta-realtime-torch/tree/6d076baa3df3b10448876c400521a015a5137c59",
+        "https://github.com/multimodalart/magenta-realtime-torch/blob/6d076baa3df3b10448876c400521a015a5137c59/LICENSE"
+      ]
+    },
+    {
+      "id": "pytorch-mrt2-base-weights",
+      "name": "Magenta community MRT2 base PyTorch snapshot",
+      "family": "magenta-realtime-2-pytorch",
+      "asset_type": "model_weights_and_remote_code",
+      "support_status": "planned_conditional",
+      "upstream": {
+        "project": "magenta-community/magenta-realtime-2",
+        "canonical_url": "https://huggingface.co/magenta-community/magenta-realtime-2"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "92087988d05d0fe38b11f021f0b0d00a75afb86b",
+        "url": "https://huggingface.co/magenta-community/magenta-realtime-2/tree/92087988d05d0fe38b11f021f0b0d00a75afb86b"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "declared",
+            "identifier": "Apache-2.0",
+            "name": "Apache License 2.0",
+            "scope": "Snapshot remote-code files, per model-card metadata",
+            "terms_url": "https://github.com/multimodalart/magenta-realtime-torch/blob/6d076baa3df3b10448876c400521a015a5137c59/LICENSE",
+            "notice_url": "https://huggingface.co/magenta-community/magenta-realtime-2/blob/92087988d05d0fe38b11f021f0b0d00a75afb86b/README.md"
+          }
+        ],
+        "weights": [
+          {
+            "status": "declared",
+            "identifier": "Apache-2.0",
+            "name": "Apache License 2.0",
+            "scope": "Converted snapshot model-card declaration",
+            "terms_url": "https://huggingface.co/magenta-community/magenta-realtime-2/blob/92087988d05d0fe38b11f021f0b0d00a75afb86b/README.md",
+            "notice_url": "https://huggingface.co/magenta-community/magenta-realtime-2/blob/92087988d05d0fe38b11f021f0b0d00a75afb86b/README.md"
+          },
+          {
+            "status": "underlying",
+            "identifier": "CC-BY-4.0",
+            "name": "Creative Commons Attribution 4.0 International",
+            "scope": "Google source weights; the port card says these weights are re-keyed and numerically identical",
+            "terms_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+            "notice_url": "https://huggingface.co/google/magenta-realtime-2/blob/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc/README.md"
+          },
+          {
+            "status": "unresolved",
+            "identifier": "NOASSERTION",
+            "name": "Effective converted-weight license and attribution path requires owner review",
+            "scope": "Conflict between Apache-2.0 model-card metadata and CC-BY-4.0 underlying weights",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Until reviewed, display both the converted snapshot's Apache-2.0 declaration and the Google source-weight CC-BY-4.0 provenance; do not imply that re-keying relicensed the weights."
+        ],
+        "attribution": [
+          "Magenta RealTime 2 — Google DeepMind; PyTorch conversion by magenta-community / multimodalart"
+        ],
+        "sources": [
+          "https://huggingface.co/magenta-community/magenta-realtime-2/blob/92087988d05d0fe38b11f021f0b0d00a75afb86b/README.md",
+          "https://huggingface.co/google/magenta-realtime-2/blob/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc/README.md"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "planned_download_from_upstream",
+        "source_url": "https://huggingface.co/magenta-community/magenta-realtime-2/tree/92087988d05d0fe38b11f021f0b0d00a75afb86b",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "Download only from the exact snapshot. Do not bundle or mirror until the Apache model-card versus underlying CC-BY-4.0 ambiguity is explicitly resolved by project owners."
+      },
+      "dependencies": [
+        "google-mrt2-weights",
+        "pytorch-musiccoca-processor"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Resolve and record the effective redistribution, attribution, and acknowledgement path for Apache-labeled re-keyed weights derived from CC-BY-4.0 Google weights.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/magenta-community/magenta-realtime-2/tree/92087988d05d0fe38b11f021f0b0d00a75afb86b",
+        "https://huggingface.co/google/magenta-realtime-2/tree/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc"
+      ]
+    },
+    {
+      "id": "pytorch-mrt2-small-weights",
+      "name": "Magenta community MRT2 small PyTorch snapshot",
+      "family": "magenta-realtime-2-pytorch",
+      "asset_type": "model_weights_and_remote_code",
+      "support_status": "planned_conditional",
+      "upstream": {
+        "project": "magenta-community/magenta-realtime-2-small",
+        "canonical_url": "https://huggingface.co/magenta-community/magenta-realtime-2-small"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "7037d99551c84ac5c6afb7f1a5e58c65e7233dbb",
+        "url": "https://huggingface.co/magenta-community/magenta-realtime-2-small/tree/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "declared",
+            "identifier": "Apache-2.0",
+            "name": "Apache License 2.0",
+            "scope": "Snapshot remote-code files, per model-card metadata",
+            "terms_url": "https://github.com/multimodalart/magenta-realtime-torch/blob/6d076baa3df3b10448876c400521a015a5137c59/LICENSE",
+            "notice_url": "https://huggingface.co/magenta-community/magenta-realtime-2-small/blob/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb/README.md"
+          }
+        ],
+        "weights": [
+          {
+            "status": "declared",
+            "identifier": "Apache-2.0",
+            "name": "Apache License 2.0",
+            "scope": "Converted snapshot model-card declaration",
+            "terms_url": "https://huggingface.co/magenta-community/magenta-realtime-2-small/blob/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb/README.md",
+            "notice_url": "https://huggingface.co/magenta-community/magenta-realtime-2-small/blob/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb/README.md"
+          },
+          {
+            "status": "underlying",
+            "identifier": "CC-BY-4.0",
+            "name": "Creative Commons Attribution 4.0 International",
+            "scope": "Google source weights; the port card says these weights are re-keyed and numerically identical",
+            "terms_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+            "notice_url": "https://huggingface.co/google/magenta-realtime-2/blob/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc/README.md"
+          },
+          {
+            "status": "unresolved",
+            "identifier": "NOASSERTION",
+            "name": "Effective converted-weight license and attribution path requires owner review",
+            "scope": "Conflict between Apache-2.0 model-card metadata and CC-BY-4.0 underlying weights",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Until reviewed, display both the converted snapshot's Apache-2.0 declaration and the Google source-weight CC-BY-4.0 provenance; do not imply that re-keying relicensed the weights."
+        ],
+        "attribution": [
+          "Magenta RealTime 2 — Google DeepMind; PyTorch conversion by magenta-community / multimodalart"
+        ],
+        "sources": [
+          "https://huggingface.co/magenta-community/magenta-realtime-2-small/blob/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb/README.md",
+          "https://huggingface.co/google/magenta-realtime-2/blob/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc/README.md"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "planned_download_from_upstream",
+        "source_url": "https://huggingface.co/magenta-community/magenta-realtime-2-small/tree/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "Download only from the exact snapshot. Do not bundle or mirror until the Apache model-card versus underlying CC-BY-4.0 ambiguity is explicitly resolved by project owners."
+      },
+      "dependencies": [
+        "google-mrt2-weights",
+        "pytorch-musiccoca-processor"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Resolve and record the effective redistribution, attribution, and acknowledgement path for Apache-labeled re-keyed weights derived from CC-BY-4.0 Google weights.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/magenta-community/magenta-realtime-2-small/tree/7037d99551c84ac5c6afb7f1a5e58c65e7233dbb",
+        "https://huggingface.co/google/magenta-realtime-2/tree/010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc"
+      ]
+    },
+    {
+      "id": "pytorch-musiccoca-processor",
+      "name": "Magenta community MusicCoCa PyTorch processor",
+      "family": "magenta-realtime-2-pytorch",
+      "asset_type": "processor_weights",
+      "support_status": "planned_conditional",
+      "upstream": {
+        "project": "magenta-community/magenta-rt-musiccoca-torch",
+        "canonical_url": "https://huggingface.co/magenta-community/magenta-rt-musiccoca-torch"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "236c488e38aa98643805514996934d705668298b",
+        "url": "https://huggingface.co/magenta-community/magenta-rt-musiccoca-torch/tree/236c488e38aa98643805514996934d705668298b"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not separately declared",
+            "scope": "This inventory treats the repository as processor artifacts; conversion scripts need owner review if bundled",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "declared",
+            "identifier": "CC-BY-4.0",
+            "name": "Creative Commons Attribution 4.0 International",
+            "scope": "Converted MusicCoCa text encoder, quantizer, and tokenizer artifacts",
+            "terms_url": "https://creativecommons.org/licenses/by/4.0/legalcode",
+            "notice_url": "https://huggingface.co/magenta-community/magenta-rt-musiccoca-torch/blob/236c488e38aa98643805514996934d705668298b/README.md"
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Attribute the Google MusicCoCa source and the magenta-community conversion; link CC-BY-4.0 and the exact processor card."
+        ],
+        "attribution": [
+          "MusicCoCa from Google Magenta RealTime 2; PyTorch conversion by magenta-community"
+        ],
+        "sources": [
+          "https://huggingface.co/magenta-community/magenta-rt-musiccoca-torch/blob/236c488e38aa98643805514996934d705668298b/README.md"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "planned_download_from_upstream",
+        "source_url": "https://huggingface.co/magenta-community/magenta-rt-musiccoca-torch/tree/236c488e38aa98643805514996934d705668298b",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "The #110 adapter must override the port's mutable default and resolve this exact snapshot locally."
+      },
+      "dependencies": [
+        "google-mrt2-weights"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Confirm attribution and packaging rules for the CC-BY-4.0 converted processor artifacts and any bundled conversion code.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/magenta-community/magenta-rt-musiccoca-torch/tree/236c488e38aa98643805514996934d705668298b"
+      ]
+    },
+    {
+      "id": "stable-audio-3-code",
+      "name": "Stable Audio 3 inference code",
+      "family": "stable-audio-3",
+      "asset_type": "runtime_code",
+      "support_status": "current_and_planned",
+      "upstream": {
+        "project": "Stability-AI/stable-audio-3",
+        "canonical_url": "https://github.com/Stability-AI/stable-audio-3"
+      },
+      "revision": {
+        "kind": "git_commit",
+        "value": "0385302ea26522f00c80392c4b708df5ebf1adf5",
+        "url": "https://github.com/Stability-AI/stable-audio-3/tree/0385302ea26522f00c80392c4b708df5ebf1adf5"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "declared",
+            "identifier": "MIT",
+            "name": "MIT License",
+            "scope": "Stable Audio 3 source, including the MLX and TFLite runtime code at the pinned commit",
+            "terms_url": "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/LICENSE",
+            "notice_url": "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/LICENSE"
+          }
+        ],
+        "weights": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Weights are inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Include the MIT copyright and permission notice in copies or substantial portions of the Stable Audio 3 software."
+        ],
+        "attribution": [
+          "Copyright (c) 2026 Stability AI"
+        ],
+        "sources": [
+          "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/LICENSE"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": false,
+        "privacy_url": null,
+        "acceptable_use_url": null
+      },
+      "distribution": {
+        "mode": "downloaded_from_upstream",
+        "source_url": "https://github.com/Stability-AI/stable-audio-3/archive/0385302ea26522f00c80392c4b708df5ebf1adf5.tar.gz",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "The current model manager downloads the exact source archive recorded in sa3-pin.json. Packaged notices still need owner confirmation."
+      },
+      "dependencies": [
+        "stable-audio-3-optimized-weights"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Confirm the MIT notice is present in source, About/Licenses, and any package that includes or downloads this runtime.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://github.com/Stability-AI/stable-audio-3/tree/0385302ea26522f00c80392c4b708df5ebf1adf5",
+        "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/LICENSE"
+      ]
+    },
+    {
+      "id": "stable-audio-3-optimized-weights",
+      "name": "Stable Audio 3 optimized MLX and TFLite weights",
+      "family": "stable-audio-3",
+      "asset_type": "model_weights",
+      "support_status": "current_and_planned",
+      "upstream": {
+        "project": "stabilityai/stable-audio-3-optimized",
+        "canonical_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "6736003cb57d06b7b1fdc36fad31b2a3709e4774",
+        "url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/tree/6736003cb57d06b7b1fdc36fad31b2a3709e4774"
+      },
+      "included_artifacts": [
+        "MLX/dit_sm-music_f16.npz",
+        "MLX/dit_sm-sfx_f16.npz",
+        "MLX/dit_medium_f16.npz",
+        "MLX/same_s_encoder_f32.npz",
+        "MLX/same_s_decoder_f32.npz",
+        "MLX/same_l_encoder_f32.npz",
+        "MLX/same_l_decoder_f32.npz",
+        "MLX/t5gemma_f16.npz",
+        "tflite/sa3-sm-music/*",
+        "tflite/sa3-sm-sfx/*",
+        "tflite/sa3-m/*",
+        "tflite/same-s/*",
+        "tflite/same-l/*",
+        "tflite/t5gemma/encoder_fp16.tflite"
+      ],
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Runtime code is inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "underlying",
+            "identifier": "LicenseRef-Stability-AI-Community",
+            "name": "Stability AI Community License",
+            "scope": "Stable Audio 3 model, codec, conditioner, and optimized derivative weights",
+            "terms_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE.md",
+            "notice_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/NOTICE"
+          },
+          {
+            "status": "underlying",
+            "identifier": "LicenseRef-Gemma-Terms",
+            "name": "Gemma Terms of Use",
+            "scope": "Redistributed T5Gemma-derived encoder weights and tokenizer components inside the optimized snapshot",
+            "terms_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE_GEMMA.md",
+            "notice_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/NOTICE"
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "This Stability AI Model is licensed under the Stability AI Community License, Copyright © Stability AI Ltd. All Rights Reserved",
+          "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms",
+          "Display “Powered by Stability AI” in an applicable user-facing or documentation surface."
+        ],
+        "attribution": [
+          "Stable Audio 3 by Stability AI",
+          "T5Gemma text encoder from Google"
+        ],
+        "sources": [
+          "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE.md",
+          "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE_GEMMA.md",
+          "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/NOTICE"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": true,
+        "privacy_url": "https://stability.ai/privacy-policy",
+        "acceptable_use_url": "https://stability.ai/use-policy"
+      },
+      "distribution": {
+        "mode": "downloaded_from_upstream",
+        "source_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/tree/6736003cb57d06b7b1fdc36fad31b2a3709e4774",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": false,
+        "release_gate": true,
+        "notes": "The pinned runtime's weights.py calls hf_hub_download without revision=. Current downloads therefore follow mutable repository state even though this audit records a snapshot. Pin and verify before release. Non-gated anonymous access does not remove Stability Community or Gemma obligations. Do not put these weights in installers without exact-revision confirmation."
+      },
+      "dependencies": [
+        "t5gemma-b-b-ul2"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Confirm the open-source/non-commercial Stability Community path, Gemma derivative distribution path, exact notices, first-download acknowledgement, and no-bundle policy for this snapshot.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/stabilityai/stable-audio-3-optimized/tree/6736003cb57d06b7b1fdc36fad31b2a3709e4774",
+        "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/optimized/mlx/scripts/weights.py",
+        "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/optimized/tflite/scripts/weights.py"
+      ]
+    },
+    {
+      "id": "t5gemma-b-b-ul2",
+      "name": "Google T5Gemma B-B UL2",
+      "family": "t5gemma",
+      "asset_type": "model_weights_and_tokenizer",
+      "support_status": "underlying_component",
+      "upstream": {
+        "project": "google/t5gemma-b-b-ul2",
+        "canonical_url": "https://huggingface.co/google/t5gemma-b-b-ul2"
+      },
+      "revision": {
+        "kind": "unresolved_upstream",
+        "value": null,
+        "url": "https://huggingface.co/google/t5gemma-b-b-ul2"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable to the derived encoder artifact tracked here",
+            "scope": "T5Gemma model and tokenizer assets",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "declared",
+            "identifier": "LicenseRef-Gemma-Terms",
+            "name": "Gemma Terms of Use",
+            "scope": "T5Gemma model weights, tokenizer, and model derivatives",
+            "terms_url": "https://ai.google.dev/gemma/terms",
+            "notice_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE_GEMMA.md"
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms",
+          "Provide the Gemma terms and incorporated prohibited-use policy when distributing Gemma or a model derivative, subject to owner review of the exact path."
+        ],
+        "attribution": [
+          "T5Gemma by Google"
+        ],
+        "sources": [
+          "https://ai.google.dev/gemma/terms",
+          "https://ai.google.dev/gemma/prohibited_use_policy"
+        ]
+      },
+      "access": {
+        "gated": true,
+        "account_required": true,
+        "credential_required": true,
+        "terms_acceptance_required": true,
+        "privacy_url": "https://policies.google.com/privacy",
+        "acceptable_use_url": "https://ai.google.dev/gemma/prohibited_use_policy"
+      },
+      "distribution": {
+        "mode": "underlying_component_in_upstream_download",
+        "source_url": "https://huggingface.co/google/t5gemma-b-b-ul2",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": false,
+        "release_gate": true,
+        "notes": "The exact T5Gemma source revision used to produce Stability's optimized derivative is not identified by the pinned optimized repository and remains unresolved. Direct Hugging Face access is manually gated and requires an account, credentials, and terms acceptance. LSDJ currently receives the derivative inside Stability AI's non-gated snapshot; that convenience does not remove the Gemma terms. No credential should be required for the optimized source, and no token may be logged or stored in plaintext app data."
+      },
+      "dependencies": [],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Identify or confirm that no exact T5Gemma source revision is available, then confirm the Gemma model-derivative distribution and acknowledgement path for T5Gemma embedded in Stable Audio optimized weights.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/google/t5gemma-b-b-ul2",
+        "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE_GEMMA.md"
+      ]
+    },
+    {
+      "id": "stable-audio-3-medium-source-weights",
+      "name": "Stable Audio 3 Medium upstream source family",
+      "family": "stable-audio-3",
+      "asset_type": "model_weights_provenance",
+      "support_status": "provenance_only",
+      "upstream": {
+        "project": "stabilityai/stable-audio-3-medium",
+        "canonical_url": "https://huggingface.co/stabilityai/stable-audio-3-medium"
+      },
+      "revision": {
+        "kind": "unresolved_upstream",
+        "value": null,
+        "url": "https://huggingface.co/stabilityai/stable-audio-3-medium"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Model checkpoint provenance entry",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "declared",
+            "identifier": "LicenseRef-Stability-AI-Community",
+            "name": "Stability AI Community License",
+            "scope": "Base-family terms asserted by the pinned optimized model and relevant to the Maqam LoRA; exact conversion-source revision unresolved",
+            "terms_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE.md",
+            "notice_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/NOTICE"
+          },
+          {
+            "status": "underlying",
+            "identifier": "LicenseRef-Gemma-Terms",
+            "name": "Gemma Terms of Use",
+            "scope": "T5Gemma component terms carried by the pinned optimized snapshot",
+            "terms_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/LICENSE_GEMMA.md",
+            "notice_url": "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/NOTICE"
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Show the Stability AI Community License, Stability privacy link, Gemma terms, and incorporated use restrictions before any direct gated download."
+        ],
+        "attribution": [
+          "Stable Audio 3 by Stability AI; T5Gemma component by Google"
+        ],
+        "sources": [
+          "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/README.md"
+        ]
+      },
+      "access": {
+        "gated": true,
+        "account_required": true,
+        "credential_required": true,
+        "terms_acceptance_required": true,
+        "privacy_url": "https://stability.ai/privacy-policy",
+        "acceptable_use_url": "https://stability.ai/use-policy"
+      },
+      "distribution": {
+        "mode": "not_directly_downloaded_by_lsdj",
+        "source_url": "https://huggingface.co/stabilityai/stable-audio-3-medium",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": false,
+        "release_gate": true,
+        "notes": "The optimized model and Maqam LoRA name this upstream model family, but the reviewed evidence does not identify the exact source revision used for conversion or training. LSDJ downloads the separately pinned optimized snapshot instead."
+      },
+      "dependencies": [
+        "t5gemma-b-b-ul2"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Identify or confirm that no exact Stable Audio 3 Medium source revision is available, then confirm that optimized weights and LoRA references carry the applicable base-model terms and notices.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/stabilityai/stable-audio-3-medium",
+        "https://huggingface.co/stabilityai/stable-audio-3-optimized/blob/6736003cb57d06b7b1fdc36fad31b2a3709e4774/README.md"
+      ]
+    },
+    {
+      "id": "motif-maqam-lora",
+      "name": "Motif Technologies Stable Audio 3 Maqam LoRA",
+      "family": "stable-audio-3-lora",
+      "asset_type": "lora",
+      "support_status": "documented_reference",
+      "upstream": {
+        "project": "motiftechnologies/stable-audio-3-maqam-lora",
+        "canonical_url": "https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "3e1d9aa6fcb72a619b4ced00a240c5039f76daf0",
+        "url": "https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora/tree/3e1d9aa6fcb72a619b4ced00a240c5039f76daf0"
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Adapter weights and metadata only",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "unresolved",
+            "identifier": "NOASSERTION",
+            "name": "The model card says license: other but supplies no license text or redistribution grant",
+            "scope": "adapter_model.safetensors and adapter metadata",
+            "terms_url": null,
+            "notice_url": "https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora/blob/3e1d9aa6fcb72a619b4ced00a240c5039f76daf0/README.md"
+          },
+          {
+            "status": "underlying",
+            "identifier": "LicenseRef-Stability-AI-Community",
+            "name": "Stability AI Community License",
+            "scope": "Stable Audio 3 Medium base-model obligations; exact LoRA applicability is an owner-review question",
+            "terms_url": "https://huggingface.co/stabilityai/stable-audio-3-medium/blob/27b5a21b791b1b033d193a9e1e3ce78493f102f9/LICENSE.md",
+            "notice_url": "https://huggingface.co/stabilityai/stable-audio-3-medium/blob/27b5a21b791b1b033d193a9e1e3ce78493f102f9/NOTICE"
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Do not call this a built-in or Stability-AI-official adapter and do not mirror or redistribute it until the adapter author supplies or confirms a license.",
+          "For a user-initiated upstream download, show adapter provenance, exact revision, unresolved license status, and the Stable Audio 3 Medium base-model terms."
+        ],
+        "attribution": [
+          "Fine-tuned by Motif Technologies; base model Stable Audio 3 Medium by Stability AI"
+        ],
+        "sources": [
+          "https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora/blob/3e1d9aa6fcb72a619b4ced00a240c5039f76daf0/README.md"
+        ]
+      },
+      "access": {
+        "gated": false,
+        "account_required": false,
+        "credential_required": false,
+        "terms_acceptance_required": true,
+        "privacy_url": "https://huggingface.co/privacy",
+        "acceptable_use_url": "https://stability.ai/use-policy"
+      },
+      "distribution": {
+        "mode": "user_initiated_download_from_upstream",
+        "source_url": "https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora/tree/3e1d9aa6fcb72a619b4ced00a240c5039f76daf0",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": false,
+        "release_gate": true,
+        "notes": "The current importer fetches resolve/main and therefore does not enforce this audited snapshot. Pin a revision before treating this as an LSDJ-provided download. The generic user-import flow remains separate and must show a responsibility/provenance notice."
+      },
+      "dependencies": [
+        "stable-audio-3-medium-source-weights"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Obtain or identify the adapter's license and specific download/mirroring permission; until then, keep it a documented user-directed upstream reference only.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/motiftechnologies/stable-audio-3-maqam-lora/tree/3e1d9aa6fcb72a619b4ced00a240c5039f76daf0"
+      ]
+    }
+  ]
+}
