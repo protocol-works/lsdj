@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import stat
@@ -91,10 +92,13 @@ def verify_extracted(root: Path, libraries: list[str]) -> dict:
         binary.is_file() and not binary.is_symlink(),
         "AppImage has no safe lsdj-app binary",
     )
-    require(
-        binary.stat().st_mode & stat.S_IXUSR != 0,
-        "packaged lsdj-app binary is not executable",
-    )
+    # Windows does not preserve POSIX mode bits in the shared pure-layout unit
+    # test. Production verification runs on Linux, where this remains required.
+    if os.name != "nt":
+        require(
+            binary.stat().st_mode & stat.S_IXUSR != 0,
+            "packaged lsdj-app binary is not executable",
+        )
     require(any(root.glob("*.png")), "AppImage root has no desktop icon")
 
     return {
