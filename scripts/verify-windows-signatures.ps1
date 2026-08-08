@@ -20,7 +20,7 @@ if ([string]::IsNullOrWhiteSpace($ExpectedSubject)) {
     throw 'ExpectedSubject is required and must exactly match the approved Authenticode subject.'
 }
 
-$signTool = (Get-Command 'signtool.exe' -ErrorAction Stop).Source
+$signTool = $null
 foreach ($entry in $Path) {
     $target = Get-Item -LiteralPath $entry -ErrorAction Stop
     if ($target.PSIsContainer -or ($target.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -32,7 +32,7 @@ foreach ($entry in $Path) {
 
     $signature = Get-AuthenticodeSignature -LiteralPath $target.FullName
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        throw "Authenticode signature is not valid for $($target.FullName): $($signature.StatusMessage)"
+        throw "Authenticode signature status is $($signature.Status) for $($target.FullName): $($signature.StatusMessage)"
     }
     if ($null -eq $signature.SignerCertificate) {
         throw "Authenticode signer certificate is missing for $($target.FullName)."
@@ -47,6 +47,9 @@ foreach ($entry in $Path) {
         throw "Authenticode timestamp is missing for $($target.FullName)."
     }
 
+    if ($null -eq $signTool) {
+        $signTool = (Get-Command 'signtool.exe' -ErrorAction Stop).Source
+    }
     & $signTool verify /pa /all /v $target.FullName
     if ($LASTEXITCODE -ne 0) {
         throw "signtool trust verification failed with exit code $LASTEXITCODE for $($target.FullName)."
