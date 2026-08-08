@@ -236,7 +236,8 @@ fresh install and later top-ups:
   downloads the immutable source, `uv` runtime, and every model artifact;
   application-controlled SHA-256 values are checked before bounded native
   extraction or execution. Python dependencies come from the embedded
-  hash-locked requirements file. The complete candidate is built and warmed in
+  hash-locked requirements file. Pin provenance and the reproducible release
+  audit are recorded in [`docs/sa3-pin-audit.md`](sa3-pin-audit.md). The complete candidate is built and warmed in
   the host-resolved same-filesystem staging root, then atomically promoted while
   the previous verified install remains available for rollback. No in-app step
   invokes `bash`, `curl`, `tar`, `chmod`, shell activation, or a shell command

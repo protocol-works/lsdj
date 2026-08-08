@@ -18,18 +18,21 @@
 //! four readiness states). The webview never gets filesystem access — the same
 //! trust boundary as the rest of the library surface.
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::runtime_installer::archive::{extract_tar_gz, ArchiveLimits};
+use crate::child_process::{
+    read_bounded_lines, sanitize_diagnostic, DiagnosticTail, SupervisedChild,
+};
+use crate::runtime_installer::archive::{extract_tar_gz_cancellable, ArchiveLimits};
 use crate::runtime_installer::download::{
-    client as installer_client, download_verified, link_or_copy_verified, PinnedArtifact,
+    client as installer_client, download_verified, link_or_copy_verified, verify_file_cancellable,
+    PinnedArtifact,
 };
 use crate::runtime_installer::promotion;
 
@@ -98,6 +101,24 @@ fn sa3_status() -> (&'static str, Option<PathBuf>) {
         }
         if first_with_mlx.is_none() {
             first_with_mlx = Some(checkout.clone());
+        }
+
+        // A manifest marks an app-managed install. Never let its legacy stamps
+        // bypass current trust policy: readiness means the manifest, runtime,
+        // provenance, warm-up, and all eight model hashes validate. Only an
+        // older hand-installed checkout with no app manifest uses the historical
+        // interpreter/script/stamp heuristic below.
+        let manifest = checkout.join(INSTALL_MANIFEST_STAMP);
+        if !matches!(
+            std::fs::symlink_metadata(&manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            let state = if validate_sa3_install(&checkout, &sa3_pin()).is_ok() {
+                SA3_READY
+            } else {
+                SA3_NOT_WARMED
+            };
+            return (state, Some(checkout));
         }
         let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
         let script = mlx.join("scripts").join("sa3_mlx.py");
@@ -328,7 +349,10 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         })
         .collect();
     let (sa3_state, sa3_checkout) = sa3_status();
-    let sa3_size = sa3_checkout.as_ref().map(|c| sa3_checkout_size(c)).unwrap_or(0);
+    let sa3_size = sa3_checkout
+        .as_ref()
+        .map(|c| sa3_checkout_size(c))
+        .unwrap_or(0);
     let pinned = pinned_source();
     let installed_source = sa3_checkout.as_ref().and_then(|c| read_source_stamp(c));
     let update_available =
@@ -349,10 +373,7 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
             update_available,
         },
         loras: crate::loras::discover(&crate::loras::loras_dir()),
-        installing: active.map(|(family, name)| ActiveInstall {
-            family,
-            name,
-        }),
+        installing: active.map(|(family, name)| ActiveInstall { family, name }),
     }
 }
 
@@ -381,15 +402,22 @@ struct ModelProgress {
     file: Option<String>,
 }
 
-fn emit(app: &AppHandle, family: Family, name: &str, stage: &str, message: Option<String>, file: Option<String>) {
+fn emit(
+    app: &AppHandle,
+    family: Family,
+    name: &str,
+    stage: &str,
+    message: Option<String>,
+    file: Option<String>,
+) {
     let _ = app.emit(
         "model://progress",
         ModelProgress {
             family,
             name: name.to_string(),
-            stage: stage.to_string(),
-            message,
-            file,
+            stage: sanitize_diagnostic(stage),
+            message: message.as_deref().map(sanitize_diagnostic),
+            file: file.as_deref().map(sanitize_diagnostic),
         },
     );
 }
@@ -510,7 +538,7 @@ fn sa3_pin() -> Sa3Pin {
 pub(crate) struct InstallShared {
     busy: AtomicBool,
     cancelled: AtomicBool,
-    current_child: Mutex<Option<Child>>,
+    current_child: Mutex<Option<SupervisedChild>>,
     active: Mutex<Option<(Family, String)>>,
 }
 
@@ -536,7 +564,11 @@ impl InstallManager {
     /// The in-flight install `(family, name)`, for `model_status`. `name` is the
     /// model for Magenta, `""` for SA3.
     pub fn active_install(&self) -> Option<(Family, String)> {
-        self.shared.active.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.shared
+            .active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Start an install on a background thread; progress arrives as
@@ -608,7 +640,10 @@ impl InstallManager {
                     emit(&progress_app, family, &name, stage, message, file);
                 };
                 let result = job(&progress, &shared);
-                *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *shared
+                    .current_child
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
                 match result {
                     Ok(()) => emit(&app, family, "", "done", None, None),
                     // A user cancel is a clean stop, not a failure — the UI must
@@ -637,8 +672,14 @@ impl InstallManager {
     /// Cancel an in-flight install: flag it and kill the running stage's child.
     pub fn cancel(&self) {
         self.shared.cancelled.store(true, Ordering::Release);
-        if let Some(mut child) = self.shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            kill_group(&mut child);
+        if let Some(mut child) = self
+            .shared
+            .current_child
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = child.force_kill();
         }
     }
 
@@ -661,42 +702,32 @@ impl Drop for InstallManager {
     }
 }
 
-/// Kill the child's whole process group (it was spawned as a group leader, so its
-/// pgid equals its pid), then reap the leader. This takes down `uv run`'s python
-/// grandchild and any shell descendants — killing only the leader would orphan
-/// them and leave the download running. The grandchildren are reparented to
-/// launchd, which reaps them.
-fn kill_group(child: &mut Child) {
-    let group = -(child.id() as libc::pid_t);
-    // SAFETY: `kill(2)` with a negative pid signals the process group; the pid is a
-    // live child we own. A failure (already-exited group) is ignored.
-    unsafe {
-        libc::kill(group, libc::SIGKILL);
-    }
-    let _ = child.wait();
-    // A descendant that was mid-fork during the sweep can miss the signal — but
-    // it is still IN the group (fork inherits the pgid), so re-sweep until the
-    // group has no members (signal 0 probes without signalling). One pass
-    // suffices in practice; the bound keeps a stray unkillable member from
-    // spinning this thread forever.
-    for _ in 0..100 {
-        // SAFETY: as above; signal 0 sends nothing.
-        if unsafe { libc::kill(group, 0) } == -1 {
-            break;
-        }
-        unsafe {
-            libc::kill(group, libc::SIGKILL);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
 pub(crate) fn cancelled(shared: &InstallShared) -> Result<(), String> {
     if shared.cancelled.load(Ordering::Acquire) {
         Err("cancelled".into())
     } else {
         Ok(())
     }
+}
+
+/// Publish a newly spawned child to cancellation and close the spawn/park race.
+///
+/// `cancel()` stores the flag before taking `current_child`. If cancellation
+/// lands after the process is spawned but before this lock is acquired, the
+/// second flag check below takes responsibility for terminating the child.
+fn park_child(shared: &InstallShared, child: SupervisedChild) -> Result<(), String> {
+    let mut current = shared
+        .current_child
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    *current = Some(child);
+    if shared.cancelled.load(Ordering::Acquire) {
+        let mut child = current.take().expect("newly parked child is present");
+        drop(current);
+        let _ = child.force_kill();
+        return Err("cancelled".into());
+    }
+    Ok(())
 }
 
 /// Run `cmd` to completion, feeding each stdout line to `on_line` and draining
@@ -709,39 +740,57 @@ pub(crate) fn stream_child(
     mut cmd: Command,
     mut on_line: impl FnMut(&str),
 ) -> Result<(), String> {
+    cancelled(shared)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    // Run the child as its own process-group leader so a cancel can kill the whole
-    // tree: development downloads run through `uv run python …`, and killing
-    // only the immediate child would orphan the real worker — which
-    // keeps the stdout pipe open and wedges the reader below. See `kill_group`.
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("{label}: cannot spawn ({e})"))?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
+    let mut child = crate::child_process::spawn_grouped(&mut cmd)
+        .map_err(|error| sanitize_diagnostic(&format!("{label}: cannot spawn ({error})")))?;
+    let stdout = child.take_stdout().expect("piped stdout");
+    let stderr = child.take_stderr().expect("piped stderr");
+    park_child(shared, child)?;
 
     let drain_label = label.to_string();
     let stderr_drain = std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            eprintln!("lsdj-app: {drain_label}: {line}");
+        let mut diagnostics = DiagnosticTail::default();
+        if let Err(error) = read_bounded_lines(stderr, |line| {
+            diagnostics.push(line);
+        }) {
+            diagnostics.push(&format!("stderr read failed: {error}"));
         }
+        (drain_label, diagnostics)
     });
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        on_line(&line);
-    }
-    let _ = stderr_drain.join();
+    let stdout_result = read_bounded_lines(stdout, |line| {
+        on_line(line);
+    });
+    let (drain_label, diagnostics) = stderr_drain
+        .join()
+        .unwrap_or_else(|_| (label.to_string(), DiagnosticTail::default()));
 
     // Reclaim the child to read its exit status; cancel() may have taken it.
-    let Some(mut child) = shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).take() else {
+    let Some(mut child) = shared
+        .current_child
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    else {
         return Err("cancelled".into());
     };
-    let status = child.wait().map_err(|e| format!("{label}: wait failed ({e})"))?;
+    let status = child
+        .wait()
+        .map_err(|error| sanitize_diagnostic(&format!("{label}: wait failed ({error})")))?;
     cancelled(shared)?;
+    stdout_result
+        .map_err(|error| sanitize_diagnostic(&format!("{label}: stdout read failed ({error})")))?;
     if !status.success() {
-        return Err(format!("{label}: exited with {status}"));
+        let detail = diagnostics.render();
+        let message = if detail.is_empty() {
+            format!("{label}: exited with {status}")
+        } else {
+            format!("{label}: exited with {status}; diagnostics:\n{detail}")
+        };
+        return Err(sanitize_diagnostic(&message));
+    }
+    if !diagnostics.is_empty() {
+        eprintln!("lsdj-app: {drain_label}: {}", diagnostics.render());
     }
     Ok(())
 }
@@ -786,12 +835,16 @@ fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Re
             // (data) rides along. Upstream `message`/`done` lines are not shown.
             "stage" => progress(parsed.stage.as_deref().unwrap_or("download"), None, None),
             "file" => progress("download", None, parsed.file),
-            "error" => last_error = parsed.message.or(Some("download failed".into())),
+            "error" => {
+                last_error = Some(sanitize_diagnostic(
+                    parsed.message.as_deref().unwrap_or("download failed"),
+                ));
+            }
             _ => {}
         }
     });
     // Prefer the tooling's own error message over the generic non-zero exit.
-    result.map_err(|exit_err| last_error.unwrap_or(exit_err))
+    result.map_err(|exit_err| sanitize_diagnostic(&last_error.unwrap_or(exit_err)))
 }
 
 fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Result<(), String> {
@@ -813,13 +866,16 @@ fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Re
 
     // Finish (or roll back) a prior process that stopped between promotion
     // renames before doing any network work.
-    promotion::recover(&home, &backup, |path| validate_sa3_install(path, &pin))?;
+    let install_cancelled = || shared.cancelled.load(Ordering::Acquire);
+    promotion::recover(&home, &backup, |path| {
+        validate_sa3_install_cancellable(path, &pin, &install_cancelled)
+    })?;
     cancelled(shared)?;
     build_sa3_candidate(progress, shared, &pin, uv, python, &work, &candidate)?;
     cancelled(shared)?;
     progress("promote", None, None);
     promotion::promote(&candidate, &home, &backup, |path| {
-        validate_sa3_install(path, &pin)
+        validate_sa3_install_cancellable(path, &pin, &install_cancelled)
     })?;
     // Verified blobs are hard-linked into the promoted tree. Removing retry
     // state here reclaims only the staging directory entries, not model bytes.
@@ -847,36 +903,29 @@ fn build_sa3_candidate(
     let client = installer_client()?;
     progress("fetch", None, Some("Stable Audio 3 source".into()));
     let source_archive = blobs.join("stable-audio-3.tar.gz");
-    download_verified(
-        &client,
-        &pin.source.artifact,
-        &source_archive,
-        None,
-        || shared.cancelled.load(Ordering::Acquire),
-    )?;
+    download_verified(&client, &pin.source.artifact, &source_archive, None, || {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
     cancelled(shared)?;
 
     progress("extract", None, None);
     let source = std::fs::File::open(&source_archive)
         .map_err(|error| format!("cannot open verified SA3 source: {error}"))?;
-    extract_tar_gz(
+    extract_tar_gz_cancellable(
         source,
         candidate,
         &pin.source.archive_root,
         pin.source.limits(),
+        &|| shared.cancelled.load(Ordering::Acquire),
     )?;
     validate_source_layout(candidate)?;
     cancelled(shared)?;
 
     progress("fetch", None, Some(format!("uv {}", uv.version)));
     let uv_archive = blobs.join("uv.tar.gz");
-    download_verified(
-        &client,
-        &uv.archive.artifact,
-        &uv_archive,
-        None,
-        || shared.cancelled.load(Ordering::Acquire),
-    )?;
+    download_verified(&client, &uv.archive.artifact, &uv_archive, None, || {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
     let uv_dir = work.join("uv");
     if uv_dir.exists() {
         std::fs::remove_dir_all(&uv_dir)
@@ -884,11 +933,12 @@ fn build_sa3_candidate(
     }
     let source = std::fs::File::open(&uv_archive)
         .map_err(|error| format!("cannot open verified uv archive: {error}"))?;
-    extract_tar_gz(
+    extract_tar_gz_cancellable(
         source,
         &uv_dir,
         &uv.archive.archive_root,
         uv.archive.limits(),
+        &|| shared.cancelled.load(Ordering::Acquire),
     )?;
     let uv_executable = uv_dir.join(&uv.executable);
     if !uv_executable.is_file() {
@@ -909,7 +959,7 @@ fn build_sa3_candidate(
     let python_dir = mlx.join(".python");
     let source = std::fs::File::open(&python_archive)
         .map_err(|error| format!("cannot open verified Python archive: {error}"))?;
-    extract_tar_gz(
+    extract_tar_gz_cancellable(
         source,
         &python_dir,
         &python.archive.archive_root,
@@ -921,6 +971,7 @@ fn build_sa3_candidate(
             // materializes them as regular files, never filesystem links.
             materialize_safe_links: true,
         },
+        &|| shared.cancelled.load(Ordering::Acquire),
     )?;
     let python_executable = python_dir.join(&python.executable);
     if !python_executable.is_file() {
@@ -932,21 +983,23 @@ fn build_sa3_candidate(
         .ok()
         .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok());
     let model_blobs = blobs.join("models");
-    let model_dir = candidate.join("optimized").join("mlx").join("models").join("mlx");
+    let model_dir = candidate
+        .join("optimized")
+        .join("mlx")
+        .join("models")
+        .join("mlx");
     for model in &pin.models.artifacts {
         cancelled(shared)?;
         let filename = model.filename()?;
         progress("fetch", None, Some(filename.into()));
         let artifact = model.artifact(&pin.models)?;
         let staged = model_blobs.join(filename);
-        download_verified(
-            &client,
-            &artifact,
-            &staged,
-            hf_token.as_deref(),
-            || shared.cancelled.load(Ordering::Acquire),
-        )?;
-        link_or_copy_verified(&staged, &model_dir.join(filename), &artifact)?;
+        download_verified(&client, &artifact, &staged, hf_token.as_deref(), || {
+            shared.cancelled.load(Ordering::Acquire)
+        })?;
+        link_or_copy_verified(&staged, &model_dir.join(filename), &artifact, &|| {
+            shared.cancelled.load(Ordering::Acquire)
+        })?;
     }
 
     progress("install", None, None);
@@ -966,7 +1019,7 @@ fn build_sa3_candidate(
         &candidate.join(INSTALL_MANIFEST_STAMP),
         SA3_PIN_JSON.as_bytes(),
     )?;
-    validate_sa3_install(candidate, pin)
+    validate_sa3_install_cancellable(candidate, pin, &|| shared.cancelled.load(Ordering::Acquire))
 }
 
 fn verify_uv_version(
@@ -1136,6 +1189,17 @@ fn validate_source_layout(checkout: &Path) -> Result<(), String> {
 }
 
 fn validate_sa3_install(checkout: &Path, pin: &Sa3Pin) -> Result<(), String> {
+    validate_sa3_install_cancellable(checkout, pin, &|| false)
+}
+
+fn validate_sa3_install_cancellable(
+    checkout: &Path,
+    pin: &Sa3Pin,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    if is_cancelled() {
+        return Err("cancelled".into());
+    }
     validate_source_layout(checkout)?;
     let mlx = checkout.join("optimized").join("mlx");
     let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
@@ -1156,18 +1220,42 @@ fn validate_sa3_install(checkout: &Path, pin: &Sa3Pin) -> Result<(), String> {
     if read_source_stamp(checkout).as_ref() != Some(&pinned_source()) {
         return Err("SA3 source provenance does not match the pin".into());
     }
-    let installed_manifest = std::fs::read_to_string(checkout.join(INSTALL_MANIFEST_STAMP))
+    let manifest_path = checkout.join(INSTALL_MANIFEST_STAMP);
+    let manifest_metadata = std::fs::symlink_metadata(&manifest_path)
+        .map_err(|error| format!("cannot inspect SA3 install manifest: {error}"))?;
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        return Err("SA3 install manifest is not a regular file".into());
+    }
+    let installed_manifest = std::fs::read_to_string(&manifest_path)
         .map_err(|error| format!("cannot read SA3 install manifest: {error}"))?;
     if installed_manifest != SA3_PIN_JSON {
         return Err("SA3 install manifest does not match this application".into());
     }
-    let model_dir = mlx.join("models").join("mlx");
+    validate_sa3_model_artifacts(checkout, pin, is_cancelled)
+}
+
+fn validate_sa3_model_artifacts(
+    checkout: &Path,
+    pin: &Sa3Pin,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let model_dir = checkout
+        .join("optimized")
+        .join("mlx")
+        .join("models")
+        .join("mlx");
     for model in &pin.models.artifacts {
         let filename = model.filename()?;
-        let metadata = std::fs::metadata(model_dir.join(filename))
-            .map_err(|error| format!("SA3 model {filename} is missing: {error}"))?;
-        if !metadata.is_file() || metadata.len() != model.size {
-            return Err(format!("SA3 model {filename} has the wrong size"));
+        let artifact = model.artifact(&pin.models)?;
+        if let Err(error) =
+            verify_file_cancellable(&model_dir.join(filename), &artifact, is_cancelled)
+        {
+            if error == "cancelled" {
+                return Err(error);
+            }
+            return Err(format!(
+                "SA3 model {filename} failed integrity validation: {error}"
+            ));
         }
     }
     Ok(())
@@ -1384,7 +1472,10 @@ mod tests {
         touch(&tmp.join("custom_x").join("custom_x.mlxfn"));
         touch(&tmp.join("custom_x").join("custom_x_state.safetensors"));
 
-        assert_eq!(discover_installed(&tmp), vec!["custom_x".to_string(), "mrt2_small".to_string()]);
+        assert_eq!(
+            discover_installed(&tmp),
+            vec!["custom_x".to_string(), "mrt2_small".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1407,6 +1498,39 @@ mod tests {
         assert_eq!(pin.commit.len(), 40);
         assert_eq!(pin.models.artifacts.len(), 8);
         assert!(pin.source.artifact.url.starts_with("https://"));
+    }
+
+    #[test]
+    fn app_managed_model_validation_hashes_all_eight_artifacts() {
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-model-integrity-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let model_dir = root
+            .join("optimized")
+            .join("mlx")
+            .join("models")
+            .join("mlx");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let mut pin = sa3_pin();
+        for (index, model) in pin.models.artifacts.iter_mut().enumerate() {
+            let bytes = format!("fixture-{index}").into_bytes();
+            model.size = bytes.len() as u64;
+            model.sha256 = hex::encode(Sha256::digest(&bytes));
+            std::fs::write(model_dir.join(model.filename().unwrap()), bytes).unwrap();
+        }
+
+        validate_sa3_model_artifacts(&root, &pin, &|| false).unwrap();
+        let tampered = pin.models.artifacts[3].filename().unwrap();
+        let original_size = pin.models.artifacts[3].size as usize;
+        std::fs::write(model_dir.join(tampered), vec![b'x'; original_size]).unwrap();
+        let error = validate_sa3_model_artifacts(&root, &pin, &|| false).unwrap_err();
+        assert!(error.contains("SHA-256"), "unexpected error: {error}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1438,11 +1562,17 @@ mod tests {
         // Exact match.
         assert!(!sa3_update_available(Some(&pin.clone()), &pin, true));
         // Short-SHA stamp vs full-SHA pin (prefix) counts as a match.
-        let short = Sa3Source { repo: pin.repo.clone(), commit: "36ef977".into() };
+        let short = Sa3Source {
+            repo: pin.repo.clone(),
+            commit: "36ef977".into(),
+        };
         assert!(!sa3_update_available(Some(&short), &pin, true));
         // A different commit, or a different repo (e.g. after reverting to
         // upstream), is updatable.
-        let other_commit = Sa3Source { repo: pin.repo.clone(), commit: "deadbeef".into() };
+        let other_commit = Sa3Source {
+            repo: pin.repo.clone(),
+            commit: "deadbeef".into(),
+        };
         assert!(sa3_update_available(Some(&other_commit), &pin, true));
         let other_repo = Sa3Source {
             repo: "https://github.com/Stability-AI/stable-audio-3".into(),
@@ -1450,7 +1580,10 @@ mod tests {
         };
         assert!(sa3_update_available(Some(&other_repo), &pin, true));
         // A trailing slash on the repo is ignored.
-        let slash = Sa3Source { repo: format!("{}/", pin.repo), commit: pin.commit.clone() };
+        let slash = Sa3Source {
+            repo: format!("{}/", pin.repo),
+            commit: pin.commit.clone(),
+        };
         assert!(!sa3_update_available(Some(&slash), &pin, true));
     }
 
@@ -1469,6 +1602,36 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_between_spawn_and_park_terminates_the_child() {
+        let shared = shared();
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("sleep 30");
+        let child = crate::child_process::spawn_grouped(&mut command).expect("spawn child");
+        let pid = child.id() as libc::pid_t;
+
+        // Model the precise race: cancel() observed an empty slot after the OS
+        // spawn completed but before stream_child published the handle.
+        shared.cancelled.store(true, Ordering::Release);
+        assert_eq!(park_child(&shared, child), Err("cancelled".into()));
+        assert!(
+            shared
+                .current_child
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_none(),
+            "cancelled child must not remain parked"
+        );
+        // SAFETY: signal 0 only probes whether the already-recorded pid exists.
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "child survived cancellation"
+        );
+    }
+
+    #[cfg(unix)]
     fn write_exec(path: &Path, body: &str) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(path, body).unwrap();
@@ -1477,6 +1640,7 @@ mod tests {
 
     // A stand-in for the frozen sidecar's `--download-model` mode: writes the two
     // model files into $MAGENTA_HOME and emits the JSON progress contract.
+    #[cfg(unix)]
     const STUB_SIDECAR: &str = r#"#!/bin/sh
 name=""
 while [ $# -gt 0 ]; do
@@ -1494,6 +1658,7 @@ printf '{"event":"file","file":"models/%s/%s_state.safetensors"}\n' "$name" "$na
 printf '{"event":"done"}\n'
 "#;
 
+    #[cfg(unix)]
     #[test]
     fn install_magenta_runs_the_tooling_and_the_model_appears() {
         let tmp = std::env::temp_dir().join(format!("lsdj-install-test-{}", std::process::id()));
@@ -1527,13 +1692,17 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_download_reports_a_tooling_error() {
         let tmp = std::env::temp_dir().join(format!("lsdj-install-err-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let stub = tmp.join("fail.sh");
-        write_exec(&stub, "#!/bin/sh\nprintf '{\"event\":\"error\",\"message\":\"no weights\"}\\n'\nexit 1\n");
+        write_exec(
+            &stub,
+            "#!/bin/sh\nprintf '{\"event\":\"error\",\"message\":\"no weights\"}\\n'\nexit 1\n",
+        );
         let mut cmd = Command::new("sh");
         cmd.arg(&stub);
 
@@ -1543,6 +1712,49 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_download_sanitizes_and_bounds_structured_tooling_errors() {
+        let tmp = std::env::temp_dir().join(format!("lsdj-install-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let stub = tmp.join("fail-secret.sh");
+        let message = format!(
+            "HF_TOKEN=hf-secret HUGGING_FACE_HUB_TOKEN=hub-secret \
+             client_secret=oauth-secret access_token=access-secret \
+             api_key=api-secret Authorization: Bearer auth-secret {}",
+            "x".repeat(5000)
+        );
+        let json = serde_json::json!({"event": "error", "message": message});
+        write_exec(
+            &stub,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\nexit 1\n", json),
+        );
+        let mut cmd = Command::new("sh");
+        cmd.arg(&stub);
+
+        let noop = |_: &str, _: Option<String>, _: Option<String>| {};
+        let error = run_download(&noop, &shared(), cmd).expect_err("stub must fail");
+        assert!(
+            error.len() <= 2048,
+            "unbounded error length: {}",
+            error.len()
+        );
+        for secret in [
+            "hf-secret",
+            "hub-secret",
+            "oauth-secret",
+            "access-secret",
+            "api-secret",
+            "auth-secret",
+        ] {
+            assert!(!error.contains(secret), "leaked {secret}: {error}");
+        }
+        assert!(error.contains("[REDACTED]"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn uv_command_keeps_unicode_paths_structured() {
         let root = Path::new("/tmp/LSDJ profile ü with spaces");
@@ -1560,6 +1772,7 @@ printf '{"event":"done"}\n'
         assert_eq!(args[1], venv.as_os_str());
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancel_kills_the_whole_process_group() {
         use std::time::Duration;
@@ -1608,7 +1821,7 @@ printf '{"event":"done"}\n'
                 .unwrap_or_else(|p| p.into_inner())
                 .take()
                 .expect("child parked before its stdout flowed");
-            kill_group(&mut child);
+            let _ = child.force_kill();
         });
 
         // The group kill signals the grandchild atomically; its reaping (by

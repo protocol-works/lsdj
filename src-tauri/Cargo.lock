@@ -2510,6 +2510,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "trash",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

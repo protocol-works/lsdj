@@ -29,18 +29,27 @@ pub(crate) fn recover(
         .ok_or("install home has no parent directory")?;
     ensure_same_filesystem(backup_parent, home_parent)?;
     if !home.exists() {
+        validate(backup)
+            .map_err(|error| format!("preserved install is not ready for recovery: {error}"))?;
         fs::rename(backup, home)
             .map_err(|error| format!("cannot restore interrupted install: {error}"))?;
         sync_parent(home);
         return Ok(());
     }
-    if validate(home).is_ok() {
-        // The new install was promoted and the process stopped before cleanup.
-        // It is ready, so the old backup is no longer part of rollback state.
-        fs::remove_dir_all(backup)
-            .map_err(|error| format!("cannot clear completed install backup: {error}"))?;
-        return Ok(());
+    match validate(home) {
+        Ok(()) => {
+            // The new install was promoted and the process stopped before cleanup.
+            // It is ready, so the old backup is no longer part of rollback state.
+            fs::remove_dir_all(backup)
+                .map_err(|error| format!("cannot clear completed install backup: {error}"))?;
+            return Ok(());
+        }
+        Err(error) if error == "cancelled" => return Err(error),
+        Err(_) => {}
     }
+
+    validate(backup)
+        .map_err(|error| format!("preserved install is not ready for recovery: {error}"))?;
 
     fs::rename(home, &rejected)
         .map_err(|error| format!("cannot quarantine interrupted install: {error}"))?;
@@ -264,6 +273,21 @@ mod tests {
         recover(&home, &backup, validate).unwrap();
         assert_eq!(fs::read_to_string(home.join("value")).unwrap(), "new");
         assert!(!backup.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovery_never_restores_an_unvalidated_backup() {
+        let root = root("invalid-backup");
+        let _ = fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let backup = root.join("backup");
+        install(&backup, "broken", false);
+
+        let error = recover(&home, &backup, validate).unwrap_err();
+        assert!(error.contains("not ready for recovery"));
+        assert!(!home.exists());
+        assert!(backup.exists());
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -6,10 +6,17 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
+use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+// A transfer may legitimately take hours, but a single body read must not. The
+// bounded idle timeout is what lets the install worker observe cancellation
+// when a peer stops sending bytes without closing the connection.
+const DOWNLOAD_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DOWNLOAD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One immutable artifact in the app-bundled trust manifest.
 #[derive(Clone, Debug, Deserialize)]
@@ -64,12 +71,12 @@ pub(crate) fn client() -> Result<Client, String> {
 /// Download to a sibling `.part`, checking the expected byte count and digest
 /// while streaming. A previously verified destination is reused, which makes a
 /// retry after interruption deterministic without trusting a partial file.
-pub(crate) fn download_verified(
+pub(crate) fn download_verified<F: Fn() -> bool>(
     client: &Client,
     artifact: &PinnedArtifact,
     destination: &Path,
     bearer_token: Option<&str>,
-    is_cancelled: impl Fn() -> bool,
+    is_cancelled: F,
 ) -> Result<(), String> {
     artifact.validate()?;
     match fs::symlink_metadata(destination) {
@@ -77,8 +84,11 @@ pub(crate) fn download_verified(
             return Err("artifact destination must not be a symbolic link".into());
         }
         Ok(metadata) if metadata.is_file() => {
-            if verify_file(destination, artifact).is_ok() {
+            if verify_file_cancellable(destination, artifact, &is_cancelled).is_ok() {
                 return Ok(());
+            }
+            if is_cancelled() {
+                return Err("cancelled".into());
             }
             fs::remove_file(destination)
                 .map_err(|error| format!("cannot replace invalid cached artifact: {error}"))?;
@@ -107,28 +117,45 @@ pub(crate) fn download_verified(
         if let Some(token) = bearer_token.filter(|token| !token.is_empty()) {
             request = request.bearer_auth(token);
         }
-        let mut response = request
-            .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| format!("artifact download failed: {error}"))?;
-        if response.url().scheme() != "https" {
-            return Err("artifact response did not use HTTPS".into());
-        }
-        if let Some(length) = response.content_length() {
-            if length > artifact.size {
-                return Err(format!(
-                    "artifact response exceeds pinned size ({} > {})",
-                    length, artifact.size
-                ));
-            }
-        }
-
         let file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(&partial)
             .map_err(|error| format!("cannot create partial artifact: {error}"))?;
-        copy_and_verify(&mut response, file, artifact, is_cancelled)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("cannot start artifact transfer runtime: {error}"))?;
+        runtime.block_on(async {
+            let response = wait_for_progress(
+                request.send(),
+                &is_cancelled,
+                tokio::time::Instant::now() + DOWNLOAD_RESPONSE_TIMEOUT,
+                "artifact response headers timed out",
+            )
+            .await?
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|error| format!("artifact download failed: {error}"))?;
+            if response.url().scheme() != "https" {
+                return Err("artifact response did not use HTTPS".into());
+            }
+            if let Some(length) = response.content_length() {
+                if length > artifact.size {
+                    return Err(format!(
+                        "artifact response exceeds pinned size ({} > {})",
+                        length, artifact.size
+                    ));
+                }
+            }
+            stream_response_to_file(
+                response,
+                file,
+                artifact,
+                &is_cancelled,
+                DOWNLOAD_READ_IDLE_TIMEOUT,
+            )
+            .await
+        })?;
         fs::rename(&partial, destination)
             .map_err(|error| format!("cannot commit verified artifact: {error}"))?;
         sync_parent(parent);
@@ -141,11 +168,79 @@ pub(crate) fn download_verified(
     result
 }
 
+async fn stream_response_to_file(
+    mut response: reqwest::Response,
+    mut file: File,
+    artifact: &PinnedArtifact,
+    is_cancelled: &dyn Fn() -> bool,
+    idle_timeout: Duration,
+) -> Result<(), String> {
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut idle_deadline = tokio::time::Instant::now() + idle_timeout;
+    loop {
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let next = response.chunk();
+        let chunk = wait_for_progress(
+            next,
+            is_cancelled,
+            idle_deadline,
+            "artifact response body stalled",
+        )
+        .await?
+        .map_err(|error| format!("cannot read artifact response: {error}"))?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if chunk.is_empty() {
+            continue;
+        }
+        idle_deadline = tokio::time::Instant::now() + idle_timeout;
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or("artifact byte count overflow")?;
+        if total > artifact.size {
+            return Err(format!(
+                "artifact exceeds pinned size (more than {})",
+                artifact.size
+            ));
+        }
+        hasher.update(&chunk);
+        file.write_all(&chunk)
+            .map_err(|error| format!("cannot write partial artifact: {error}"))?;
+    }
+    finish_verified_file(file, hasher, total, artifact)
+}
+
+async fn wait_for_progress<T, E>(
+    future: impl std::future::Future<Output = Result<T, E>>,
+    is_cancelled: &dyn Fn() -> bool,
+    deadline: tokio::time::Instant,
+    timeout_error: &'static str,
+) -> Result<Result<T, E>, String> {
+    tokio::pin!(future);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(timeout_error.into());
+        }
+        let wait = DOWNLOAD_CANCEL_POLL_INTERVAL.min(deadline.saturating_duration_since(now));
+        match tokio::time::timeout(wait, &mut future).await {
+            Ok(result) => return Ok(result),
+            Err(_) if is_cancelled() => return Err("cancelled".into()),
+            Err(_) => continue,
+        }
+    }
+}
+
+#[cfg(test)]
 fn copy_and_verify(
     reader: &mut impl Read,
     mut file: File,
     artifact: &PinnedArtifact,
-    is_cancelled: impl Fn() -> bool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let mut hasher = Sha256::new();
     let mut total = 0u64;
@@ -154,9 +249,18 @@ fn copy_and_verify(
         if is_cancelled() {
             return Err("cancelled".into());
         }
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("cannot read artifact response: {error}"))?;
+        let count = match reader.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) && is_cancelled() =>
+            {
+                return Err("cancelled".into());
+            }
+            Err(error) => return Err(format!("cannot read artifact response: {error}")),
+        };
         if count == 0 {
             break;
         }
@@ -173,6 +277,15 @@ fn copy_and_verify(
         file.write_all(&buffer[..count])
             .map_err(|error| format!("cannot write partial artifact: {error}"))?;
     }
+    finish_verified_file(file, hasher, total, artifact)
+}
+
+fn finish_verified_file(
+    mut file: File,
+    hasher: Sha256,
+    total: u64,
+    artifact: &PinnedArtifact,
+) -> Result<(), String> {
     if total != artifact.size {
         return Err(format!(
             "artifact size mismatch (expected {}, received {total})",
@@ -192,7 +305,16 @@ fn copy_and_verify(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), String> {
+    verify_file_cancellable(path, artifact, &|| false)
+}
+
+pub(crate) fn verify_file_cancellable(
+    path: &Path,
+    artifact: &PinnedArtifact,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
     artifact.validate()?;
     let metadata =
         fs::symlink_metadata(path).map_err(|error| format!("cannot inspect artifact: {error}"))?;
@@ -204,7 +326,19 @@ pub(crate) fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), 
     }
     let mut file = File::open(path).map_err(|error| format!("cannot open artifact: {error}"))?;
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher).map_err(|error| format!("cannot hash artifact: {error}"))?;
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("cannot hash artifact: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
     let actual = hex::encode(hasher.finalize());
     if actual != artifact.sha256.to_ascii_lowercase() {
         return Err("artifact SHA-256 does not match the manifest".into());
@@ -219,8 +353,9 @@ pub(crate) fn link_or_copy_verified(
     staged: &Path,
     destination: &Path,
     artifact: &PinnedArtifact,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
-    verify_file(staged, artifact)?;
+    verify_file_cancellable(staged, artifact, is_cancelled)?;
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create model directory: {error}"))?;
@@ -230,11 +365,47 @@ pub(crate) fn link_or_copy_verified(
             .map_err(|error| format!("cannot replace staged model: {error}"))?;
     }
     if fs::hard_link(staged, destination).is_err() {
-        fs::copy(staged, destination)
-            .map_err(|error| format!("cannot copy staged model: {error}"))?;
-        verify_file(destination, artifact)?;
+        let result = copy_file_cancellable(staged, destination, is_cancelled)
+            .and_then(|()| verify_file_cancellable(destination, artifact, is_cancelled));
+        if result.is_err() {
+            let _ = fs::remove_file(destination);
+        }
+        result?;
     }
     Ok(())
+}
+
+fn copy_file_cancellable(
+    source: &Path,
+    destination: &Path,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let mut source = File::open(source)
+        .map_err(|error| format!("cannot open staged model for copying: {error}"))?;
+    let mut destination = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)
+        .map_err(|error| format!("cannot create staged model copy: {error}"))?;
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let count = source
+            .read(&mut buffer)
+            .map_err(|error| format!("cannot read staged model: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        destination
+            .write_all(&buffer[..count])
+            .map_err(|error| format!("cannot copy staged model: {error}"))?;
+    }
+    destination
+        .flush()
+        .and_then(|_| destination.sync_all())
+        .map_err(|error| format!("cannot sync staged model copy: {error}"))
 }
 
 fn partial_path(destination: &Path) -> Result<PathBuf, String> {
@@ -289,7 +460,7 @@ mod tests {
         let pin = artifact(b"verified bytes");
         let out = tmp.join("artifact");
         let file = File::create(&out).unwrap();
-        copy_and_verify(&mut &b"verified bytes"[..], file, &pin, || false).unwrap();
+        copy_and_verify(&mut &b"verified bytes"[..], file, &pin, &|| false).unwrap();
         verify_file(&out, &pin).unwrap();
 
         let too_long = PinnedArtifact {
@@ -298,7 +469,7 @@ mod tests {
         };
         let file = File::create(tmp.join("too-long")).unwrap();
         assert!(
-            copy_and_verify(&mut &b"four"[..], file, &too_long, || false)
+            copy_and_verify(&mut &b"four"[..], file, &too_long, &|| false)
                 .unwrap_err()
                 .contains("exceeds")
         );
@@ -309,7 +480,7 @@ mod tests {
         };
         let file = File::create(tmp.join("bad-hash")).unwrap();
         assert!(
-            copy_and_verify(&mut &b"same size"[..], file, &bad_hash, || false)
+            copy_and_verify(&mut &b"same size"[..], file, &bad_hash, &|| false)
                 .unwrap_err()
                 .contains("SHA-256 mismatch")
         );
@@ -322,11 +493,97 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("lsdj-download-cancel-{}", std::process::id()));
         let file = File::create(&tmp).unwrap();
         assert_eq!(
-            copy_and_verify(&mut &b"will not be copied"[..], file, &pin, || true),
+            copy_and_verify(&mut &b"will not be copied"[..], file, &pin, &|| true),
             Err("cancelled".into())
         );
         assert_eq!(fs::metadata(&tmp).unwrap().len(), 0);
         let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_stalled_body_while_the_read_is_pending() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&cancelled);
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            cancel.store(true, Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            wait_for_progress(
+                std::future::pending::<Result<Option<Vec<u8>>, io::Error>>(),
+                &|| cancelled.load(Ordering::Acquire),
+                tokio::time::Instant::now() + Duration::from_millis(250),
+                "artifact response body stalled",
+            )
+            .await
+        });
+        assert!(matches!(result, Err(error) if error == "cancelled"));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stalled read did not honor its deadline"
+        );
+        canceller.join().unwrap();
+    }
+
+    #[test]
+    fn stalled_body_hits_the_no_progress_deadline() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            wait_for_progress(
+                std::future::pending::<Result<Option<Vec<u8>>, io::Error>>(),
+                &|| false,
+                tokio::time::Instant::now() + Duration::from_millis(25),
+                "artifact response body stalled",
+            )
+            .await
+        });
+        assert!(matches!(result, Err(error) if error == "artifact response body stalled"));
+    }
+
+    #[test]
+    fn cached_verification_and_copy_observe_cancellation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-download-local-cancel-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let bytes = vec![7u8; 512 * 1024];
+        let source = root.join("source");
+        fs::write(&source, &bytes).unwrap();
+        let pin = artifact(&bytes);
+
+        let checks = AtomicUsize::new(0);
+        assert_eq!(
+            verify_file_cancellable(&source, &pin, &|| {
+                checks.fetch_add(1, Ordering::AcqRel) >= 1
+            }),
+            Err("cancelled".into())
+        );
+
+        let destination = root.join("copy");
+        let checks = AtomicUsize::new(0);
+        assert_eq!(
+            copy_file_cancellable(&source, &destination, &|| {
+                checks.fetch_add(1, Ordering::AcqRel) >= 1
+            }),
+            Err("cancelled".into())
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]

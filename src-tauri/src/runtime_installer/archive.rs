@@ -1,8 +1,8 @@
 //! Strict native `.tar.gz` extraction for authenticated installer artifacts.
 
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -20,11 +20,25 @@ pub(crate) struct ArchiveLimits {
 /// Extract a gzip-compressed tar whose every entry must live below one exact
 /// top-level directory. Links and non-file/directory entries are never created.
 /// The caller supplies limits from the authenticated app manifest.
+#[cfg(test)]
 pub(crate) fn extract_tar_gz(
     source: impl Read,
     destination: &Path,
     expected_root: &str,
     limits: ArchiveLimits,
+) -> Result<(), String> {
+    extract_tar_gz_cancellable(source, destination, expected_root, limits, &|| false)
+}
+
+/// Cancellation-aware production entry point. The cancellation reader sits
+/// below gzip so it also interrupts decoder reads of archive metadata, while
+/// file/link copies check between bounded chunks.
+pub(crate) fn extract_tar_gz_cancellable(
+    source: impl Read,
+    destination: &Path,
+    expected_root: &str,
+    limits: ArchiveLimits,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     validate_root(expected_root)?;
     if limits.max_files == 0 || limits.max_expanded_bytes == 0 {
@@ -32,7 +46,23 @@ pub(crate) fn extract_tar_gz(
     }
     prepare_empty_destination(destination)?;
 
+    let metadata_allowance = limits
+        .max_files
+        .checked_mul(4096)
+        .and_then(|bytes| bytes.checked_add(1024 * 1024))
+        .ok_or("archive decompression limit overflow")?;
+    let decompressed_limit = limits
+        .max_expanded_bytes
+        .checked_add(metadata_allowance)
+        .ok_or("archive decompression limit overflow")?;
+    let source = CancellationReader {
+        inner: source,
+        is_cancelled,
+    };
     let decoder = GzDecoder::new(source);
+    // This counts every decompressed tar byte, including GNU long-name and
+    // local PAX records that the tar crate consumes before yielding an entry.
+    let decoder = BudgetReader::new(decoder, decompressed_limit);
     let mut archive = tar::Archive::new(decoder);
     let entries = archive
         .entries()
@@ -45,6 +75,9 @@ pub(crate) fn extract_tar_gz(
     let mut deferred_links = Vec::new();
 
     for entry in entries {
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
         let mut entry = entry.map_err(|error| format!("cannot read archive entry: {error}"))?;
         count = count.checked_add(1).ok_or("archive file count overflow")?;
         if count > limits.max_files {
@@ -73,7 +106,7 @@ pub(crate) fn extract_tar_gz(
                     limits.max_expanded_bytes
                 ));
             }
-            io::copy(&mut entry, &mut io::sink())
+            copy_cancellable(&mut entry, &mut io::sink(), is_cancelled)
                 .map_err(|error| format!("cannot read archive metadata: {error}"))?;
             continue;
         }
@@ -153,7 +186,7 @@ pub(crate) fn extract_tar_gz(
             .write(true)
             .open(&output)
             .map_err(|error| format!("cannot create archive file: {error}"))?;
-        let copied = io::copy(&mut entry, &mut file)
+        let copied = copy_cancellable(&mut entry, &mut file, is_cancelled)
             .map_err(|error| format!("cannot extract archive file: {error}"))?;
         if copied != size {
             return Err("archive entry ended before its declared size".into());
@@ -166,6 +199,9 @@ pub(crate) fn extract_tar_gz(
         return Err("archive is empty".into());
     }
     for (output, target) in deferred_links {
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
         let metadata = fs::metadata(&target)
             .map_err(|_| "archive link target is missing or not a regular file".to_string())?;
         if !metadata.is_file() {
@@ -184,11 +220,91 @@ pub(crate) fn extract_tar_gz(
             fs::create_dir_all(parent)
                 .map_err(|error| format!("cannot create archive link parent: {error}"))?;
         }
-        fs::copy(&target, &output)
+        let mut source = File::open(&target)
+            .map_err(|error| format!("cannot open safe archive link target: {error}"))?;
+        let mut destination = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&output)
+            .map_err(|error| format!("cannot create materialized archive link: {error}"))?;
+        copy_cancellable(&mut source, &mut destination, is_cancelled)
             .map_err(|error| format!("cannot materialize safe archive link: {error}"))?;
         set_safe_permissions(&output, false, is_executable(&target))?;
     }
     Ok(())
+}
+
+struct CancellationReader<'a, R> {
+    inner: R,
+    is_cancelled: &'a dyn Fn() -> bool,
+}
+
+impl<R: Read> Read for CancellationReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if (self.is_cancelled)() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        self.inner.read(buffer)
+    }
+}
+
+struct BudgetReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R> BudgetReader<R> {
+    fn new(inner: R, limit: u64) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+        }
+    }
+}
+
+impl<R: Read> Read for BudgetReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "archive decompressed data exceeds its budget",
+                )),
+            };
+        }
+        let allowed = usize::try_from(self.remaining.min(buffer.len() as u64))
+            .expect("bounded by the buffer length");
+        let count = self.inner.read(&mut buffer[..allowed])?;
+        self.remaining = self.remaining.saturating_sub(count as u64);
+        Ok(count)
+    }
+}
+
+fn copy_cancellable(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    is_cancelled: &dyn Fn() -> bool,
+) -> io::Result<u64> {
+    let mut total = 0u64;
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        if is_cancelled() {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(total);
+        }
+        writer.write_all(&buffer[..count])?;
+        total = total
+            .checked_add(count as u64)
+            .ok_or_else(|| io::Error::other("archive copy byte count overflow"))?;
+    }
 }
 
 fn validate_root(root: &str) -> Result<(), String> {
@@ -631,6 +747,73 @@ mod tests {
         extract_tar_gz(&bytes[..], &out, "root", limits()).unwrap();
         assert_eq!(fs::read(out.join("file")).unwrap(), b"safe");
         assert!(!out.join("pax_global_header").exists());
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn cancellation_is_observed_during_decoder_and_entry_reads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let bytes = fixture(&[(
+            "root/large",
+            tar::EntryType::Regular,
+            &vec![7u8; 512 * 1024],
+            None,
+        )]);
+        let out = temp("cancelled");
+        let _ = fs::remove_dir_all(&out);
+        let checks = AtomicUsize::new(0);
+        let result = extract_tar_gz_cancellable(
+            &bytes[..],
+            &out,
+            "root",
+            ArchiveLimits {
+                max_files: 10,
+                max_expanded_bytes: 1024 * 1024,
+                materialize_safe_links: false,
+            },
+            &|| checks.fetch_add(1, Ordering::AcqRel) >= 2,
+        );
+        assert!(
+            result.unwrap_err().contains("cancelled"),
+            "cancellation should remain identifiable"
+        );
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn bounds_hidden_gnu_long_name_metadata_before_tar_materializes_it() {
+        let encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        header.set_size(1);
+        header.set_cksum();
+        let long_name = format!("root/{}", "a".repeat(2 * 1024 * 1024));
+        builder
+            .append_data(&mut header, long_name, &b"x"[..])
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let bytes = encoder.finish().unwrap();
+
+        let out = temp("hidden-metadata-budget");
+        let _ = fs::remove_dir_all(&out);
+        let error = extract_tar_gz(
+            &bytes[..],
+            &out,
+            "root",
+            ArchiveLimits {
+                max_files: 1,
+                max_expanded_bytes: 1,
+                materialize_safe_links: false,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("decompressed data exceeds"),
+            "unexpected error: {error}"
+        );
         let _ = fs::remove_dir_all(out);
     }
 
