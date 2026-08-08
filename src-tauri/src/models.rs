@@ -1,16 +1,17 @@
 //! Model manager (issue #43): status, install, and delete for the two model
 //! families — Magenta deck models and the Stable Audio 3 stack — surfaced in the
 //! settings-drawer panel. Rust owns the lifecycle (mirrors ADR-0022); the actual
-//! downloads are delegated to Python/shell tooling Rust orchestrates:
+//! downloads are orchestrated by Rust:
 //!
 //! - **Magenta** → the frozen sidecar's `--init-resources` / `--download-model`
 //!   modes (`backend/lsdj/sidecar.py`), which reuse `magenta_rt.cli` verbatim and
 //!   stream a JSON progress contract on stdout. Resources are fetched first so a
 //!   freshly downloaded model is actually loadable (a model's two files are not
 //!   enough without `resources/musiccoca` + `resources/spectrostream`).
-//! - **Stable Audio 3** → `curl` the pinned source tarball (`sa3-pin.json`),
-//!   `tar`-extract it, and run `scripts/sa3-install.sh` (build+warm steps; no
-//!   git, no tty, no system Python 3.11).
+//! - **Stable Audio 3** → download the app-bundled immutable manifest's source,
+//!   runtime, dependency, and model artifacts over native HTTPS; verify every
+//!   SHA-256; extract with bounded native archive APIs; then build, warm, and
+//!   atomically promote the candidate without a shell or external tools.
 //!
 //! Status facts mirror the stable conventions in `backend/lsdj/paths.py` and
 //! `backend/lsdj/sa3.py` (the two-file model layout, the SA3 candidate list, the
@@ -28,6 +29,12 @@ use tauri::{AppHandle, Emitter};
 use crate::child_process::{
     read_bounded_lines, sanitize_diagnostic, DiagnosticTail, SupervisedChild,
 };
+use crate::runtime_installer::archive::{extract_tar_gz_cancellable, ArchiveLimits};
+use crate::runtime_installer::download::{
+    client as installer_client, download_verified, link_or_copy_verified, verify_file_cancellable,
+    PinnedArtifact,
+};
+use crate::runtime_installer::promotion;
 
 /// The official models the manager offers to download (mirrors
 /// `engine.KNOWN_MODELS`). This is the installable catalog, NOT a discovery gate:
@@ -47,6 +54,8 @@ const WARMED_STAMP: &str = ".lsdj-warmed";
 // pin and offer an in-app update. Written by Rust after a fetch (the shell
 // installer doesn't know the commit). Lives beside `.lsdj-warmed` in optimized/mlx.
 const SOURCE_STAMP: &str = ".lsdj-source.json";
+const INSTALL_MANIFEST_STAMP: &str = ".lsdj-install-manifest.json";
+const REQUIREMENTS_LOCK: &str = include_str!("../../scripts/sa3-requirements.lock");
 
 // --- Host-resolved paths (mirrors the explicit Python environment) --------
 
@@ -93,6 +102,24 @@ fn sa3_status() -> (&'static str, Option<PathBuf>) {
         if first_with_mlx.is_none() {
             first_with_mlx = Some(checkout.clone());
         }
+
+        // A manifest marks an app-managed install. Never let its legacy stamps
+        // bypass current trust policy: readiness means the manifest, runtime,
+        // provenance, warm-up, and all eight model hashes validate. Only an
+        // older hand-installed checkout with no app manifest uses the historical
+        // interpreter/script/stamp heuristic below.
+        let manifest = checkout.join(INSTALL_MANIFEST_STAMP);
+        if !matches!(
+            std::fs::symlink_metadata(&manifest),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            let state = if validate_sa3_install(&checkout, &sa3_pin()).is_ok() {
+                SA3_READY
+            } else {
+                SA3_NOT_WARMED
+            };
+            return (state, Some(checkout));
+        }
         let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
         let script = mlx.join("scripts").join("sa3_mlx.py");
         if !(python.is_file() && script.is_file()) {
@@ -133,12 +160,12 @@ fn read_source_stamp(checkout: &Path) -> Option<Sa3Source> {
     serde_json::from_str(&data).ok()
 }
 
-/// Record what was fetched into the checkout. Best-effort: a failed write just
-/// means the next `model_status` treats the checkout as updatable.
-fn write_source_stamp(checkout: &Path, source: &Sa3Source) {
-    if let Ok(json) = serde_json::to_string_pretty(source) {
-        let _ = std::fs::write(source_stamp_path(checkout), json);
-    }
+/// Record what was fetched into the checkout. A secure candidate is never
+/// promoted without this provenance marker.
+fn write_source_stamp(checkout: &Path, source: &Sa3Source) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(source)
+        .map_err(|error| format!("cannot serialize SA3 source stamp: {error}"))?;
+    write_synced(&source_stamp_path(checkout), json.as_bytes())
 }
 
 /// The currently pinned source (`sa3-pin.json`).
@@ -322,7 +349,10 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         })
         .collect();
     let (sa3_state, sa3_checkout) = sa3_status();
-    let sa3_size = sa3_checkout.as_ref().map(|c| sa3_checkout_size(c)).unwrap_or(0);
+    let sa3_size = sa3_checkout
+        .as_ref()
+        .map(|c| sa3_checkout_size(c))
+        .unwrap_or(0);
     let pinned = pinned_source();
     let installed_source = sa3_checkout.as_ref().and_then(|c| read_source_stamp(c));
     let update_available =
@@ -343,10 +373,7 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
             update_available,
         },
         loras: crate::loras::discover(&crate::loras::loras_dir()),
-        installing: active.map(|(family, name)| ActiveInstall {
-            family,
-            name,
-        }),
+        installing: active.map(|(family, name)| ActiveInstall { family, name }),
     }
 }
 
@@ -397,22 +424,110 @@ fn emit(
 
 /// The pinned SA3 source (`sa3-pin.json`, the single bump point). Compiled in so
 /// a released binary carries the pin it was built with.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchivePin {
+    #[serde(flatten)]
+    artifact: PinnedArtifact,
+    archive_root: String,
+    max_files: u64,
+    max_expanded_bytes: u64,
+}
+
+impl ArchivePin {
+    fn limits(&self) -> ArchiveLimits {
+        ArchiveLimits {
+            max_files: self.max_files,
+            max_expanded_bytes: self.max_expanded_bytes,
+            materialize_safe_links: false,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UvPin {
+    target: String,
+    version: String,
+    #[serde(flatten)]
+    archive: ArchivePin,
+    executable: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PythonPin {
+    target: String,
+    version: String,
+    #[serde(flatten)]
+    archive: ArchivePin,
+    executable: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct RuntimePin {
+    requirements: String,
+    python: Vec<PythonPin>,
+    uv: Vec<UvPin>,
+}
+
+#[derive(Clone, Deserialize)]
+struct ModelArtifactPin {
+    path: String,
+    sha256: String,
+    size: u64,
+}
+
+impl ModelArtifactPin {
+    fn filename(&self) -> Result<&str, String> {
+        let filename = self
+            .path
+            .strip_prefix("MLX/")
+            .ok_or("SA3 model path must be below MLX/")?;
+        if filename.is_empty()
+            || filename.contains('/')
+            || filename.contains('\\')
+            || filename == "."
+            || filename == ".."
+        {
+            return Err("SA3 model path is unsafe".into());
+        }
+        Ok(filename)
+    }
+
+    fn artifact(&self, models: &ModelsPin) -> Result<PinnedArtifact, String> {
+        let filename = self.filename()?;
+        Ok(PinnedArtifact {
+            url: format!(
+                "https://huggingface.co/{}/resolve/{}/MLX/{filename}?download=true",
+                models.repo, models.revision
+            ),
+            sha256: self.sha256.clone(),
+            size: self.size,
+        })
+    }
+}
+
+#[derive(Clone, Deserialize)]
+struct ModelsPin {
+    repo: String,
+    revision: String,
+    artifacts: Vec<ModelArtifactPin>,
+}
+
+#[derive(Clone, Deserialize)]
 struct Sa3Pin {
     repo: String,
     commit: String,
+    source: ArchivePin,
+    runtime: RuntimePin,
+    models: ModelsPin,
 }
+
+const SA3_PIN_JSON: &str = include_str!("../../sa3-pin.json");
 
 fn sa3_pin() -> Sa3Pin {
-    const PIN: &str = include_str!("../../sa3-pin.json");
-    serde_json::from_str(PIN).expect("sa3-pin.json is valid JSON")
-}
-
-fn sa3_install_script() -> PathBuf {
-    if let Some(path) = std::env::var_os("LSDJ_SA3_INSTALL_SH") {
-        return PathBuf::from(path);
-    }
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/sa3-install.sh")
+    serde_json::from_str(SA3_PIN_JSON).expect("sa3-pin.json is valid JSON")
 }
 
 /// Shared install state: at most one install runs at a time; the running stage's
@@ -449,7 +564,11 @@ impl InstallManager {
     /// The in-flight install `(family, name)`, for `model_status`. `name` is the
     /// model for Magenta, `""` for SA3.
     pub fn active_install(&self) -> Option<(Family, String)> {
-        self.shared.active.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.shared
+            .active
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Start an install on a background thread; progress arrives as
@@ -521,7 +640,10 @@ impl InstallManager {
                     emit(&progress_app, family, &name, stage, message, file);
                 };
                 let result = job(&progress, &shared);
-                *shared.current_child.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *shared
+                    .current_child
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = None;
                 match result {
                     Ok(()) => emit(&app, family, "", "done", None, None),
                     // A user cancel is a clean stop, not a failure — the UI must
@@ -550,7 +672,13 @@ impl InstallManager {
     /// Cancel an in-flight install: flag it and kill the running stage's child.
     pub fn cancel(&self) {
         self.shared.cancelled.store(true, Ordering::Release);
-        if let Some(mut child) = self.shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(mut child) = self
+            .shared
+            .current_child
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             let _ = child.force_kill();
         }
     }
@@ -588,7 +716,10 @@ pub(crate) fn cancelled(shared: &InstallShared) -> Result<(), String> {
 /// lands after the process is spawned but before this lock is acquired, the
 /// second flag check below takes responsibility for terminating the child.
 fn park_child(shared: &InstallShared, child: SupervisedChild) -> Result<(), String> {
-    let mut current = shared.current_child.lock().unwrap_or_else(|p| p.into_inner());
+    let mut current = shared
+        .current_child
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     *current = Some(child);
     if shared.cancelled.load(Ordering::Acquire) {
         let mut child = current.take().expect("newly parked child is present");
@@ -635,7 +766,12 @@ pub(crate) fn stream_child(
         .unwrap_or_else(|_| (label.to_string(), DiagnosticTail::default()));
 
     // Reclaim the child to read its exit status; cancel() may have taken it.
-    let Some(mut child) = shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).take() else {
+    let Some(mut child) = shared
+        .current_child
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    else {
         return Err("cancelled".into());
     };
     let status = child
@@ -711,103 +847,543 @@ fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Re
     result.map_err(|exit_err| sanitize_diagnostic(&last_error.unwrap_or(exit_err)))
 }
 
-fn install_sa3(progress: &Progress, shared: &InstallShared, update: bool) -> Result<(), String> {
-    let (_state, existing) = sa3_status();
-    let (checkout, fetched) = match existing {
-        // Resume an existing checkout (venv_missing / not_warmed / ready) — the
-        // installer is idempotent (the `.lsdj-warmed` stamp gates re-warming). An
-        // explicit update instead re-fetches the pinned source, swapping it in
-        // (fetch_sa3_checkout backs up and restores on failure) and re-building.
-        Some(checkout) if !update => (checkout, false),
-        _ => (fetch_sa3_checkout(progress, shared)?, true),
-    };
+fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Result<(), String> {
+    let pin = sa3_pin();
+    validate_sa3_pin(&pin)?;
+    let uv = host_uv_pin(&pin)?;
+    let python = host_python_pin(&pin)?;
+    let staging = crate::platform_paths::get().staging().join("sa3");
+    let work = staging.join(&pin.commit);
+    let candidate = work.join("candidate");
+    let backup = staging.join("previous");
+    let home = sa3_app_home();
+    std::fs::create_dir_all(&work)
+        .map_err(|error| format!("cannot create SA3 staging root: {error}"))?;
+    if let Some(parent) = home.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create SA3 asset root: {error}"))?;
+    }
+
+    // Finish (or roll back) a prior process that stopped between promotion
+    // renames before doing any network work.
+    let install_cancelled = || shared.cancelled.load(Ordering::Acquire);
+    promotion::recover(&home, &backup, |path| {
+        validate_sa3_install_cancellable(path, &pin, &install_cancelled)
+    })?;
     cancelled(shared)?;
-    run_sa3_installer(progress, shared, &checkout, &sa3_install_script())?;
-    if fetched {
-        // Stamp the fetched source so a later pin bump shows as "update available".
-        write_source_stamp(&checkout, &pinned_source());
+    build_sa3_candidate(progress, shared, &pin, uv, python, &work, &candidate)?;
+    cancelled(shared)?;
+    progress("promote", None, None);
+    promotion::promote(&candidate, &home, &backup, |path| {
+        validate_sa3_install_cancellable(path, &pin, &install_cancelled)
+    })?;
+    // Verified blobs are hard-linked into the promoted tree. Removing retry
+    // state here reclaims only the staging directory entries, not model bytes.
+    let _ = std::fs::remove_dir_all(&work);
+    Ok(())
+}
+
+fn build_sa3_candidate(
+    progress: &Progress,
+    shared: &InstallShared,
+    pin: &Sa3Pin,
+    uv: &UvPin,
+    python: &PythonPin,
+    work: &Path,
+    candidate: &Path,
+) -> Result<(), String> {
+    let blobs = work.join("blobs");
+    std::fs::create_dir_all(&blobs)
+        .map_err(|error| format!("cannot create SA3 blob staging: {error}"))?;
+    if candidate.exists() {
+        std::fs::remove_dir_all(candidate)
+            .map_err(|error| format!("cannot clear interrupted SA3 candidate: {error}"))?;
+    }
+
+    let client = installer_client()?;
+    progress("fetch", None, Some("Stable Audio 3 source".into()));
+    let source_archive = blobs.join("stable-audio-3.tar.gz");
+    download_verified(&client, &pin.source.artifact, &source_archive, None, || {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
+    cancelled(shared)?;
+
+    progress("extract", None, None);
+    let source = std::fs::File::open(&source_archive)
+        .map_err(|error| format!("cannot open verified SA3 source: {error}"))?;
+    extract_tar_gz_cancellable(
+        source,
+        candidate,
+        &pin.source.archive_root,
+        pin.source.limits(),
+        &|| shared.cancelled.load(Ordering::Acquire),
+    )?;
+    validate_source_layout(candidate)?;
+    cancelled(shared)?;
+
+    progress("fetch", None, Some(format!("uv {}", uv.version)));
+    let uv_archive = blobs.join("uv.tar.gz");
+    download_verified(&client, &uv.archive.artifact, &uv_archive, None, || {
+        shared.cancelled.load(Ordering::Acquire)
+    })?;
+    let uv_dir = work.join("uv");
+    if uv_dir.exists() {
+        std::fs::remove_dir_all(&uv_dir)
+            .map_err(|error| format!("cannot clear interrupted uv runtime: {error}"))?;
+    }
+    let source = std::fs::File::open(&uv_archive)
+        .map_err(|error| format!("cannot open verified uv archive: {error}"))?;
+    extract_tar_gz_cancellable(
+        source,
+        &uv_dir,
+        &uv.archive.archive_root,
+        uv.archive.limits(),
+        &|| shared.cancelled.load(Ordering::Acquire),
+    )?;
+    let uv_executable = uv_dir.join(&uv.executable);
+    if !uv_executable.is_file() {
+        return Err("verified uv archive did not contain the pinned executable".into());
+    }
+    verify_uv_version(shared, &uv_executable, &uv.version)?;
+
+    progress("fetch", None, Some(format!("Python {}", python.version)));
+    let python_archive = blobs.join("python.tar.gz");
+    download_verified(
+        &client,
+        &python.archive.artifact,
+        &python_archive,
+        None,
+        || shared.cancelled.load(Ordering::Acquire),
+    )?;
+    let mlx = candidate.join("optimized").join("mlx");
+    let python_dir = mlx.join(".python");
+    let source = std::fs::File::open(&python_archive)
+        .map_err(|error| format!("cannot open verified Python archive: {error}"))?;
+    extract_tar_gz_cancellable(
+        source,
+        &python_dir,
+        &python.archive.archive_root,
+        ArchiveLimits {
+            max_files: python.archive.max_files,
+            max_expanded_bytes: python.archive.max_expanded_bytes,
+            // python-build-standalone includes convenience symlinks. The
+            // extractor validates they remain inside the archive root and
+            // materializes them as regular files, never filesystem links.
+            materialize_safe_links: true,
+        },
+        &|| shared.cancelled.load(Ordering::Acquire),
+    )?;
+    let python_executable = python_dir.join(&python.executable);
+    if !python_executable.is_file() {
+        return Err("verified Python archive did not contain the pinned executable".into());
+    }
+    verify_python_version(shared, &python_executable, &python.version)?;
+
+    let hf_token = std::env::var("HF_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok());
+    let model_blobs = blobs.join("models");
+    let model_dir = candidate
+        .join("optimized")
+        .join("mlx")
+        .join("models")
+        .join("mlx");
+    for model in &pin.models.artifacts {
+        cancelled(shared)?;
+        let filename = model.filename()?;
+        progress("fetch", None, Some(filename.into()));
+        let artifact = model.artifact(&pin.models)?;
+        let staged = model_blobs.join(filename);
+        download_verified(&client, &artifact, &staged, hf_token.as_deref(), || {
+            shared.cancelled.load(Ordering::Acquire)
+        })?;
+        link_or_copy_verified(&staged, &model_dir.join(filename), &artifact, &|| {
+            shared.cancelled.load(Ordering::Acquire)
+        })?;
+    }
+
+    progress("install", None, None);
+    let requirements = mlx.join(&pin.runtime.requirements);
+    write_synced(&requirements, REQUIREMENTS_LOCK.as_bytes())?;
+    run_sa3_setup(
+        shared,
+        &uv_executable,
+        &python_executable,
+        &mlx,
+        work,
+        &pin.runtime,
+    )?;
+    warm_sa3(shared, &mlx, work)?;
+    write_source_stamp(candidate, &pinned_source())?;
+    write_synced(
+        &candidate.join(INSTALL_MANIFEST_STAMP),
+        SA3_PIN_JSON.as_bytes(),
+    )?;
+    validate_sa3_install_cancellable(candidate, pin, &|| shared.cancelled.load(Ordering::Acquire))
+}
+
+fn verify_uv_version(
+    shared: &InstallShared,
+    executable: &Path,
+    expected: &str,
+) -> Result<(), String> {
+    let mut command = Command::new(executable);
+    command.arg("--version");
+    let mut output = String::new();
+    stream_child(shared, "verify-uv", command, |line| {
+        if output.is_empty() {
+            output.push_str(line);
+        }
+    })?;
+    let actual = output.split_whitespace().nth(1).unwrap_or_default();
+    if actual != expected {
+        return Err(format!(
+            "verified uv executable reported version {actual:?}, expected {expected}"
+        ));
     }
     Ok(())
 }
 
-/// Run the SA3 build+warm script (`install.sh -y --python 3.11` + warm). Takes
-/// the checkout + script paths so the run is testable against a stub without
-/// touching the process environment.
-fn run_sa3_installer(
-    progress: &Progress,
+fn verify_python_version(
     shared: &InstallShared,
-    checkout: &Path,
-    script: &Path,
+    executable: &Path,
+    expected: &str,
 ) -> Result<(), String> {
-    progress("install", None, None);
-    let mut cmd = Command::new("bash");
-    cmd.arg(script).arg(checkout);
-    // The script's stdout (warming N/3 …) is English and un-keyed; the "install"
-    // stage label carries the wording. stderr is drained to the app log already.
-    stream_child(shared, "sa3-install", cmd, |_line| {})
-}
-
-/// Fetch + extract the pinned SA3 source into the conventional home, returning
-/// the checkout root. Extracts to a temp dir and renames the single archive top
-/// dir into place, so a partial fetch never leaves a broken checkout.
-fn fetch_sa3_checkout(progress: &Progress, shared: &InstallShared) -> Result<PathBuf, String> {
-    let pin = sa3_pin();
-    let home = sa3_app_home();
-    let url = format!("{}/archive/{}.tar.gz", pin.repo.trim_end_matches('/'), pin.commit);
-    let tmp = std::env::temp_dir().join(format!("lsdj-sa3-{}", pin.commit));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).map_err(|e| format!("cannot create temp dir: {e}"))?;
-    let tarball = tmp.join("sa3.tar.gz");
-
-    progress("fetch", None, None);
-    let mut curl = Command::new("curl");
-    curl.args(["-fLsS", "-o"]).arg(&tarball).arg(&url);
-    stream_child(shared, "curl", curl, |_| {})?;
-    cancelled(shared)?;
-
-    progress("extract", None, None);
-    let extract = tmp.join("extract");
-    std::fs::create_dir_all(&extract).map_err(|e| format!("cannot create extract dir: {e}"))?;
-    let mut tar = Command::new("tar");
-    tar.arg("-xzf").arg(&tarball).arg("-C").arg(&extract);
-    stream_child(shared, "tar", tar, |_| {})?;
-
-    let top = single_subdir(&extract).ok_or("unexpected SA3 archive layout")?;
-    if let Some(parent) = home.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create SA3 home: {e}"))?;
-    }
-    // Swap the new checkout in non-destructively: if anything is already at `home`
-    // (a stale partial — a valid one wouldn't reach here), move it aside first and
-    // restore it if the rename fails, so a failure never destroys it irrecoverably.
-    if home.exists() {
-        let backup = home.with_extension("old");
-        let _ = std::fs::remove_dir_all(&backup);
-        std::fs::rename(&home, &backup).map_err(|e| format!("cannot stage SA3 home: {e}"))?;
-        if let Err(e) = std::fs::rename(&top, &home) {
-            let _ = std::fs::rename(&backup, &home);
-            return Err(format!("cannot place SA3 checkout: {e}"));
+    let mut command = Command::new(executable);
+    command.args(["-c", "import platform; print(platform.python_version())"]);
+    let mut output = String::new();
+    stream_child(shared, "verify-python", command, |line| {
+        if output.is_empty() {
+            output.push_str(line);
         }
-        let _ = std::fs::remove_dir_all(&backup);
-    } else {
-        std::fs::rename(&top, &home).map_err(|e| format!("cannot place SA3 checkout: {e}"))?;
+    })?;
+    if output != expected {
+        return Err(format!(
+            "verified Python executable reported version {output:?}, expected {expected}"
+        ));
     }
-    let _ = std::fs::remove_dir_all(&tmp);
-    Ok(home)
+    Ok(())
 }
 
-/// The single immediate subdirectory of `dir`, or `None` if there is not exactly
-/// one (a GitHub source archive extracts to one `<repo>-<sha>/` dir).
-fn single_subdir(dir: &Path) -> Option<PathBuf> {
-    let mut found: Option<PathBuf> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        if entry.file_type().ok()?.is_dir() {
-            if found.is_some() {
-                return None;
+fn run_sa3_setup(
+    shared: &InstallShared,
+    uv: &Path,
+    runtime_python: &Path,
+    mlx: &Path,
+    work: &Path,
+    runtime: &RuntimePin,
+) -> Result<(), String> {
+    let venv = mlx.join(".venv");
+    let cache = work.join("uv-cache");
+
+    let mut create_venv = uv_command(uv, mlx, &cache);
+    create_venv.args([
+        "venv",
+        "--relocatable",
+        "--no-managed-python",
+        "--no-python-downloads",
+        "--no-config",
+        "--link-mode",
+        "copy",
+        "--python",
+    ]);
+    create_venv.arg(runtime_python);
+    create_venv.arg(&venv);
+    stream_child(shared, "sa3-venv", create_venv, |_| {})?;
+
+    let python = crate::platform_paths::venv_python(&venv);
+    if !python.is_file() {
+        return Err("uv did not create the platform virtual-environment interpreter".into());
+    }
+    let requirements = mlx.join(&runtime.requirements);
+    let mut install_dependencies = uv_command(uv, mlx, &cache);
+    install_dependencies
+        .args(["pip", "install", "--python"])
+        .arg(&python)
+        .args([
+            "--require-hashes",
+            "--only-binary",
+            ":all:",
+            "--link-mode",
+            "copy",
+            "--default-index",
+            "https://pypi.org/simple",
+            "--no-config",
+            "-r",
+        ])
+        .arg(&requirements);
+    stream_child(shared, "sa3-dependencies", install_dependencies, |_| {})
+}
+
+fn uv_command(uv: &Path, cwd: &Path, cache: &Path) -> Command {
+    let mut command = Command::new(uv);
+    command
+        .current_dir(cwd)
+        .env("UV_CACHE_DIR", cache)
+        .env_remove("UV_INSECURE_HOST")
+        .env_remove("UV_INDEX")
+        .env_remove("UV_INDEX_URL")
+        .env_remove("UV_EXTRA_INDEX_URL")
+        .env_remove("UV_NO_VERIFY_HASHES")
+        .env_remove("PIP_INDEX_URL")
+        .env_remove("PIP_EXTRA_INDEX_URL")
+        .env_remove("PIP_TRUSTED_HOST");
+    command
+}
+
+fn warm_sa3(shared: &InstallShared, mlx: &Path, work: &Path) -> Result<(), String> {
+    let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
+    let script = mlx.join("scripts").join("sa3_mlx.py");
+    let warm_dir = work.join("warm");
+    if warm_dir.exists() {
+        std::fs::remove_dir_all(&warm_dir)
+            .map_err(|error| format!("cannot clear interrupted SA3 warm-up: {error}"))?;
+    }
+    std::fs::create_dir_all(&warm_dir)
+        .map_err(|error| format!("cannot create SA3 warm-up directory: {error}"))?;
+    for (dit, decoder) in [
+        ("sm-sfx", "same-s"),
+        ("sm-music", "same-s"),
+        ("medium", "same-l"),
+    ] {
+        cancelled(shared)?;
+        let output = warm_dir.join(format!("{dit}.wav"));
+        let mut command = Command::new(&python);
+        command
+            .current_dir(mlx)
+            // All required weights were downloaded and verified by Rust. Force
+            // the upstream helper offline so it cannot silently fetch a mutable
+            // replacement during candidate validation.
+            .env("HF_HUB_OFFLINE", "1")
+            .arg(&script)
+            .args([
+                "--prompt",
+                "setup warm-up",
+                "--dit",
+                dit,
+                "--decoder",
+                decoder,
+                "--seconds",
+                "1",
+                "--steps",
+                "1",
+                "--out",
+            ])
+            .arg(&output);
+        stream_child(shared, "sa3-warm", command, |_| {})?;
+        if !output.is_file() {
+            return Err(format!("SA3 warm-up did not produce {dit} output"));
+        }
+    }
+    write_synced(&mlx.join(WARMED_STAMP), b"")?;
+    let _ = std::fs::remove_dir_all(warm_dir);
+    Ok(())
+}
+
+fn validate_source_layout(checkout: &Path) -> Result<(), String> {
+    let mlx = checkout.join("optimized").join("mlx");
+    if !mlx.is_dir() || !mlx.join("scripts").join("sa3_mlx.py").is_file() {
+        return Err("verified source archive has an unexpected SA3 layout".into());
+    }
+    Ok(())
+}
+
+fn validate_sa3_install(checkout: &Path, pin: &Sa3Pin) -> Result<(), String> {
+    validate_sa3_install_cancellable(checkout, pin, &|| false)
+}
+
+fn validate_sa3_install_cancellable(
+    checkout: &Path,
+    pin: &Sa3Pin,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    if is_cancelled() {
+        return Err("cancelled".into());
+    }
+    validate_source_layout(checkout)?;
+    let mlx = checkout.join("optimized").join("mlx");
+    let python = crate::platform_paths::venv_python(&mlx.join(".venv"));
+    if !python.is_file() {
+        return Err("SA3 virtual-environment interpreter is missing".into());
+    }
+    if !mlx.join(WARMED_STAMP).is_file() {
+        return Err("SA3 warm-up stamp is missing".into());
+    }
+    let runtime_python = host_python_pin(pin)?;
+    if !mlx
+        .join(".python")
+        .join(&runtime_python.executable)
+        .is_file()
+    {
+        return Err("pinned SA3 Python runtime is missing".into());
+    }
+    if read_source_stamp(checkout).as_ref() != Some(&pinned_source()) {
+        return Err("SA3 source provenance does not match the pin".into());
+    }
+    let manifest_path = checkout.join(INSTALL_MANIFEST_STAMP);
+    let manifest_metadata = std::fs::symlink_metadata(&manifest_path)
+        .map_err(|error| format!("cannot inspect SA3 install manifest: {error}"))?;
+    if manifest_metadata.file_type().is_symlink() || !manifest_metadata.is_file() {
+        return Err("SA3 install manifest is not a regular file".into());
+    }
+    let installed_manifest = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("cannot read SA3 install manifest: {error}"))?;
+    if installed_manifest != SA3_PIN_JSON {
+        return Err("SA3 install manifest does not match this application".into());
+    }
+    validate_sa3_model_artifacts(checkout, pin, is_cancelled)
+}
+
+fn validate_sa3_model_artifacts(
+    checkout: &Path,
+    pin: &Sa3Pin,
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let model_dir = checkout
+        .join("optimized")
+        .join("mlx")
+        .join("models")
+        .join("mlx");
+    for model in &pin.models.artifacts {
+        let filename = model.filename()?;
+        let artifact = model.artifact(&pin.models)?;
+        if let Err(error) =
+            verify_file_cancellable(&model_dir.join(filename), &artifact, is_cancelled)
+        {
+            if error == "cancelled" {
+                return Err(error);
             }
-            found = Some(entry.path());
+            return Err(format!(
+                "SA3 model {filename} failed integrity validation: {error}"
+            ));
         }
     }
-    found
+    Ok(())
+}
+
+fn validate_sa3_pin(pin: &Sa3Pin) -> Result<(), String> {
+    if pin.commit.len() != 40 || !pin.commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("SA3 source revision must be a full immutable commit".into());
+    }
+    pin.source.artifact.validate()?;
+    if !pin.source.artifact.url.contains(&pin.commit)
+        || !pin.source.archive_root.ends_with(&pin.commit)
+        || pin.source.max_files == 0
+        || pin.source.max_expanded_bytes == 0
+    {
+        return Err("SA3 source archive metadata does not match its revision".into());
+    }
+    if pin.runtime.requirements != "sa3-requirements.lock" {
+        return Err("SA3 runtime pin is incomplete".into());
+    }
+    for uv in &pin.runtime.uv {
+        uv.archive.artifact.validate()?;
+        if uv.target.is_empty()
+            || uv.version.is_empty()
+            || !uv.archive.artifact.url.contains(&uv.version)
+            || uv.executable.is_empty()
+            || uv.executable.contains('/')
+            || uv.executable.contains('\\')
+        {
+            return Err("uv runtime pin is inconsistent".into());
+        }
+    }
+    for python in &pin.runtime.python {
+        python.archive.artifact.validate()?;
+        if python.target.is_empty()
+            || python.version.split('.').count() != 3
+            || !python.archive.artifact.url.contains(&python.version)
+            || python.executable.is_empty()
+            || python.executable.starts_with('/')
+            || python.executable.contains("..")
+        {
+            return Err("Python runtime pin is inconsistent".into());
+        }
+    }
+    if pin.models.revision.len() != 40
+        || !pin
+            .models
+            .revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || pin.models.repo.split('/').count() != 2
+        || pin.models.repo.contains("..")
+    {
+        return Err("SA3 model revision/repository pin is invalid".into());
+    }
+    let expected: std::collections::BTreeSet<_> = [
+        "dit_medium_f16.npz",
+        "dit_sm-music_f16.npz",
+        "dit_sm-sfx_f16.npz",
+        "same_l_decoder_f32.npz",
+        "same_l_encoder_f32.npz",
+        "same_s_decoder_f32.npz",
+        "same_s_encoder_f32.npz",
+        "t5gemma_f16.npz",
+    ]
+    .into_iter()
+    .collect();
+    let mut actual = std::collections::BTreeSet::new();
+    for model in &pin.models.artifacts {
+        let filename = model.filename()?;
+        model.artifact(&pin.models)?.validate()?;
+        if !actual.insert(filename) {
+            return Err("SA3 model manifest contains a duplicate artifact".into());
+        }
+    }
+    if actual != expected {
+        return Err("SA3 model manifest does not cover every inference artifact".into());
+    }
+    Ok(())
+}
+
+fn host_uv_pin(pin: &Sa3Pin) -> Result<&UvPin, String> {
+    let target = host_installer_target()?;
+    let uv = pin
+        .runtime
+        .uv
+        .iter()
+        .find(|artifact| artifact.target == target)
+        .ok_or("no pinned uv runtime exists for this platform")?;
+    uv.archive.artifact.validate()?;
+    if uv.version.is_empty()
+        || !uv.archive.artifact.url.contains(&uv.version)
+        || uv.executable.contains('/')
+        || uv.executable.contains('\\')
+        || uv.executable.is_empty()
+    {
+        return Err("uv runtime pin is inconsistent".into());
+    }
+    Ok(uv)
+}
+
+fn host_python_pin(pin: &Sa3Pin) -> Result<&PythonPin, String> {
+    let target = host_installer_target()?;
+    pin.runtime
+        .python
+        .iter()
+        .find(|artifact| artifact.target == target)
+        .ok_or_else(|| "no pinned Python runtime exists for this platform".into())
+}
+
+fn host_installer_target() -> Result<&'static str, String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        _ => Err("the pinned SA3 MLX runtime supports Apple Silicon only".into()),
+    }
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create install metadata directory: {error}"))?;
+    }
+    let mut file = std::fs::File::create(path)
+        .map_err(|error| format!("cannot create install metadata: {error}"))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("cannot sync install metadata: {error}"))
 }
 
 // --- Tauri commands --------------------------------------------------------
@@ -896,7 +1472,10 @@ mod tests {
         touch(&tmp.join("custom_x").join("custom_x.mlxfn"));
         touch(&tmp.join("custom_x").join("custom_x_state.safetensors"));
 
-        assert_eq!(discover_installed(&tmp), vec!["custom_x".to_string(), "mrt2_small".to_string()]);
+        assert_eq!(
+            discover_installed(&tmp),
+            vec!["custom_x".to_string(), "mrt2_small".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -915,7 +1494,43 @@ mod tests {
     fn sa3_pin_parses() {
         let pin = sa3_pin();
         assert!(pin.repo.starts_with("https://"));
-        assert!(!pin.commit.is_empty());
+        validate_sa3_pin(&pin).unwrap();
+        assert_eq!(pin.commit.len(), 40);
+        assert_eq!(pin.models.artifacts.len(), 8);
+        assert!(pin.source.artifact.url.starts_with("https://"));
+    }
+
+    #[test]
+    fn app_managed_model_validation_hashes_all_eight_artifacts() {
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-model-integrity-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let model_dir = root
+            .join("optimized")
+            .join("mlx")
+            .join("models")
+            .join("mlx");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let mut pin = sa3_pin();
+        for (index, model) in pin.models.artifacts.iter_mut().enumerate() {
+            let bytes = format!("fixture-{index}").into_bytes();
+            model.size = bytes.len() as u64;
+            model.sha256 = hex::encode(Sha256::digest(&bytes));
+            std::fs::write(model_dir.join(model.filename().unwrap()), bytes).unwrap();
+        }
+
+        validate_sa3_model_artifacts(&root, &pin, &|| false).unwrap();
+        let tampered = pin.models.artifacts[3].filename().unwrap();
+        let original_size = pin.models.artifacts[3].size as usize;
+        std::fs::write(model_dir.join(tampered), vec![b'x'; original_size]).unwrap();
+        let error = validate_sa3_model_artifacts(&root, &pin, &|| false).unwrap_err();
+        assert!(error.contains("SHA-256"), "unexpected error: {error}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -929,7 +1544,7 @@ mod tests {
             repo: "https://github.com/brxs/stable-audio-3".into(),
             commit: "abc123def456".into(),
         };
-        write_source_stamp(&tmp, &src);
+        write_source_stamp(&tmp, &src).unwrap();
         assert_eq!(read_source_stamp(&tmp), Some(src));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -947,11 +1562,17 @@ mod tests {
         // Exact match.
         assert!(!sa3_update_available(Some(&pin.clone()), &pin, true));
         // Short-SHA stamp vs full-SHA pin (prefix) counts as a match.
-        let short = Sa3Source { repo: pin.repo.clone(), commit: "36ef977".into() };
+        let short = Sa3Source {
+            repo: pin.repo.clone(),
+            commit: "36ef977".into(),
+        };
         assert!(!sa3_update_available(Some(&short), &pin, true));
         // A different commit, or a different repo (e.g. after reverting to
         // upstream), is updatable.
-        let other_commit = Sa3Source { repo: pin.repo.clone(), commit: "deadbeef".into() };
+        let other_commit = Sa3Source {
+            repo: pin.repo.clone(),
+            commit: "deadbeef".into(),
+        };
         assert!(sa3_update_available(Some(&other_commit), &pin, true));
         let other_repo = Sa3Source {
             repo: "https://github.com/Stability-AI/stable-audio-3".into(),
@@ -959,7 +1580,10 @@ mod tests {
         };
         assert!(sa3_update_available(Some(&other_repo), &pin, true));
         // A trailing slash on the repo is ignored.
-        let slash = Sa3Source { repo: format!("{}/", pin.repo), commit: pin.commit.clone() };
+        let slash = Sa3Source {
+            repo: format!("{}/", pin.repo),
+            commit: pin.commit.clone(),
+        };
         assert!(!sa3_update_available(Some(&slash), &pin, true));
     }
 
@@ -992,11 +1616,19 @@ mod tests {
         shared.cancelled.store(true, Ordering::Release);
         assert_eq!(park_child(&shared, child), Err("cancelled".into()));
         assert!(
-            shared.current_child.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+            shared
+                .current_child
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_none(),
             "cancelled child must not remain parked"
         );
         // SAFETY: signal 0 only probes whether the already-recorded pid exists.
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "child survived cancellation");
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "child survived cancellation"
+        );
     }
 
     #[cfg(unix)]
@@ -1067,7 +1699,10 @@ printf '{"event":"done"}\n'
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let stub = tmp.join("fail.sh");
-        write_exec(&stub, "#!/bin/sh\nprintf '{\"event\":\"error\",\"message\":\"no weights\"}\\n'\nexit 1\n");
+        write_exec(
+            &stub,
+            "#!/bin/sh\nprintf '{\"event\":\"error\",\"message\":\"no weights\"}\\n'\nexit 1\n",
+        );
         let mut cmd = Command::new("sh");
         cmd.arg(&stub);
 
@@ -1121,28 +1756,20 @@ printf '{"event":"done"}\n'
 
     #[cfg(unix)]
     #[test]
-    fn run_sa3_installer_runs_the_script_and_reports_the_stage() {
-        let tmp = std::env::temp_dir().join(format!("lsdj-sa3install-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let checkout = tmp.join("co");
-        std::fs::create_dir_all(&checkout).unwrap();
-        let marker = tmp.join("ran");
-        let stub = tmp.join("install.sh");
-        // The script's own stdout is intentionally NOT streamed to the UI (it is
-        // English and un-keyed); the touched marker proves it actually ran.
-        write_exec(&stub, &format!("#!/bin/sh\n: > \"{}\"\nexit 0\n", marker.display()));
+    fn uv_command_keeps_unicode_paths_structured() {
+        let root = Path::new("/tmp/LSDJ profile ü with spaces");
+        let executable = root.join("runtime tools").join("uv");
+        let cwd = root.join("Stable Audio 3");
+        let cache = root.join("staging cache");
+        let venv = cwd.join(".venv");
+        let mut command = uv_command(&executable, &cwd, &cache);
+        command.arg("venv").arg(&venv);
 
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = events.clone();
-        let progress = move |stage: &str, _message: Option<String>, _file: Option<String>| {
-            sink.lock().unwrap().push(stage.to_string());
-        };
-        let result = run_sa3_installer(&progress, &shared(), &checkout, &stub);
-
-        assert!(result.is_ok(), "sa3 install failed: {result:?}");
-        assert!(marker.exists(), "the installer script did not run");
-        assert!(events.lock().unwrap().iter().any(|stage| stage == "install"));
-        let _ = std::fs::remove_dir_all(&tmp);
+        assert_eq!(command.get_program(), executable.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(cwd.as_path()));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args[0], std::ffi::OsStr::new("venv"));
+        assert_eq!(args[1], venv.as_os_str());
     }
 
     #[cfg(unix)]

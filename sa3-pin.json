@@ -1,5 +1,88 @@
 {
   "note": "Back on upstream: our MLX LoRA merge-at-load (ADR-0028) landed as PR #57 (2026-07-14), and #65 extended it with per-adapter strength= and step gating. Bump via ADR-0012's upgrade path.",
   "repo": "https://github.com/Stability-AI/stable-audio-3",
-  "commit": "0385302ea26522f00c80392c4b708df5ebf1adf5"
+  "commit": "0385302ea26522f00c80392c4b708df5ebf1adf5",
+  "source": {
+    "url": "https://github.com/Stability-AI/stable-audio-3/archive/0385302ea26522f00c80392c4b708df5ebf1adf5.tar.gz",
+    "sha256": "6991aeedd4e8f5509b7ce76b7d9dddc43e4c6f980e81ea9b5179890b518b906f",
+    "size": 8436657,
+    "archiveRoot": "stable-audio-3-0385302ea26522f00c80392c4b708df5ebf1adf5",
+    "maxFiles": 2000,
+    "maxExpandedBytes": 134217728
+  },
+  "runtime": {
+    "requirements": "sa3-requirements.lock",
+    "python": [
+      {
+        "target": "aarch64-apple-darwin",
+        "version": "3.11.13",
+        "url": "https://releases.astral.sh/github/python-build-standalone/releases/download/20251007/cpython-3.11.13%2B20251007-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "78bc6defdc1dac5bf6765c8f938e6849383dbed831ea1e2d11576a4683fb1e8c",
+        "size": 18949778,
+        "archiveRoot": "python",
+        "executable": "bin/python3.11",
+        "maxFiles": 5000,
+        "maxExpandedBytes": 134217728
+      }
+    ],
+    "uv": [
+      {
+        "target": "aarch64-apple-darwin",
+        "version": "0.11.7",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-aarch64-apple-darwin.tar.gz",
+        "sha256": "66e37d91f839e12481d7b932a1eccbfe732560f42c1cfb89faddfa2454534ba8",
+        "size": 20839135,
+        "archiveRoot": "uv-aarch64-apple-darwin",
+        "executable": "uv",
+        "maxFiles": 8,
+        "maxExpandedBytes": 67108864
+      }
+    ]
+  },
+  "models": {
+    "repo": "stabilityai/stable-audio-3-optimized",
+    "revision": "6736003cb57d06b7b1fdc36fad31b2a3709e4774",
+    "artifacts": [
+      {
+        "path": "MLX/dit_medium_f16.npz",
+        "sha256": "f9e5647ea3225818657d47d47ae4b34afa29c0568206ca89566c1a758944a38e",
+        "size": 2907300946
+      },
+      {
+        "path": "MLX/dit_sm-music_f16.npz",
+        "sha256": "8ed3f38e2597f361ee675051f1265d9aa2ae2fffce1c61acd2e9fe31e1db1cbc",
+        "size": 919193814
+      },
+      {
+        "path": "MLX/dit_sm-sfx_f16.npz",
+        "sha256": "7e702d2640699a57fe436ca975fda16832040ba568c1e092c2ae826987558118",
+        "size": 919193814
+      },
+      {
+        "path": "MLX/same_l_decoder_f32.npz",
+        "sha256": "84924be2122d3a20fce443f40b782d9cd88e8e73707476326003ac47659a2287",
+        "size": 1704311976
+      },
+      {
+        "path": "MLX/same_l_encoder_f32.npz",
+        "sha256": "c5caafc6bd29fc3d4cb7a08b0d3725041fa2100711f86a4f05d2638c532871d2",
+        "size": 1704313504
+      },
+      {
+        "path": "MLX/same_s_decoder_f32.npz",
+        "sha256": "909928a8e6937c1ebe6ac4b729f0462bd3773704a11ea18278e42671dc69bfe4",
+        "size": 218090820
+      },
+      {
+        "path": "MLX/same_s_encoder_f32.npz",
+        "sha256": "a48f80d81c30d74c45e2a3047082c4891f715e24c44645adb9c1f4f07afdaf0c",
+        "size": 214946620
+      },
+      {
+        "path": "MLX/t5gemma_f16.npz",
+        "sha256": "8deb20489f36d9aec539f26c9c67321f99bc5fe300d470435ed6e76be4f16bbd",
+        "size": 567443068
+      }
+    ]
+  }
 }
