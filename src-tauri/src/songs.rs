@@ -205,6 +205,27 @@ fn reconcile(existing: Vec<SongEntry>, disk: &[String]) -> Vec<SongEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
+
+    fn test_temp_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{label}-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn test_temp_directory_names_are_windows_safe() {
+        let path = test_temp_dir("lsdj-song-test");
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(!name
+            .chars()
+            .any(|character| r#"<>:"/\|?*"#.contains(character)));
+    }
 
     fn entry(file: &str, model: Option<&str>) -> SongEntry {
         SongEntry {
@@ -307,11 +328,7 @@ mod tests {
 
     #[test]
     fn unknown_future_recipe_shape_survives_library_reconciliation() {
-        let dir = std::env::temp_dir().join(format!(
-            "lsdj-future-song-recipe-test-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("thread")
-        ));
+        let dir = test_temp_dir("lsdj-future-song-recipe-test");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("future.wav"), b"RIFF future bytes").unwrap();
@@ -352,11 +369,7 @@ mod tests {
 
     #[test]
     fn a_fresh_library_instance_restores_the_recorded_recipe() {
-        let dir = std::env::temp_dir().join(format!(
-            "lsdj-song-recipe-test-{}-{}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("thread")
-        ));
+        let dir = test_temp_dir("lsdj-song-recipe-test");
         std::fs::remove_dir_all(&dir).ok();
         let recipe = GenerationRecipe {
             version: 1,
