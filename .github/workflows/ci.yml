@@ -98,6 +98,8 @@ jobs:
         run: >-
           uv run --frozen --only-group ci python -m pytest
           tests/test_sa3.py
+          tests/test_sa3_audio.py
+          tests/test_sa3_manifest.py
           tests/test_models.py::test_readiness_classifies_a_checkout
           tests/test_models.py::test_readiness_missing_when_no_checkout
 

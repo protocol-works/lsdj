@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "repo": "https://github.com/Stability-AI/stable-audio-3",
+    "revision": "a0b57f5483c4588f827f3552b7d5c6ca2a9687be",
+    "subdirectory": "optimized/tflite",
+    "entrypoint": "scripts/sa3_tflite.py",
+    "requirementsInput": "scripts/sa3-tflite-requirements.in",
+    "requirementsLock": "scripts/sa3-tflite-requirements.lock"
+  },
+  "models": {
+    "repo": "stabilityai/stable-audio-3-optimized",
+    "revision": "6736003cb57d06b7b1fdc36fad31b2a3709e4774",
+    "precision": "fp32",
+    "shared": [
+      {
+        "path": "tflite/t5gemma/encoder_fp16.tflite",
+        "installPath": "models/tflite/t5gemma/encoder_fp16.tflite",
+        "size": 563818608,
+        "sha256": "8530d0b3e6b9b9dcf1239145c2a853fb749708eaddbb472ff8f0802b50059372"
+      }
+    ],
+    "bundles": {
+      "sm-music": [
+        {
+          "path": "tflite/sa3-sm-music/dit_fp32.tflite",
+          "installPath": "models/tflite/sa3-sm-music/dit_fp32.tflite",
+          "size": 1838758544,
+          "sha256": "d388700a2ca439c11e9a53506e964e93231386a2beb8173c6eec6d95f676ce09"
+        },
+        {
+          "path": "tflite/same-s/enc_fp32.tflite",
+          "installPath": "models/tflite/same-s/enc_fp32.tflite",
+          "size": 215195204,
+          "sha256": "35ce38ea9f56e116036c683e37bf96c954d4fe0a435606ded0f62595b91f52a3"
+        },
+        {
+          "path": "tflite/same-s/dec_fp32.tflite",
+          "installPath": "models/tflite/same-s/dec_fp32.tflite",
+          "size": 218377156,
+          "sha256": "cd87fa6686b24a56dc3497e05fbb26a34cf9604afe49c6631e829c9e70fccf21"
+        }
+      ],
+      "sm-sfx": [
+        {
+          "path": "tflite/sa3-sm-sfx/dit_fp32.tflite",
+          "installPath": "models/tflite/sa3-sm-sfx/dit_fp32.tflite",
+          "size": 1838758544,
+          "sha256": "6060ecfeca34c4ab35bc1912a37e680e8cd7aab6c4bd9de1bc2655414891b8d8"
+        },
+        {
+          "path": "tflite/same-s/enc_fp32.tflite",
+          "installPath": "models/tflite/same-s/enc_fp32.tflite",
+          "size": 215195204,
+          "sha256": "35ce38ea9f56e116036c683e37bf96c954d4fe0a435606ded0f62595b91f52a3"
+        },
+        {
+          "path": "tflite/same-s/dec_fp32.tflite",
+          "installPath": "models/tflite/same-s/dec_fp32.tflite",
+          "size": 218377156,
+          "sha256": "cd87fa6686b24a56dc3497e05fbb26a34cf9604afe49c6631e829c9e70fccf21"
+        }
+      ],
+      "medium": [
+        {
+          "path": "tflite/sa3-m/dit_fp32.tflite",
+          "installPath": "models/tflite/sa3-m/dit_fp32.tflite",
+          "size": 5816313104,
+          "sha256": "b811dc7d0135ca48afbc7a7bb7d19bdaaad13cbcb592418b8aa169e0c149daba"
+        },
+        {
+          "path": "tflite/same-l/enc_fp32.tflite",
+          "installPath": "models/tflite/same-l/enc_fp32.tflite",
+          "size": 1823872896,
+          "sha256": "f8b5e95a7073e3b59e4a1c2b07836d86d514cc7eaaff05b3c7cbdd1620f141d5"
+        },
+        {
+          "path": "tflite/same-l/dec_fp32.tflite",
+          "installPath": "models/tflite/same-l/dec_fp32.tflite",
+          "size": 1823900848,
+          "sha256": "3af34d35939ce6fc74d9f7b9d9bd6b99bc9568b614bcfe57da4a781bf40c8c6c"
+        }
+      ]
+    }
+  }
+}
