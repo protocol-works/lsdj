@@ -187,6 +187,9 @@ export function ModelManager() {
             <div className="modelmgr__meta">
               {t(`modelManager.sa3State.${sa3.state}`)}
               {sa3Present && sa3.sizeBytes > 0 ? ` · ${formatBytes(sa3.sizeBytes)}` : ''}
+              {!sa3Present && sa3.downloadBytes > 0
+                ? ` · ${t('modelManager.downloadSize', { size: formatBytes(sa3.downloadBytes) })}`
+                : ''}
             </div>
             {sa3Ready && sa3.updateAvailable && (
               <div className="modelmgr__meta modelmgr__meta--warn">{t('modelManager.updateAvailable')}</div>
@@ -198,7 +201,7 @@ export function ModelManager() {
               sa3Label,
               !sa3Ready ? (
                 <Button variant="primary" onClick={() => onInstall('sa3')} disabled={isInstalling}>
-                  {t('modelManager.install')}
+                  {sa3.state === 'failed' ? t('modelManager.repair') : t('modelManager.install')}
                 </Button>
               ) : sa3.updateAvailable ? (
                 <Button variant="primary" onClick={() => onUpdate('sa3')} disabled={isInstalling}>

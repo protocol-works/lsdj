@@ -149,8 +149,8 @@ export type InstalledModel = {
   needsResources: boolean
 }
 
-/** SA3's four readiness states (Rust `models`/`sa3.readiness`). */
-export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready'
+/** SA3 readiness states (Rust `models`/`sa3.readiness`). */
+export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready' | 'failed'
 
 /** The source an SA3 checkout was installed from / is pinned to (Rust
  * `models::Sa3Source`): the `sa3-pin.json` repo + commit. */
@@ -183,7 +183,10 @@ export type ModelStatus = {
   }
   sa3: {
     state: Sa3State
+    backend: 'mlx' | 'tflite' | null
     sizeBytes: number
+    /** Exact model bytes from the selected backend's immutable manifest. */
+    downloadBytes: number
     checkout: string | null
     /** What the installed checkout was fetched from (`null` when unstamped). */
     installedSource: Sa3Source | null
