@@ -36,6 +36,12 @@ pads and finished tracks come from Stable Audio 3. See
 
 All common tasks live in the [`justfile`](justfile) — run `just` to list them.
 
+Linux x86_64 AppImage support is under active qualification. Packaging and
+hosted CI are available, but a public Linux release remains gated on the
+portable MRT2/Stable Audio backends, licensing, and real NVIDIA/audio/FLX4
+evidence. See [the Linux support status](docs/linux.md); do not infer hardware
+support from a green hosted build.
+
 ## Setup
 
 ```sh

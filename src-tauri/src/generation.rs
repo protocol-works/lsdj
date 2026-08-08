@@ -121,6 +121,13 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
         return Ok(cmd);
     }
 
+    // A portable package must wait for #110/#111's verified app-managed
+    // adapter. Never turn a missing runtime into an implicit dependency on a
+    // user's system Python, `uv`, Git, or shell.
+    if !crate::runtime_launch::developer_fallback_allowed() {
+        return Err(crate::runtime_launch::unavailable("stableAudio"));
+    }
+
     let overridden = std::env::var("LSDJ_GENERATION_CMD");
     let spec = overridden
         .clone()
@@ -140,7 +147,7 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
     Ok(cmd)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "managed-runtime")))]
 mod tests {
     use super::*;
 
@@ -163,4 +170,5 @@ mod tests {
 
         std::env::remove_var("LSDJ_GENERATION_CMD");
     }
+
 }

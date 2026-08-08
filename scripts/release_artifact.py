@@ -51,14 +51,20 @@ class ProducerPolicy:
     asset_count: int
 
 
-# macOS is the sole required release producer initially.  Adding a platform is
-# an explicit policy change: add its producer here and to the publisher's
-# --required-producer list in the workflow in the same reviewed change.
+# Every policy entry is required. Adding a platform is an explicit fail-closed
+# change: add its producer here and to the publisher's --required-producer list
+# in the workflow in the same reviewed change.
 PRODUCER_POLICIES = {
     "macos-arm64": ProducerPolicy(
         platform="macos",
         architecture="arm64",
         asset_suffix=".dmg",
+        asset_count=1,
+    ),
+    "linux-x64": ProducerPolicy(
+        platform="linux",
+        architecture="x86_64",
+        asset_suffix=".appimage",
         asset_count=1,
     ),
 }
