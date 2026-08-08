@@ -126,8 +126,14 @@ working notes — commit or fold into issues as you see fit.
   - The remaining session-4 leftovers are now tracked as issues: #124
     (`set_fx_amount` ramp), #125 (idle -32001), #126 (`mainDevice: ""` —
     reproduced live this session).
-  - co-DJ SKILL.md added at `.agents/skills/co-dj/SKILL.md` (served to Claude
-    Code via the `.claude/skills` symlink).
+  - Agent skill added at `.agents/skills/lsdj/SKILL.md` (served to Claude
+    Code via the `.claude/skills` symlink). Named `lsdj`, not `co-dj` — the
+    skill covers both solo driving and working beside the human ("Who's
+    driving?" section). Bundled prompting references distill the measured
+    model knowledge: `references/magenta-realtime-prompting.md` (weighted
+    style blends, ADR-0004's tempo-is-not-steerable evidence) and
+    `references/stable-audio-prompting.md` (descriptor stacks, BPM/key
+    adherence, LoRA interplay, timing budgets).
 
 ## What's left (next session)
 
