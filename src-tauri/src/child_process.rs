@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const FORCE_WAIT: Duration = Duration::from_secs(2);
+#[cfg(unix)]
 const TREE_REAP_SWEEPS: usize = 100;
 const DIAGNOSTIC_BYTES: usize = 16 * 1024;
 const DIAGNOSTIC_LINES: usize = 128;
@@ -155,6 +156,7 @@ fn scrub_child_environment(command: &mut Command) {
 }
 
 impl SupervisedChild {
+    #[cfg(unix)]
     pub(crate) fn id(&self) -> u32 {
         self.child.id()
     }
@@ -576,8 +578,10 @@ fn resume_windows_process(process_id: u32) -> io::Result<()> {
     }
     // SAFETY: ownership of the snapshot handle transfers here.
     let snapshot = unsafe { OwnedHandle::from_raw_handle(raw_snapshot as _) };
-    let mut entry = THREADENTRY32::default();
-    entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
     // SAFETY: snapshot and entry pointers are valid.
     let mut has_entry = unsafe { Thread32First(snapshot.as_raw_handle() as _, &mut entry) } != 0;
     while has_entry {
