@@ -2,9 +2,33 @@
  * reducer, so the UI is a function of one state object and the stream's
  * health (buffer level, underruns) is always visible, never inferred. */
 
+export type Mrt2RuntimeDiagnostics = {
+  runtime: string
+  accelerator?: string
+  hardware_qualified?: boolean
+  experimental?: boolean
+  model_revision?: string
+  processor_revision?: string
+  upstream_source_revision?: string
+  torch_version?: string
+  torch_cuda_runtime?: string
+  nvidia_driver?: string | null
+  cuda_device?: string
+  cuda_capability?: number[]
+  cuda_total_memory_bytes?: number
+}
+
 export type ServerEvent =
-  | { event: 'ready'; deck: string; model: string }
-  | { event: 'chunk'; index: number; rtf: number | null }
+  | { event: 'ready'; deck: string; model: string; runtime?: Mrt2RuntimeDiagnostics }
+  | { event: 'warming'; deck: string; model: string }
+  | { event: 'startup_failed'; deck: string; model: string; error: string }
+  | {
+      event: 'chunk'
+      index: number
+      rtf: number | null
+      generation_latency_ms?: number
+      queue_depth?: number | null
+    }
   | {
       event: 'style_applied'
       prompts: StylePrompt[]
@@ -65,6 +89,9 @@ export type DeckState = {
   bufferedSeconds: number
   underruns: number
   generationSpeed: number | null
+  generationLatencyMs: number | null
+  workerQueueDepth: number | null
+  runtimeDiagnostics: Mrt2RuntimeDiagnostics | null
   error: string | null
 }
 
@@ -88,6 +115,9 @@ export const initialDeckState: DeckState = {
   bufferedSeconds: 0,
   underruns: 0,
   generationSpeed: null,
+  generationLatencyMs: null,
+  workerQueueDepth: null,
+  runtimeDiagnostics: null,
   error: null,
 }
 
@@ -132,7 +162,27 @@ function applyServerEvent(state: DeckState, event: ServerEvent): DeckState {
         model: event.model,
         switchingModel: false,
         workerDied: false,
+        runtimeDiagnostics: event.runtime ?? null,
         error: null,
+      }
+    case 'warming':
+      return {
+        ...state,
+        model: event.model,
+        switchingModel: true,
+        workerDied: false,
+        error: null,
+      }
+    case 'startup_failed':
+      return {
+        ...state,
+        model: event.model,
+        switchingModel: false,
+        workerDied: true,
+        generationSpeed: null,
+        generationLatencyMs: null,
+        workerQueueDepth: null,
+        error: event.error,
       }
     case 'model_loading':
       // The old worker (and its stream and prompt) is gone. Adopting the
@@ -148,9 +198,14 @@ function applyServerEvent(state: DeckState, event: ServerEvent): DeckState {
         generationSpeed: null,
       }
     case 'worker_died':
-      return { ...state, workerDied: true }
+      return { ...state, workerDied: true, generationLatencyMs: null, workerQueueDepth: null }
     case 'chunk':
-      return { ...state, generationSpeed: event.rtf }
+      return {
+        ...state,
+        generationSpeed: event.rtf,
+        generationLatencyMs: event.generation_latency_ms ?? null,
+        workerQueueDepth: event.queue_depth ?? null,
+      }
     case 'style_applied':
       return {
         ...state,

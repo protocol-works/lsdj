@@ -18,6 +18,7 @@ import queue
 import time
 
 from .engine import DeckEngine
+from .mrt2 import public_startup_error
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +33,45 @@ def run_deck_worker(
     out_queue,
     engine_factory=DeckEngine,
     clip_queue=None,
+    perform_warmup=True,
 ) -> None:
     logging.basicConfig(level=logging.INFO)
     logger.info("deck %s: loading %s", deck_id, model)
-    engine = engine_factory(model=model)
-    out_queue.put(("status", {"event": "ready", "deck": deck_id, "model": model}))
+    try:
+        engine = engine_factory(model=model)
+        warm_up = getattr(engine, "warm_up", None)
+        if perform_warmup and callable(warm_up):
+            out_queue.put(
+                ("status", {"event": "warming", "deck": deck_id, "model": model})
+            )
+            warm_up()
+        diagnostics = getattr(engine, "diagnostics", None)
+        runtime = diagnostics() if callable(diagnostics) else {}
+    except Exception as error:
+        logger.exception("deck %s: startup failed", deck_id)
+        out_queue.put(
+            (
+                "status",
+                {
+                    "event": "startup_failed",
+                    "deck": deck_id,
+                    "model": model,
+                    "error": public_startup_error(error),
+                },
+            )
+        )
+        return
+    out_queue.put(
+        (
+            "status",
+            {
+                "event": "ready",
+                "deck": deck_id,
+                "model": model,
+                "runtime": runtime,
+            },
+        )
+    )
 
     playing = False
     style: dict | None = None
@@ -189,6 +224,42 @@ def run_deck_worker(
                             },
                         )
                     )
+            elif kind == "reset":
+                reset = getattr(engine, "reset", None)
+                if not callable(reset):
+                    out_queue.put(
+                        (
+                            "status",
+                            {
+                                "event": "error",
+                                "error": "reset is unsupported by this runtime",
+                            },
+                        )
+                    )
+                else:
+                    try:
+                        reset(seed=cmd.get("seed"))
+                    except Exception:
+                        logger.exception("deck %s: reset failed", deck_id)
+                        out_queue.put(
+                            (
+                                "status",
+                                {"event": "error", "error": "reset failed"},
+                            )
+                        )
+                    else:
+                        playing = False
+                        pace_seconds = 0.0
+                        out_queue.put(
+                            (
+                                "status",
+                                {
+                                    "event": "reset",
+                                    "seed": cmd.get("seed"),
+                                    "effective_from_chunk": chunk_index,
+                                },
+                            )
+                        )
             elif kind in ("set_notes", "set_drums"):
                 # Idempotent full-state conditioning (ADR-0023): the payload
                 # replaces the held state wholesale; None returns to masked.
@@ -300,13 +371,23 @@ def run_deck_worker(
             continue
         elapsed = time.monotonic() - started
         out_queue.put(("audio", pcm))
+        try:
+            queue_depth = cmd_queue.qsize()
+        except (AttributeError, NotImplementedError, OSError):
+            queue_depth = None
         out_queue.put(
             (
                 "status",
                 {
                     "event": "chunk",
                     "index": chunk_index,
-                    "rtf": round(1.0 / elapsed, 2) if elapsed > 0 else None,
+                    "generation_latency_ms": round(elapsed * 1000, 2),
+                    "queue_depth": queue_depth,
+                    "rtf": (
+                        round(engine.chunk_seconds / elapsed, 2)
+                        if elapsed > 0
+                        else None
+                    ),
                     "style": style,
                 },
             )

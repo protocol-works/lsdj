@@ -663,7 +663,11 @@ export function useDeck(deckId: DeckId): DeckControls {
     // switch state.
     dispatch({ type: 'socket_open' })
     const unsubscribeStatus = subscribeSidecarStatus(deckId, (status) => {
-      if (status.event === 'model_loading' || status.event === 'worker_died') {
+      if (
+        status.event === 'model_loading' ||
+        status.event === 'worker_died' ||
+        status.event === 'startup_failed'
+      ) {
         channelRef.current?.reset()
         resetStreamMeasurements()
       }

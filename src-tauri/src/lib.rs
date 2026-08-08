@@ -185,11 +185,50 @@ fn start_audio() -> (Host, AudioState, [DeckHandle; lsdj_engine::DECK_COUNT]) {
     (host, state, deck_handles)
 }
 
-/// Spawn one inference sidecar per deck, each fed by its [`DeckHandle`] and
-/// reporting status as a `sidecar://status` Tauri event. Started with the app (the
-/// native cutover default — no flag): a deck whose sidecar fails to spawn closes its
-/// ring and stays silent, like the no-audio-device path, without failing the app. The
-/// returned idle-handle vec is now always empty (kept for the call signature).
+fn sidecar_status_sink(
+    app: tauri::AppHandle,
+    idx: usize,
+    status_feed: analysis::live::AnalysisFeed,
+) -> Box<dyn FnMut(String) + Send> {
+    Box::new(move |json| {
+        use tauri::{Emitter, Manager};
+        if let Some(event) = sidecar::status_event(&json) {
+            if let Some(store) = app.try_state::<store::InterfaceStore>() {
+                match event.as_str() {
+                    "worker_died" | "startup_failed" => store.set_worker_health(idx, true, false),
+                    "model_loading" | "warming" => store.set_worker_health(idx, false, true),
+                    "ready" => store.set_worker_health(idx, false, false),
+                    _ => {}
+                }
+            }
+            if event == "ready" {
+                if let Some(sender) = app.try_state::<style_send::StyleSender>() {
+                    sender.resend(idx);
+                }
+                if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                    notes.reassert_generation(idx);
+                }
+            }
+        }
+        if sidecar::transport_ended(&json) {
+            if let Some(store) = app.try_state::<store::InterfaceStore>() {
+                store.set_playing(idx, false);
+            }
+            let origin = app
+                .try_state::<Host>()
+                .map_or(0.0, |host| host.health().context_frames as f64);
+            status_feed.reset(idx, origin);
+            if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                notes.reset(idx);
+            }
+        }
+        let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
+    })
+}
+
+/// Spawn two MLX processes on macOS, or the #109 one-process/two-state PyTorch
+/// worker on Linux and Windows. A failed launch leaves the corresponding rings
+/// silent without failing the rest of the app.
 fn start_sidecars(
     app: &tauri::AppHandle,
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
@@ -197,86 +236,54 @@ fn start_sidecars(
     feed: &analysis::live::AnalysisFeed,
 ) -> (sidecar::Sidecars, Vec<DeckHandle>) {
     const DECK_IDS: [&str; lsdj_engine::DECK_COUNT] = ["a", "b"];
+    if matches!(
+        sidecar::mrt2_runtime_for_platform().as_deref(),
+        Ok("pytorch-cuda")
+    ) {
+        let models = std::array::from_fn(|_| DEFAULT_MODEL.to_string());
+        let sinks = [
+            sidecar_status_sink(app.clone(), 0, feed.clone()),
+            sidecar_status_sink(app.clone(), 1, feed.clone()),
+        ];
+        return match sidecar::SharedSidecar::spawn(
+            models,
+            handles,
+            sinks,
+            taps.clone(),
+            feed.clone(),
+        ) {
+            Ok(shared) => (sidecar::Sidecars::new_shared(shared), Vec::new()),
+            Err((error, handles)) => {
+                eprintln!("lsdj-app: shared MRT2 sidecar spawn failed: {error}");
+                (
+                    sidecar::Sidecars::new(
+                        (0..lsdj_engine::DECK_COUNT).map(|_| None).collect(),
+                    ),
+                    handles.into_iter().collect(),
+                )
+            }
+        };
+    }
+
     let mut decks = Vec::new();
     for (idx, handle) in handles.into_iter().enumerate() {
-        let app = app.clone();
         let deck_id = DECK_IDS[idx];
-        let status_feed = feed.clone();
         match sidecar::Sidecar::spawn(
             deck_id,
             idx,
             DEFAULT_MODEL,
             handle,
-            move |json| {
-                use tauri::{Emitter, Manager};
-                // Worker health lives in the store too (ADR-0020 phase A): the
-                // same events the webview reducer derives its operability from
-                // write the shell-side truth, so an agent sees a dead or
-                // switching worker without a webview round-trip.
-                if let Some(event) = sidecar::status_event(&json) {
-                    if let Some(store) = app.try_state::<store::InterfaceStore>() {
-                        match event.as_str() {
-                            "worker_died" => store.set_worker_health(idx, true, false),
-                            "model_loading" => store.set_worker_health(idx, false, true),
-                            "ready" => store.set_worker_health(idx, false, false),
-                            _ => {}
-                        }
-                    }
-                    // A fresh worker has no conditioning: push the deck's
-                    // current style blend again (ADR-0020 phase B — the
-                    // shell sender owns the resend the webview used to do), and
-                    // re-send the authored generation params (issue #84) — the
-                    // worker starts at the reference baseline, so this is the
-                    // moment the deck's persisted tuning (re)takes effect, for a
-                    // render on a stopped deck as much as the live stream.
-                    if event == "ready" {
-                        if let Some(sender) = app.try_state::<style_send::StyleSender>() {
-                            sender.resend(idx);
-                        }
-                        if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
-                            notes.reassert_generation(idx);
-                        }
-                    }
-                }
-                // The transport derivation lives in Rust (ADR-0020: the store owns
-                // `playing`): a dying or model-switching worker stops generating, so
-                // the store drops the deck's transport before the event is relayed.
-                // `try_state`: the reader threads start before `setup` manages the
-                // store, and pre-boot status can't concern a playing deck anyway.
-                if sidecar::transport_ended(&json) {
-                    if let Some(store) = app.try_state::<store::InterfaceStore>() {
-                        store.set_playing(idx, false);
-                    }
-                    // The stream is discontinuous: reset the deck's beat analysis
-                    // shell-side (ADR-0025 — estimates never span streams), with
-                    // the engine-frame origin captured now. No webview round-trip.
-                    let origin = app
-                        .try_state::<Host>()
-                        .map_or(0.0, |host| host.health().context_frames as f64);
-                    status_feed.reset(idx, origin);
-                    // Held note steering dies with the stream too (ADR-0023):
-                    // the worker dropped its conditioning, so the shell service
-                    // must drop the matching held state.
-                    if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
-                        notes.reset(idx);
-                    }
-                }
-                let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
-            },
+            sidecar_status_sink(app.clone(), idx, feed.clone()),
             taps.clone(),
             feed.clone(),
         ) {
             Ok(sidecar) => decks.push(Some(sidecar)),
-            Err(e) => {
-                // A failed spawn drops that deck's handle (ring closes); the deck
-                // stays silent, like the no-audio-device path.
-                eprintln!("lsdj-app: deck {deck_id} sidecar spawn failed: {e}");
+            Err(error) => {
+                eprintln!("lsdj-app: deck {deck_id} sidecar spawn failed: {error}");
                 decks.push(None);
             }
         }
     }
-    // Every handle was moved into a sidecar (or dropped on a failed spawn), so no
-    // idle handles remain.
     (sidecar::Sidecars::new(decks), Vec::new())
 }
 
