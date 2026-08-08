@@ -23,8 +23,23 @@ def require(condition: bool, message: str) -> None:
         raise AppImageError(message)
 
 
-def desktop_entries(path: Path) -> dict[str, str]:
-    require(path.is_file() and not path.is_symlink(), f"unsafe desktop entry: {path}")
+def safe_packaged_file(root: Path, path: Path, kind: str) -> Path:
+    """Resolve a regular file without allowing a package-root escape."""
+    root = root.resolve(strict=True)
+    if path.is_symlink():
+        target = path.readlink()
+        require(not target.is_absolute(), f"unsafe {kind}: absolute symlink")
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        raise AppImageError(f"unsafe {kind}: {path}") from None
+    require(resolved.is_file(), f"unsafe {kind}: {path}")
+    return resolved
+
+
+def desktop_entries(root: Path, path: Path) -> dict[str, str]:
+    path = safe_packaged_file(root, path, "desktop entry")
     entries: dict[str, str] = {}
     section = ""
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -77,7 +92,7 @@ def verify_extracted(root: Path, libraries: list[str]) -> dict:
 
     desktop_files = sorted(root.glob("*.desktop"))
     require(len(desktop_files) == 1, "AppImage must contain exactly one desktop entry")
-    desktop = desktop_entries(desktop_files[0])
+    desktop = desktop_entries(root, desktop_files[0])
     require(desktop.get("Type") == "Application", "desktop Type must be Application")
     require(desktop.get("Name") == "LSDJ", "desktop Name must be LSDJ")
     require("lsdj-app" in desktop.get("Exec", ""), "desktop Exec must launch lsdj-app")

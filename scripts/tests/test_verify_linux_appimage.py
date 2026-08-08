@@ -67,6 +67,50 @@ class AppImageLayoutTest(unittest.TestCase):
         ):
             verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
 
+    def test_internal_desktop_symlink_is_accepted(self):
+        desktop = self.root / "lsdj-app.desktop"
+        packaged = self.root / "usr/share/applications/lsdj-app.desktop"
+        packaged.parent.mkdir(parents=True)
+        desktop.replace(packaged)
+        try:
+            desktop.symlink_to(Path("usr/share/applications/lsdj-app.desktop"))
+        except OSError as error:
+            self.skipTest(f"symlinks are unavailable: {error}")
+
+        audit = verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
+
+        self.assertEqual(audit["desktop"]["file"], "lsdj-app.desktop")
+
+    def test_desktop_symlink_cannot_escape_package_root(self):
+        desktop = self.root / "lsdj-app.desktop"
+        outside = self.root.parent / f"{self.root.name}-outside.desktop"
+        desktop.replace(outside)
+        self.addCleanup(outside.unlink, missing_ok=True)
+        try:
+            desktop.symlink_to(outside)
+        except OSError as error:
+            self.skipTest(f"symlinks are unavailable: {error}")
+
+        with self.assertRaisesRegex(
+            verify_linux_appimage.AppImageError, "unsafe desktop entry"
+        ):
+            verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
+
+    def test_absolute_desktop_symlink_is_rejected(self):
+        desktop = self.root / "lsdj-app.desktop"
+        packaged = self.root / "usr/share/applications/lsdj-app.desktop"
+        packaged.parent.mkdir(parents=True)
+        desktop.replace(packaged)
+        try:
+            desktop.symlink_to(packaged.resolve())
+        except OSError as error:
+            self.skipTest(f"symlinks are unavailable: {error}")
+
+        with self.assertRaisesRegex(
+            verify_linux_appimage.AppImageError, "absolute symlink"
+        ):
+            verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
+
 
 if __name__ == "__main__":
     unittest.main()
