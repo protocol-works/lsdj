@@ -49,6 +49,7 @@ mod mcp;
 mod midi;
 mod models;
 mod platform_paths;
+mod runtime_installer;
 mod samples;
 mod settings;
 mod sidecar;

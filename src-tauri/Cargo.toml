@@ -72,15 +72,23 @@ serde_json = "1"
 rmcp = { version = "1.8", default-features = false, features = ["server", "transport-streamable-http-server", "macros", "schemars"] }
 axum = "0.8"
 tokio-util = "0.7.18"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "net"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "time"] }
 schemars = "1"
 rand = "0.10"
-# The MCP `generate_sample` tool proxies the loopback generation server's
-# `/api/generate` from the Rust shell (the webview's HTTP client isn't reachable
-# from a tool). reqwest is the de-facto async Rust HTTP client; loopback is plain
-# HTTP, so default TLS is dropped to keep the dependency lean. Shares axum's
-# hyper/tokio tree.
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# The MCP `generate_sample` proxies the loopback generation server, while the
+# model installer uses the blocking client on its dedicated worker thread.
+# Rustls keeps authenticated HTTPS portable without depending on OpenSSL/curl.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Native, bounded `.tar.gz` extraction and application-controlled SHA-256 checks
+# for downloaded runtime/model artifacts (issue #107). Exact pins make changes
+# to the installer trust boundary explicit in review.
+flate2 = "=1.1.9"
+tar = "=0.4.46"
+# Official uv Windows releases are ZIP archives. Keep extraction native and
+# apply the same path/count/expanded-size policy as the tar.gz installer path.
+zip = { version = "=4.6.1", default-features = false, features = ["deflate"] }
+sha2 = "=0.10.9"
+hex = "=0.4.3"
 # Shell-side track decode (ADR-0030): pure-Rust demux + decode covering the
 # folder browser's extension allowlist (wav/aiff via riff, flac/ogg-vorbis in
 # the defaults, mp3, and m4a via isomp4+aac+alac). The de-facto Rust audio

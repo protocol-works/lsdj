@@ -1,5 +1,133 @@
 {
   "note": "Back on upstream: our MLX LoRA merge-at-load (ADR-0028) landed as PR #57 (2026-07-14), and #65 extended it with per-adapter strength= and step gating. Bump via ADR-0012's upgrade path.",
   "repo": "https://github.com/Stability-AI/stable-audio-3",
-  "commit": "0385302ea26522f00c80392c4b708df5ebf1adf5"
+  "commit": "a0b57f5483c4588f827f3552b7d5c6ca2a9687be",
+  "source": {
+    "url": "https://github.com/Stability-AI/stable-audio-3/archive/a0b57f5483c4588f827f3552b7d5c6ca2a9687be.tar.gz",
+    "sha256": "98e206e061a3b64a4e65f50b2802bdb6965910ac1fab65da919808dfb4497e9f",
+    "size": 50494239,
+    "archiveRoot": "stable-audio-3-a0b57f5483c4588f827f3552b7d5c6ca2a9687be",
+    "maxFiles": 2000,
+    "maxExpandedBytes": 134217728
+  },
+  "runtime": {
+    "requirements": "sa3-requirements.lock",
+    "python": [
+      {
+        "target": "aarch64-apple-darwin",
+        "version": "3.11.13",
+        "url": "https://releases.astral.sh/github/python-build-standalone/releases/download/20251007/cpython-3.11.13%2B20251007-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "78bc6defdc1dac5bf6765c8f938e6849383dbed831ea1e2d11576a4683fb1e8c",
+        "size": 18949778,
+        "archiveRoot": "python",
+        "executable": "bin/python3.11",
+        "maxFiles": 5000,
+        "maxExpandedBytes": 134217728
+      },
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "3.11.13",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20251007/cpython-3.11.13%2B20251007-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "sha256": "43bfc42529843ecd1d9c08c4a239ede348f96ff0acaef2ec24b28dc059f4f0c3",
+        "size": 30157215,
+        "archiveRoot": "python",
+        "executable": "bin/python3.11",
+        "maxFiles": 5000,
+        "maxExpandedBytes": 536870912
+      },
+      {
+        "target": "x86_64-pc-windows-msvc",
+        "version": "3.11.13",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20251007/cpython-3.11.13%2B20251007-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "cde5153f59a67d9e108f2ed964526e9aed100eba180f54bee0496b4fd73a8b29",
+        "size": 25990147,
+        "archiveRoot": "python",
+        "executable": "python.exe",
+        "maxFiles": 5000,
+        "maxExpandedBytes": 536870912
+      }
+    ],
+    "uv": [
+      {
+        "target": "aarch64-apple-darwin",
+        "version": "0.11.7",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-aarch64-apple-darwin.tar.gz",
+        "sha256": "66e37d91f839e12481d7b932a1eccbfe732560f42c1cfb89faddfa2454534ba8",
+        "size": 20839135,
+        "archiveRoot": "uv-aarch64-apple-darwin",
+        "executable": "uv",
+        "maxFiles": 8,
+        "maxExpandedBytes": 67108864
+      },
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "version": "0.11.7",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "6681d691eb7f9c00ac6a3af54252f7ab29ae72f0c8f95bdc7f9d1401c23ea868",
+        "size": 24249861,
+        "archiveRoot": "uv-x86_64-unknown-linux-gnu",
+        "executable": "uv",
+        "maxFiles": 8,
+        "maxExpandedBytes": 67108864
+      },
+      {
+        "target": "x86_64-pc-windows-msvc",
+        "version": "0.11.7",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip",
+        "sha256": "fe0c7815acf4fc45f8a5eff58ed3cf7ae2e15c3cf1dceadbd10c816ec1690cc1",
+        "size": 23572531,
+        "archiveRoot": "uv-x86_64-pc-windows-msvc",
+        "archiveFormat": "zip",
+        "executable": "uv.exe",
+        "maxFiles": 8,
+        "maxExpandedBytes": 67108864
+      }
+    ]
+  },
+  "models": {
+    "repo": "stabilityai/stable-audio-3-optimized",
+    "revision": "6736003cb57d06b7b1fdc36fad31b2a3709e4774",
+    "artifacts": [
+      {
+        "path": "MLX/dit_medium_f16.npz",
+        "sha256": "f9e5647ea3225818657d47d47ae4b34afa29c0568206ca89566c1a758944a38e",
+        "size": 2907300946
+      },
+      {
+        "path": "MLX/dit_sm-music_f16.npz",
+        "sha256": "8ed3f38e2597f361ee675051f1265d9aa2ae2fffce1c61acd2e9fe31e1db1cbc",
+        "size": 919193814
+      },
+      {
+        "path": "MLX/dit_sm-sfx_f16.npz",
+        "sha256": "7e702d2640699a57fe436ca975fda16832040ba568c1e092c2ae826987558118",
+        "size": 919193814
+      },
+      {
+        "path": "MLX/same_l_decoder_f32.npz",
+        "sha256": "84924be2122d3a20fce443f40b782d9cd88e8e73707476326003ac47659a2287",
+        "size": 1704311976
+      },
+      {
+        "path": "MLX/same_l_encoder_f32.npz",
+        "sha256": "c5caafc6bd29fc3d4cb7a08b0d3725041fa2100711f86a4f05d2638c532871d2",
+        "size": 1704313504
+      },
+      {
+        "path": "MLX/same_s_decoder_f32.npz",
+        "sha256": "909928a8e6937c1ebe6ac4b729f0462bd3773704a11ea18278e42671dc69bfe4",
+        "size": 218090820
+      },
+      {
+        "path": "MLX/same_s_encoder_f32.npz",
+        "sha256": "a48f80d81c30d74c45e2a3047082c4891f715e24c44645adb9c1f4f07afdaf0c",
+        "size": 214946620
+      },
+      {
+        "path": "MLX/t5gemma_f16.npz",
+        "sha256": "8deb20489f36d9aec539f26c9c67321f99bc5fe300d470435ed6e76be4f16bbd",
+        "size": 567443068
+      }
+    ]
+  }
 }

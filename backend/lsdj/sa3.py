@@ -138,7 +138,11 @@ def timeout_for(seconds: float) -> float:
 
 def _normalise_arch(machine: str) -> str:
     value = machine.strip().lower()
-    return "arm64" if value in {"arm64", "aarch64"} else value
+    if value in {"arm64", "aarch64"}:
+        return "arm64"
+    if value in {"amd64", "x86_64"}:
+        return "x86_64"
+    return value
 
 
 def select_backend(
@@ -166,18 +170,16 @@ def select_backend(
             raise GenerationUnavailable(
                 "the MLX Stable Audio backend requires Apple Silicon macOS"
             )
-        if chosen is BackendName.TFLITE and platform_name not in {
-            "darwin",
-            "linux",
-            "win32",
-        }:
+        if chosen is BackendName.TFLITE and not (
+            platform_name in {"linux", "win32"} and arch == "x86_64"
+        ):
             raise GenerationUnavailable(
                 f"the TFLite Stable Audio backend does not support {platform_name}/{arch}"
             )
         return chosen
     if platform_name == "darwin" and arch == "arm64":
         return BackendName.MLX
-    if platform_name in {"linux", "win32"}:
+    if platform_name in {"linux", "win32"} and arch == "x86_64":
         return BackendName.TFLITE
     raise GenerationUnavailable(
         f"no Stable Audio backend supports {platform_name}/{arch}"

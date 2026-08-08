@@ -84,6 +84,7 @@ pub(crate) struct SupervisedChild {
 /// arguments, environment, CWD, and stdio stay structured and paths containing
 /// spaces or Unicode pass to the OS unchanged.
 pub(crate) fn spawn_grouped(command: &mut Command) -> io::Result<SupervisedChild> {
+    scrub_child_environment(command);
     #[cfg(unix)]
     {
         spawn_unix(command)
@@ -102,6 +103,54 @@ pub(crate) fn spawn_grouped(command: &mut Command) -> io::Result<SupervisedChild
             exit_status: None,
             tree_cleaned: false,
         })
+    }
+}
+
+/// Remove credentials and interpreter/package-manager injection knobs from all
+/// supervised children. Application-owned values such as `UV_CACHE_DIR` and
+/// `HF_HUB_OFFLINE` remain explicit on the command; ambient user/session values
+/// may not alter executable discovery, dependency resolution, or diagnostics.
+fn scrub_child_environment(command: &mut Command) {
+    const KEYS: &[&str] = &[
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
+        "PYTHONBREAKPOINT",
+        "PYTHONUSERBASE",
+        "PYTHONWARNINGS",
+        "PYTHONPYCACHEPREFIX",
+        "UV_CONFIG_FILE",
+        "UV_PROJECT",
+        "UV_WORKING_DIR",
+        "UV_CONSTRAINT",
+        "UV_BUILD_CONSTRAINT",
+        "UV_OVERRIDE",
+        "UV_EXCLUDE",
+        "UV_FIND_LINKS",
+        "UV_INDEX",
+        "UV_INDEX_URL",
+        "UV_EXTRA_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "UV_INDEX_STRATEGY",
+        "UV_INSECURE_HOST",
+        "UV_KEYRING_PROVIDER",
+        "UV_NO_VERIFY_HASHES",
+        "UV_SYSTEM_PYTHON",
+        "UV_PYTHON",
+        "UV_PYTHON_DOWNLOADS",
+        "PIP_CONFIG_FILE",
+        "PIP_CONSTRAINT",
+        "PIP_REQUIRE_VIRTUALENV",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_TRUSTED_HOST",
+        "PIP_FIND_LINKS",
+    ];
+    for key in KEYS {
+        command.env_remove(key);
     }
 }
 
@@ -163,7 +212,9 @@ impl SupervisedChild {
             if Instant::now() >= deadline {
                 return Ok(Readiness::TimedOut);
             }
-            std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+            std::thread::sleep(
+                POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 
@@ -240,7 +291,9 @@ impl SupervisedChild {
             if Instant::now() >= deadline {
                 return Ok(None);
             }
-            std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+            std::thread::sleep(
+                POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 
@@ -337,7 +390,8 @@ fn spawn_unix(command: &mut Command) -> io::Result<SupervisedChild> {
         // SAFETY: both descriptors are live. CLOEXEC prevents either end leaking
         // into unrelated commands spawned by the host/service.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1 {
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1
+        {
             return Err(io::Error::last_os_error());
         }
     }
@@ -479,7 +533,9 @@ fn spawn_windows(command: &mut Command) -> io::Result<SupervisedChild> {
         return Err(error);
     }
     // SAFETY: both handles are live and owned for the remainder of this scope.
-    if unsafe { AssignProcessToJobObject(job.as_raw_handle() as _, child.as_raw_handle() as _) } == 0 {
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle() as _, child.as_raw_handle() as _) }
+        == 0
+    {
         let error = io::Error::last_os_error();
         let _ = child.kill();
         let _ = child.wait();
@@ -506,11 +562,9 @@ fn resume_windows_process(process_id: u32) -> io::Result<()> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
-    use windows_sys::Win32::System::Threading::{
-        OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
-    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
     // A newly-created suspended process has exactly one thread. Enumerating it
     // is necessary because `std::process::Child` exposes the process handle but
@@ -787,9 +841,7 @@ fn redact_url_credentials(line: &mut String) {
     while let Some(scheme_offset) = line[search_from..].find("://") {
         let credentials_start = search_from + scheme_offset + 3;
         let remainder = &line[credentials_start..];
-        let authority_end = remainder
-            .find(['/', ' ', '\t'])
-            .unwrap_or(remainder.len());
+        let authority_end = remainder.find(['/', ' ', '\t']).unwrap_or(remainder.len());
         let Some(at) = remainder[..authority_end].rfind('@') else {
             search_from = credentials_start + authority_end;
             continue;
@@ -855,7 +907,10 @@ mod tests {
                     return (pids[0], pids[1]);
                 }
             }
-            assert!(Instant::now() < deadline, "helper did not report its process tree");
+            assert!(
+                Instant::now() < deadline,
+                "helper did not report its process tree"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -979,7 +1034,10 @@ mod tests {
         let report = child.shutdown(Duration::from_millis(100)).unwrap();
         assert!(report.forced, "helpers ignore graceful shutdown");
         assert!(report.status.is_some(), "leader should be reaped");
-        assert!(wait_until_gone(child_pid), "child survived explicit shutdown");
+        assert!(
+            wait_until_gone(child_pid),
+            "child survived explicit shutdown"
+        );
         assert!(
             wait_until_gone(grandchild_pid),
             "grandchild survived explicit shutdown"
@@ -1038,7 +1096,10 @@ mod tests {
         assert!(status.success(), "host helper failed: {status}");
         let (child_pid, grandchild_pid) = wait_for_pids(&pid_file);
 
-        assert!(wait_until_gone(child_pid), "child survived abnormal host exit");
+        assert!(
+            wait_until_gone(child_pid),
+            "child survived abnormal host exit"
+        );
         assert!(
             wait_until_gone(grandchild_pid),
             "grandchild survived abnormal host exit"
@@ -1166,5 +1227,52 @@ mod tests {
         assert!(lines[0].bytes().all(|byte| byte == b'x'));
         assert_eq!(lines[1], "next");
         assert_eq!(lines[2], "final-without-newline");
+    }
+
+    #[test]
+    fn supervised_children_scrub_credentials_and_injection_environment() {
+        let mut command = Command::new("unused");
+        for key in [
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "UV_CONFIG_FILE",
+            "UV_OVERRIDE",
+            "UV_INDEX_URL",
+            "PIP_CONFIG_FILE",
+            "PIP_INDEX_URL",
+        ] {
+            command.env(key, "attacker-controlled");
+        }
+        command.env("UV_CACHE_DIR", "app-controlled-cache");
+        command.env("HF_HUB_OFFLINE", "1");
+
+        scrub_child_environment(&mut command);
+        let environment = command.get_envs().collect::<Vec<_>>();
+        for key in [
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "UV_CONFIG_FILE",
+            "UV_OVERRIDE",
+            "UV_INDEX_URL",
+            "PIP_CONFIG_FILE",
+            "PIP_INDEX_URL",
+        ] {
+            assert!(
+                environment
+                    .iter()
+                    .any(|(name, value)| *name == key && value.is_none()),
+                "{key} was not explicitly removed"
+            );
+        }
+        assert!(environment.iter().any(|(name, value)| {
+            *name == "UV_CACHE_DIR" && value == &Some(std::ffi::OsStr::new("app-controlled-cache"))
+        }));
+        assert!(environment.iter().any(|(name, value)| {
+            *name == "HF_HUB_OFFLINE" && value == &Some(std::ffi::OsStr::new("1"))
+        }));
     }
 }

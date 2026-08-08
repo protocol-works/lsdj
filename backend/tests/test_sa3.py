@@ -78,6 +78,11 @@ def _install_interpreter(runtime_dir: pathlib.Path, platform_name: str) -> pathl
         runtime_dir / ".venv", platform=platform_name
     )
     executable.parent.mkdir(parents=True)
+    (runtime_dir / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {sys.base_prefix}\n"
+        "include-system-site-packages = false\n"
+        f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n"
+    )
     if platform_name == sys.platform:
         if os.name == "nt":
             shutil.copyfile(sys.executable, executable)
@@ -143,6 +148,9 @@ def tflite_runtime(tmp_path, monkeypatch):
         )
         monkeypatch.setenv("SA3_HOME", str(selection.checkout))
         monkeypatch.setenv("LSDJ_SA3_BACKEND", "tflite")
+        # The worker tests inject a fully resolved fake runtime so they remain
+        # model-free on every CI host without weakening production's target gate.
+        monkeypatch.setattr(sa3, "resolve_runtime", lambda: selection)
         return selection
 
     return install
@@ -154,7 +162,6 @@ def tflite_runtime(tmp_path, monkeypatch):
         ("darwin", "arm64", BackendName.MLX),
         ("darwin", "aarch64", BackendName.MLX),
         ("linux", "x86_64", BackendName.TFLITE),
-        ("linux", "aarch64", BackendName.TFLITE),
         ("win32", "AMD64", BackendName.TFLITE),
     ],
 )
@@ -168,11 +175,17 @@ def test_backend_override_is_validated():
     assert (
         sa3.select_backend(
             {"LSDJ_SA3_BACKEND": "tflite"},
-            platform_name="darwin",
+            platform_name="linux",
             machine="x86_64",
         )
         is BackendName.TFLITE
     )
+    with pytest.raises(sa3.GenerationUnavailable, match="does not support"):
+        sa3.select_backend(
+            {"LSDJ_SA3_BACKEND": "tflite"},
+            platform_name="darwin",
+            machine="x86_64",
+        )
     with pytest.raises(sa3.GenerationUnavailable, match="requires Apple Silicon"):
         sa3.select_backend(
             {"LSDJ_SA3_BACKEND": "mlx"},
@@ -188,8 +201,9 @@ def test_backend_override_is_validated():
 
 
 def test_unsupported_platform_fails_instead_of_guessing():
-    with pytest.raises(sa3.GenerationUnavailable, match="no Stable Audio backend"):
-        sa3.select_backend({}, platform_name="freebsd", machine="x86_64")
+    for platform_name, machine in (("freebsd", "x86_64"), ("linux", "aarch64")):
+        with pytest.raises(sa3.GenerationUnavailable, match="no Stable Audio backend"):
+            sa3.select_backend({}, platform_name=platform_name, machine=machine)
 
 
 def test_runtime_resolution_uses_windows_venv_layout(tmp_path):
@@ -423,5 +437,7 @@ def test_progress_is_normalized_from_the_official_text_stream(tflite_runtime):
 def test_no_runtime_raises_unavailable(monkeypatch, tmp_path):
     monkeypatch.setenv("LSDJ_SA3_BACKEND", "tflite")
     monkeypatch.setenv("SA3_HOME", str(tmp_path / "missing"))
+    monkeypatch.setattr(sa3, "resolve_runtime", lambda: None)
+    monkeypatch.setattr(sa3, "select_backend", lambda: BackendName.TFLITE)
     with pytest.raises(sa3.GenerationUnavailable, match="tflite"):
         asyncio.run(sa3.generate("anything", 0.5, "sfx"))

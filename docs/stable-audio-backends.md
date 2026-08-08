@@ -7,7 +7,8 @@ LSDJ selects one Stable Audio backend explicitly:
 - Unsupported platforms fail with a diagnostic. They do not silently select a
   different runtime.
 - `LSDJ_SA3_BACKEND=mlx|tflite` is a diagnostic/developer override. The MLX
-  override remains restricted to Apple Silicon.
+  override remains restricted to Apple Silicon; TFLite remains restricted to
+  supported Linux/Windows x64 targets.
 
 Both adapters consume the same `GenerationRequest` contract and share one
 argument translator. A populated control is either forwarded or rejected; it
@@ -88,8 +89,10 @@ control, PCM normalization, exact output validation, corrupt output, progress,
 cancellation, timeouts, missing assets, and the 380-second command contract
 without loading model weights.
 
-This does **not** claim a real model run. Before release, issue #107's secure
-installer must consume the new manifest, and Ubuntu plus Windows hardware runs
-must verify Small/Medium generation, LoRA, cancellation, storage, RAM/CPU use,
-and coexistence with both active MRT2 decks. Partial preview and structured
-progress require a future upstream API; they are reported as limitations today.
+This does **not** claim a real model run. The hardened #107 installer now
+consumes both manifests, verifies every byte, builds the isolated environment,
+warms all three model pairs, and atomically promotes or rolls back the candidate.
+Before release, Ubuntu plus Windows hardware runs must still verify Small/Medium
+generation, LoRA, cancellation, storage, RAM/CPU use, and coexistence with both
+active MRT2 decks. Partial preview and structured progress require a future
+upstream API; they are reported as limitations today.
