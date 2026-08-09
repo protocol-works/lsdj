@@ -181,7 +181,9 @@ class ReleaseArtifactTest(unittest.TestCase):
             )
 
     def test_policy_requires_exact_three_platform_producer_set(self):
-        self.assertEqual(set(release_artifact.PRODUCER_POLICIES), set(REQUIRED_PRODUCERS))
+        self.assertEqual(
+            set(release_artifact.PRODUCER_POLICIES), set(REQUIRED_PRODUCERS)
+        )
 
     def test_draft_release_assets_must_match_exactly(self):
         verified = self.root / "verified"
@@ -363,12 +365,11 @@ class WorkflowContractTest(unittest.TestCase):
         }
         expected_producers = {"macos-arm64", "linux-x64", "windows-x64"}
 
-        producer_jobs = set(
-            re.findall(r"(?m)^  (produce_[a-z]+):$", workflow)
-        )
+        producer_jobs = set(re.findall(r"(?m)^  (produce_[a-z]+):$", workflow))
         self.assertEqual(producer_jobs, expected_jobs)
 
         publisher = workflow[workflow.index("  publish:") :]
+        publisher_needs = set(re.findall(r"(?m)^      - (produce_[a-z]+)$", publisher))
         required_results = set(
             re.findall(r"needs\.(produce_[a-z]+)\.result == 'success'", publisher)
         )
@@ -379,6 +380,7 @@ class WorkflowContractTest(unittest.TestCase):
             re.findall(r"--required-producer ([a-z0-9-]+)", publisher)
         )
 
+        self.assertEqual(publisher_needs, expected_jobs)
         self.assertEqual(required_results, expected_jobs)
         self.assertEqual(downloaded_artifacts, expected_artifacts)
         self.assertEqual(required_producers, expected_producers)
