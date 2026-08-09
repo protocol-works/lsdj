@@ -156,6 +156,45 @@ function Invoke-ExpectedFailure {
     return $process.ExitCode
 }
 
+function New-UninstallerWorkerCopy {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath
+    )
+
+    $workerName = "lsdj-uninstall-worker-$([Guid]::NewGuid().ToString('N')).exe"
+    $workerPath = Join-Path $env:RUNNER_TEMP $workerName
+    Copy-Item -LiteralPath $FilePath -Destination $workerPath
+    return $workerPath
+}
+
+function Invoke-ExpectedUninstallFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $InstallDirectory,
+
+        [string[]] $ArgumentList = @()
+    )
+
+    # NSIS's installed uninstaller is only a self-copy launcher: its exit code
+    # reports whether the temporary worker started, not the worker's result.
+    # Exercise the documented worker form so CI observes the script exit code.
+    # https://nsis.sourceforge.io/Docs/AppendixD.html
+    # `_?=` must remain the final, unquoted command-line argument.
+    $workerPath = New-UninstallerWorkerCopy -FilePath $FilePath
+    try {
+        return Invoke-CheckedProcess `
+            -FilePath $workerPath `
+            -ArgumentList (@($ArgumentList) + "_?=$InstallDirectory") `
+            -ExpectedExitCodes @(2)
+    } finally {
+        Remove-Item -LiteralPath $workerPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Require-InstalledVersion {
     param([string] $Version)
 
@@ -654,7 +693,10 @@ foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
 Start-LifecycleScenario 'reject purge with invalid ownership marker'
 Invoke-CheckedProcess $newer.FullName @('/S')
 [System.IO.File]::WriteAllText($marker, 'foreign-owner')
-Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+Invoke-ExpectedUninstallFailure `
+    -FilePath $uninstaller `
+    -InstallDirectory $dataRoot `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
     throw 'Invalid ownership marker allowed explicit data removal.'
 }
@@ -666,7 +708,10 @@ if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
 Start-LifecycleScenario 'reject purge with NUL-extended ownership marker'
 Invoke-CheckedProcess $newer.FullName @('/S')
 [System.IO.File]::WriteAllBytes($marker, $ownerMarkerWithNul)
-Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+Invoke-ExpectedUninstallFailure `
+    -FilePath $uninstaller `
+    -InstallDirectory $dataRoot `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 $actualNulMarkerHex = [Convert]::ToHexString([System.IO.File]::ReadAllBytes($marker))
 if ($actualNulMarkerHex -cne $ownerMarkerWithNulHex -or
     -not (Test-Path -LiteralPath $dataRoot -PathType Container) -or
@@ -691,7 +736,10 @@ $purgeRootSentinel = Join-Path $purgeRootTarget 'lsdj-app.exe'
 [System.IO.File]::WriteAllText($purgeRootSentinel, 'outside root payload')
 New-Item -ItemType Junction -Path $dataRoot -Target $purgeRootTarget | Out-Null
 $parkedUninstaller = Join-Path $parkedRoot 'uninstall.exe'
-Invoke-ExpectedFailure $parkedUninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+Invoke-ExpectedUninstallFailure `
+    -FilePath $parkedUninstaller `
+    -InstallDirectory $parkedRoot `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 if (([System.IO.File]::ReadAllText($purgeRootSentinel)) -ne 'outside root payload' -or
     -not (Test-Path -LiteralPath $parkedUninstaller -PathType Leaf)) {
     throw 'Purge-time root junction was followed or ordinary uninstall continued after refusal.'
@@ -710,7 +758,10 @@ New-Item -ItemType Directory -Path $purgeMarkerTarget -Force | Out-Null
 $purgeMarkerSentinel = Join-Path $purgeMarkerTarget 'outside.txt'
 [System.IO.File]::WriteAllText($purgeMarkerSentinel, 'outside purge marker')
 New-Item -ItemType Junction -Path $marker -Target $purgeMarkerTarget | Out-Null
-Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+Invoke-ExpectedUninstallFailure `
+    -FilePath $uninstaller `
+    -InstallDirectory $dataRoot `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 if (-not (Test-Path -LiteralPath $purgeMarkerSentinel -PathType Leaf) -or
     -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
     throw 'Explicit purge followed or removed a marker reparse point.'
@@ -725,26 +776,42 @@ Remove-Item -LiteralPath $purgeMarkerTarget -Recurse -Force
 Start-LifecycleScenario 'reject ownership-marker replacement after purge confirmation'
 Invoke-CheckedProcess $newer.FullName @('/S')
 Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
-$racedPurge = Start-Process -FilePath $uninstaller `
-    -ArgumentList @('/S', '/PURGE-LSDJ-DATA', '/LSDJ-CI-PAUSE-BEFORE-PURGE') `
-    -PassThru
-$raceDeadline = [DateTime]::UtcNow.AddSeconds(20)
-while (-not (Test-Path -LiteralPath $ciPurgeReady -PathType Leaf) -and -not $racedPurge.HasExited) {
-    if ([DateTime]::UtcNow -ge $raceDeadline) {
-        $racedPurge.Kill($true)
-        throw 'Timed out waiting for the CI purge synchronization point.'
+$racedPurgeWorker = New-UninstallerWorkerCopy -FilePath $uninstaller
+$racedPurge = $null
+try {
+    $racedPurge = Start-Process -FilePath $racedPurgeWorker `
+        -ArgumentList @(
+            '/S',
+            '/PURGE-LSDJ-DATA',
+            '/LSDJ-CI-PAUSE-BEFORE-PURGE',
+            "_?=$dataRoot"
+        ) `
+        -PassThru
+    $raceDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not (Test-Path -LiteralPath $ciPurgeReady -PathType Leaf) -and
+        -not $racedPurge.HasExited) {
+        if ([DateTime]::UtcNow -ge $raceDeadline) {
+            throw 'Timed out waiting for the CI purge synchronization point.'
+        }
+        Start-Sleep -Milliseconds 100
     }
-    Start-Sleep -Milliseconds 100
+    if ($racedPurge.HasExited) {
+        throw "Purge exited before the marker-replacement test (exit $($racedPurge.ExitCode))."
+    }
+    [System.IO.File]::WriteAllText($marker, 'replaced-after-confirmation')
+    $racedPurge.WaitForExit()
+    if ($racedPurge.ExitCode -ne 2 -or
+        -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
+        throw 'Marker replacement after confirmation did not fail closed.'
+    }
+} finally {
+    if ($null -ne $racedPurge -and -not $racedPurge.HasExited) {
+        $racedPurge.Kill($true)
+        $racedPurge.WaitForExit()
+    }
+    Remove-Item -LiteralPath $racedPurgeWorker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
 }
-if ($racedPurge.HasExited) {
-    throw "Purge exited before the marker-replacement test (exit $($racedPurge.ExitCode))."
-}
-[System.IO.File]::WriteAllText($marker, 'replaced-after-confirmation')
-$racedPurge.WaitForExit()
-if ($racedPurge.ExitCode -eq 0 -or -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
-    throw 'Marker replacement after confirmation did not fail closed.'
-}
-Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
 [System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
 
 # Nested junctions are never traversed for size or removal. Purge refuses the
@@ -757,7 +824,10 @@ $nestedSentinel = Join-Path $nestedTarget 'outside.txt'
 [System.IO.File]::WriteAllText($nestedSentinel, 'outside nested junction')
 $nestedJunction = Join-Path $dataRoot 'data\linked-outside'
 New-Item -ItemType Junction -Path $nestedJunction -Target $nestedTarget | Out-Null
-Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+Invoke-ExpectedUninstallFailure `
+    -FilePath $uninstaller `
+    -InstallDirectory $dataRoot `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 if (-not (Test-Path -LiteralPath $nestedSentinel -PathType Leaf) -or
     -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
     throw 'Explicit purge traversed a nested directory reparse point.'
