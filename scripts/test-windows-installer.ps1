@@ -84,6 +84,33 @@ function Write-CiInstallerTrace {
     }
 }
 
+function Assert-CiInstallerTraceContract {
+    param(
+        [string[]] $Required = @(),
+
+        [string[]] $Forbidden = @()
+    )
+
+    # Signed release installers compile every trace macro to no instructions.
+    if ($RequireSigned) {
+        return
+    }
+
+    $trace = Get-CiInstallerTrace
+    foreach ($needle in $Required) {
+        if (-not $trace.Contains($needle)) {
+            Write-CiInstallerTrace
+            throw "CI installer trace is missing required checkpoint: $needle"
+        }
+    }
+    foreach ($needle in $Forbidden) {
+        if ($trace.Contains($needle)) {
+            Write-CiInstallerTrace
+            throw "CI installer trace reached forbidden checkpoint: $needle"
+        }
+    }
+}
+
 function Invoke-CheckedProcess {
     param(
         [Parameter(Mandatory = $true)]
@@ -142,6 +169,60 @@ function Require-No-Workers {
     $remaining = @(Get-Process -Name 'lsdj-app', 'lsdj_backend' -ErrorAction SilentlyContinue)
     if ($remaining.Count -ne 0) {
         throw "Installer lifecycle left LSDJ processes running: $($remaining.Name -join ', ')"
+    }
+}
+
+function Get-UninstallRegistrySnapshot {
+    $key = Get-Item -LiteralPath $registryKey -ErrorAction Stop
+    $values = foreach ($name in @($key.GetValueNames() | Sort-Object)) {
+        $value = $key.GetValue(
+            $name,
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        if ($value -is [byte[]]) {
+            $value = [Convert]::ToBase64String($value)
+        } elseif ($value -is [string[]]) {
+            $value = $value -join "`0"
+        } else {
+            $value = [string] $value
+        }
+        [ordered]@{
+            Name = $name
+            Kind = [string] ($key.GetValueKind($name))
+            Value = $value
+        }
+    }
+    return (ConvertTo-Json -InputObject @($values) -Compress)
+}
+
+function Get-InstalledStateSnapshot {
+    foreach ($path in @($app, $uninstaller, $marker, $settingsSentinel, $modelSentinel)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Cannot snapshot missing installed state: $path"
+        }
+    }
+    return [ordered]@{
+        App = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash
+        Uninstaller = (Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash
+        Marker = (Get-FileHash -LiteralPath $marker -Algorithm SHA256).Hash
+        Settings = (Get-FileHash -LiteralPath $settingsSentinel -Algorithm SHA256).Hash
+        Model = (Get-FileHash -LiteralPath $modelSentinel -Algorithm SHA256).Hash
+        Registry = (Get-UninstallRegistrySnapshot)
+    }
+}
+
+function Assert-InstalledStateSnapshotUnchanged {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary] $Before
+    )
+
+    $after = Get-InstalledStateSnapshot
+    foreach ($name in $Before.Keys) {
+        if ($after[$name] -cne $Before[$name]) {
+            throw "Rejected installer changed installed state: $name"
+        }
     }
 }
 
@@ -316,15 +397,153 @@ foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
     }
 }
 
-# allowDowngrades=false must reject unattended rollback and leave the newer app.
-Start-LifecycleScenario 'reject unattended downgrade'
-Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+$registrySentinelName = 'LsdjCiPreserve'
+$registrySentinelValue = 'preserve registry metadata'
+New-ItemProperty -LiteralPath $registryKey -Name $registrySentinelName `
+    -Value $registrySentinelValue -PropertyType String -Force | Out-Null
+$registryBaseline = Get-ItemProperty -LiteralPath $registryKey
+
+function Require-RejectedInstallPreservedState {
+    param(
+        [AllowEmptyString()]
+        [string] $ExpectedDisplayVersion = $NewerVersion,
+
+        [switch] $DisplayVersionMissing
+    )
+
+    if (-not (Test-Path -LiteralPath $app -PathType Leaf)) {
+        throw "Rejected installer removed the installed app: $app"
+    }
+    $actualAppVersion = (Get-Item -LiteralPath $app).VersionInfo.ProductVersion
+    if ($actualAppVersion -ne $NewerVersion) {
+        throw "Rejected installer changed app version to $actualAppVersion."
+    }
+
+    $registered = Get-ItemProperty -LiteralPath $registryKey -ErrorAction Stop
+    $displayVersionProperty = $registered.PSObject.Properties['DisplayVersion']
+    if ($DisplayVersionMissing) {
+        if ($null -ne $displayVersionProperty) {
+            throw 'Rejected installer recreated missing DisplayVersion metadata.'
+        }
+    } elseif ($null -eq $displayVersionProperty -or
+        $displayVersionProperty.Value -cne $ExpectedDisplayVersion) {
+        throw "Rejected installer changed DisplayVersion metadata."
+    }
+
+    foreach ($name in @('DisplayName', 'InstallLocation', 'UninstallString', $registrySentinelName)) {
+        if ($registered.$name -cne $registryBaseline.$name) {
+            throw "Rejected installer changed registry metadata: $name"
+        }
+    }
+    foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
+        if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
+            throw "Rejected installer modified app-managed data: $sentinel"
+        }
+    }
+    Require-No-Workers
+}
+
+$forbiddenPostVersionGuardTrace = @(
+    'preinstall: begin',
+    'preinstall: canonical',
+    'preinstall: ready',
+    'postinstall:'
+)
+
+# A same-version unattended reinstall remains supported. Besides exercising the
+# success path, its trace directly proves the pinned plugin reports valid=>1.
+Start-LifecycleScenario 'same-version silent reinstall'
+Invoke-CheckedProcess $newer.FullName @('/S')
+Assert-CiInstallerTraceContract -Required @(
+    "preinstall: installed version=$NewerVersion validity=1",
+    'preinstall: version compare=0',
+    'preinstall: ready',
+    'postinstall: begin'
+) -Forbidden @('abort:')
 Require-InstalledVersion $NewerVersion
 foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
     if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
-        throw "Rejected downgrade modified app-managed data: $sentinel"
+        throw "Same-version reinstall modified app-managed data: $sentinel"
     }
 }
+Require-No-Workers
+
+# allowDowngrades=false must reject unattended rollback and leave the newer app.
+Start-LifecycleScenario 'reject unattended downgrade'
+$rejectedStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S') -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    "preinstall: installed version=$NewerVersion validity=1",
+    'preinstall: version compare=-1',
+    'abort: unattended downgrade'
+) -Forbidden $forbiddenPostVersionGuardTrace
+Require-RejectedInstallPreservedState
+Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
+
+# Explicit update mode must not bypass the unattended downgrade guard.
+Start-LifecycleScenario 'reject unattended downgrade in update mode'
+$rejectedStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S', '/UPDATE') `
+    -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    "preinstall: installed version=$NewerVersion validity=1",
+    'preinstall: version compare=-1',
+    'abort: unattended downgrade'
+) -Forbidden $forbiddenPostVersionGuardTrace
+Require-RejectedInstallPreservedState
+Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
+
+# Passive mode is unattended too, despite not setting NSIS's silent flag.
+Start-LifecycleScenario 'reject passive downgrade'
+$passiveStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/P') -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    'abort: passive install unsupported'
+) -Forbidden @('probe:', 'preinstall:', 'postinstall:')
+Require-RejectedInstallPreservedState
+Assert-InstalledStateSnapshotUnchanged -Before $passiveStateBefore
+
+# Existing install evidence with empty, malformed, or missing version metadata
+# is unsafe. Each refusal must preserve the exact damaged evidence for repair.
+Start-LifecycleScenario 'reject existing install with empty version metadata'
+Set-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value ''
+$rejectedStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S') -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    'abort: installed version missing'
+) -Forbidden $forbiddenPostVersionGuardTrace
+Require-RejectedInstallPreservedState -ExpectedDisplayVersion ''
+Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
+
+Start-LifecycleScenario 'reject existing install with corrupt version metadata'
+$corruptDisplayVersion = 'not-a-semver'
+Set-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value $corruptDisplayVersion
+$rejectedStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S') -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    "preinstall: installed version=$corruptDisplayVersion validity=0",
+    'abort: installed version invalid'
+) -Forbidden @(
+    'preinstall: version compare=',
+    'preinstall: begin',
+    'preinstall: canonical',
+    'preinstall: ready',
+    'postinstall:'
+)
+Require-RejectedInstallPreservedState -ExpectedDisplayVersion $corruptDisplayVersion
+Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
+
+Start-LifecycleScenario 'reject existing install with missing version metadata'
+Remove-ItemProperty -LiteralPath $registryKey -Name DisplayVersion
+$rejectedStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S') -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    'abort: installed version missing'
+) -Forbidden $forbiddenPostVersionGuardTrace
+Require-RejectedInstallPreservedState -DisplayVersionMissing
+Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
+Set-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value $NewerVersion
+Require-InstalledVersion $NewerVersion
 
 if ($RequireSigned) {
     $installedPayloads = @(

@@ -27,11 +27,17 @@ Var LsdjDeleteData
 Var LsdjDeleteFailure
 Var LsdjDataRemovalFailed
 Var LsdjInstallRootState
+Var LsdjInstalledVersion
+Var LsdjInstalledVersionValidity
+Var LsdjExistingInstall
 Var LsdjMarkerSafe
 Var LsdjOwnedRootSafe
+Var LsdjPassiveRequested
+Var LsdjRegistryEvidence
 Var LsdjRootEmpty
 Var LsdjSafeLayout
 Var LsdjTreeSafe
+Var LsdjVersionCompare
 
 ; Unsigned hosted-test installers can leave a narrow control-flow trace when a
 ; silent fail-closed branch returns only NSIS's generic exit code. Production
@@ -72,6 +78,28 @@ Var LsdjTreeSafe
   !macro LSDJ_CI_TRACE MESSAGE
   !macroend
 !endif
+
+; Passive mode reaches Tauri's maintenance page before any installer section,
+; and that page may uninstall an existing NSIS or legacy WiX installation.
+; Reject /P at GUI initialization, before PageReinstall can run. Repeat the
+; same owned command-line check in PREINSTALL for the combined /S /P case,
+; where NSIS does not initialize the GUI.
+!macro LSDJ_REJECT_PASSIVE_MODE
+  StrCpy $LsdjPassiveRequested 0
+  ClearErrors
+  ${GetOptions} $CMDLINE "/P" $LsdjPassiveRequested
+  ${IfNot} ${Errors}
+    !insertmacro LSDJ_CI_TRACE "abort: passive install unsupported"
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+  ClearErrors
+!macroend
+
+!define MUI_CUSTOMFUNCTION_GUIINIT LsdjRejectPassiveMode
+Function LsdjRejectPassiveMode
+  !insertmacro LSDJ_REJECT_PASSIVE_MODE
+FunctionEnd
 
 ; GetFullPathNameW is lexical and does not traverse the candidate. The exact
 ; canonical target must equal canonical LOCALAPPDATA + \LSDJ; callers then
@@ -775,21 +803,66 @@ Function un.LsdjDeleteTreeWithoutLinks
 FunctionEnd
 
 !macro NSIS_HOOK_PREINSTALL
-  ; Tauri's own silent downgrade check aborts with exit code 0, and its version
-  ; comparison register is not stable by the time sections run. Re-read the
-  ; installed version and compare independently once Tauri's VERSION and
-  ; UNINSTKEY defines are available. /UPDATE retains Tauri's native flow.
+  !insertmacro LSDJ_REJECT_PASSIVE_MODE
+
+  ; Tauri's native silent downgrade check aborts with exit code 0 and leaves its
+  ; comparison in a volatile register. Re-establish install evidence and
+  ; validate DisplayVersion independently before root checks or payload writes.
   ${If} ${Silent}
-  ${AndIf} $UpdateMode != 1
-    ReadRegStr $R6 SHCTX "${UNINSTKEY}" "DisplayVersion"
-    ${If} $R6 != ""
-      nsis_tauri_utils::SemverCompare "${VERSION}" $R6
-      Pop $R7
-      !insertmacro LSDJ_CI_TRACE "preinstall: installed version=$R6 compare=$R7"
-      ${If} $R7 = -1
-        !insertmacro LSDJ_CI_TRACE "abort: silent downgrade"
+    StrCpy $LsdjExistingInstall 0
+    StrCpy $LsdjInstalledVersion ""
+
+    ClearErrors
+    ReadRegStr $LsdjInstalledVersion SHCTX "${UNINSTKEY}" "DisplayVersion"
+    ${IfNot} ${Errors}
+      StrCpy $LsdjExistingInstall 1
+    ${EndIf}
+    ClearErrors
+    ReadRegStr $LsdjRegistryEvidence SHCTX "${UNINSTKEY}" "UninstallString"
+    ${IfNot} ${Errors}
+      StrCpy $LsdjExistingInstall 1
+    ${EndIf}
+    ClearErrors
+    ReadRegStr $LsdjRegistryEvidence SHCTX "${UNINSTKEY}" "DisplayName"
+    ${IfNot} ${Errors}
+      StrCpy $LsdjExistingInstall 1
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+      StrCpy $LsdjExistingInstall 1
+    ${EndIf}
+    ClearErrors
+
+    ${If} $LsdjExistingInstall = 1
+      ${If} $LsdjInstalledVersion = ""
+        !insertmacro LSDJ_CI_TRACE "abort: installed version missing"
+        SetErrorLevel 2
+        Abort "Unable to verify the existing LSDJ version."
+      ${EndIf}
+
+      ; nsis-tauri-utils orders any valid SemVer above an invalid one. Comparing
+      ; against a deliberately invalid sentinel distinguishes invalid metadata
+      ; from a legitimate upgrade, which SemverCompare alone otherwise cannot.
+      nsis_tauri_utils::SemverCompare "$LsdjInstalledVersion" "lsdj-invalid-semver"
+      Pop $LsdjInstalledVersionValidity
+      !insertmacro LSDJ_CI_TRACE "preinstall: installed version=$LsdjInstalledVersion validity=$LsdjInstalledVersionValidity"
+      ${If} $LsdjInstalledVersionValidity != 1
+        !insertmacro LSDJ_CI_TRACE "abort: installed version invalid"
+        SetErrorLevel 2
+        Abort "Unable to verify the existing LSDJ version."
+      ${EndIf}
+
+      nsis_tauri_utils::SemverCompare "${VERSION}" "$LsdjInstalledVersion"
+      Pop $LsdjVersionCompare
+      !insertmacro LSDJ_CI_TRACE "preinstall: version compare=$LsdjVersionCompare"
+      ${If} $LsdjVersionCompare = -1
+        !insertmacro LSDJ_CI_TRACE "abort: unattended downgrade"
         SetErrorLevel 2
         Abort "Refusing to downgrade LSDJ from a newer installed version."
+      ${ElseIf} $LsdjVersionCompare != 0
+      ${AndIf} $LsdjVersionCompare != 1
+        !insertmacro LSDJ_CI_TRACE "abort: invalid version comparison"
+        SetErrorLevel 2
+        Abort "Unable to compare the installed LSDJ version safely."
       ${EndIf}
     ${EndIf}
   ${EndIf}

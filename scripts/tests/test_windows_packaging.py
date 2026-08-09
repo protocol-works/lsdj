@@ -102,17 +102,57 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertNotIn("CreateDirectory", probe)
         preinstall_end = hooks.index("!macroend", preinstall_start)
         preinstall = hooks[preinstall_start:preinstall_end]
+        self.assertIn("!define MUI_CUSTOMFUNCTION_GUIINIT LsdjRejectPassiveMode", hooks)
+        passive_start = hooks.index("Function LsdjRejectPassiveMode")
+        passive_end = hooks.index("FunctionEnd", passive_start)
+        passive_callback = hooks[passive_start:passive_end]
+        self.assertIn("!insertmacro LSDJ_REJECT_PASSIVE_MODE", passive_callback)
+        passive_macro_start = hooks.index("!macro LSDJ_REJECT_PASSIVE_MODE")
+        passive_macro_end = hooks.index("!macroend", passive_macro_start)
+        passive_macro = hooks[passive_macro_start:passive_macro_end]
+        self.assertIn(
+            '${GetOptions} $CMDLINE "/P" $LsdjPassiveRequested', passive_macro
+        )
+        self.assertIn("SetErrorLevel 2", passive_macro)
+        self.assertIn("Quit", passive_macro)
+        self.assertLess(passive_end, preinstall_start)
+        self.assertTrue(
+            preinstall.lstrip().startswith(
+                "!macro NSIS_HOOK_PREINSTALL\n  !insertmacro LSDJ_REJECT_PASSIVE_MODE"
+            )
+        )
         self.assertIn("${If} ${Silent}", preinstall)
-        self.assertIn("${AndIf} $UpdateMode != 1", preinstall)
+        self.assertNotIn("$PassiveMode", preinstall)
+        self.assertNotIn("${AndIf} $UpdateMode != 1", preinstall)
         self.assertIn(
-            'ReadRegStr $R6 SHCTX "${UNINSTKEY}" "DisplayVersion"',
+            'ReadRegStr $LsdjInstalledVersion SHCTX "${UNINSTKEY}" "DisplayVersion"',
             preinstall,
         )
         self.assertIn(
-            'nsis_tauri_utils::SemverCompare "${VERSION}" $R6',
+            'ReadRegStr $LsdjRegistryEvidence SHCTX "${UNINSTKEY}" "UninstallString"',
             preinstall,
         )
-        self.assertIn("${If} $R7 = -1", preinstall)
+        self.assertIn(
+            '${FileExists} "$INSTDIR\\${MAINBINARYNAME}.exe"',
+            preinstall,
+        )
+        self.assertIn(
+            'nsis_tauri_utils::SemverCompare "$LsdjInstalledVersion" "lsdj-invalid-semver"',
+            preinstall,
+        )
+        self.assertIn(
+            'nsis_tauri_utils::SemverCompare "${VERSION}" "$LsdjInstalledVersion"',
+            preinstall,
+        )
+        self.assertIn("${If} $LsdjVersionCompare = -1", preinstall)
+        self.assertIn("${ElseIf} $LsdjVersionCompare != 0", preinstall)
+        self.assertIn("${AndIf} $LsdjVersionCompare != 1", preinstall)
+        self.assertIn("abort: invalid version comparison", preinstall)
+        version_guard = preinstall[
+            : preinstall.index("Call LsdjCanonicalDataRootIsValid")
+        ]
+        self.assertNotIn("$R6", version_guard)
+        self.assertNotIn("$R7", version_guard)
         self.assertIn("SetErrorLevel 2", preinstall)
         self.assertLess(
             preinstall.index("SetErrorLevel 2"),
@@ -174,6 +214,14 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("Get-CiInstallerTrace", lifecycle)
         self.assertIn("Write-CiInstallerTrace", lifecycle)
         self.assertIn("CI installer trace:", lifecycle)
+        self.assertIn("function Get-InstalledStateSnapshot", lifecycle)
+        self.assertIn("function Get-UninstallRegistrySnapshot", lifecycle)
+        self.assertIn("function Assert-CiInstallerTraceContract", lifecycle)
+        self.assertIn(
+            "Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256", lifecycle
+        )
+        self.assertIn("Assert-InstalledStateSnapshotUnchanged", lifecycle)
+        self.assertIn("-ExpectedExitCodes @(2)", lifecycle)
         for contract in (
             "pre-existing empty LocalAppData root",
             "foreign LocalAppData root",
@@ -183,9 +231,21 @@ class WindowsPackagingContractTest(unittest.TestCase):
             "NUL-extended ownership marker",
             "marker-replacement test",
             "nested directory reparse point",
+            "reject unattended downgrade in update mode",
+            "reject passive downgrade",
+            "same-version silent reinstall",
+            "reject existing install with empty version metadata",
+            "reject existing install with corrupt version metadata",
+            "reject existing install with missing version metadata",
         ):
             self.assertIn(contract, lifecycle)
         self.assertIn("function Start-LifecycleScenario", lifecycle)
+        self.assertIn("preinstall: version compare=-1", lifecycle)
+        self.assertIn("preinstall: version compare=0", lifecycle)
+        self.assertIn("validity=1", lifecycle)
+        self.assertIn("validity=0", lifecycle)
+        self.assertIn("abort: passive install unsupported", lifecycle)
+        self.assertIn("Require-No-Workers", lifecycle)
         self.assertIn(
             "adopt recognized markerless legacy layout",
             lifecycle,
