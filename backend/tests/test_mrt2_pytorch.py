@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 
 import numpy as np
 import pytest
@@ -90,43 +91,49 @@ class FakeAutoModel:
 def make_engine(*, cuda=True):
     model = FakeModel()
     auto_model = FakeAutoModel(model)
-    snapshots = []
-
-    def snapshot_download(**kwargs):
-        snapshots.append(kwargs)
-        return f"/verified/{kwargs['repo_id']}@{kwargs['revision']}"
-
     bindings = PytorchBindings(
         torch=FakeTorch(cuda),
         auto_model=auto_model,
-        snapshot_download=snapshot_download,
         versions={
             "torch": "2.12.1",
             "transformers": "5.8.0",
             "huggingface_hub": "1.5.0",
         },
     )
+    runtime_root = Path(tempfile.mkdtemp(prefix="lsdj-mrt2-local-"))
+    model_root = runtime_root / "models" / "mrt2_small"
+    processor_root = runtime_root / "models" / "musiccoca"
+    model_root.mkdir(parents=True)
+    processor_root.mkdir(parents=True)
+    for filename in ("config.json", "model.safetensors", "modeling_magenta_rt2.py"):
+        (model_root / filename).write_bytes(b"fixture")
+    for filename in (
+        "mel_params.npz",
+        "music_encoder.pt",
+        "quantizer.pt",
+        "spm.model",
+        "text_encoder.pt",
+    ):
+        (processor_root / filename).write_bytes(b"fixture")
     selection = RuntimeSelection("pytorch-cuda", "linux", "cuda", False, True)
     engine = PytorchMrt2Engine(
         selection=selection,
         bindings=bindings,
-        cache_root=Path("/cache"),
+        cache_root=runtime_root,
     )
-    return engine, model, auto_model, snapshots
+    return engine, model, auto_model, runtime_root
 
 
 def test_loads_only_pinned_local_snapshots():
-    engine, model, auto_model, snapshots = make_engine()
-    assert len(snapshots) == 2
-    assert all(call["local_files_only"] is True for call in snapshots)
-    assert all(len(call["revision"]) == 40 for call in snapshots)
+    engine, model, auto_model, runtime_root = make_engine()
+    assert auto_model.calls[0][0] == runtime_root / "models" / "mrt2_small"
     assert auto_model.calls[0][1] == {
         "trust_remote_code": True,
         "dtype": "bf16",
         "local_files_only": True,
     }
     assert model.processor_path[1] == "cuda"
-    assert engine.diagnostics()["upstream_source_revision"].startswith("6d076baa")
+    assert engine.diagnostics()["remote_code_revision"].startswith("7037d995")
 
 
 def test_cuda_is_mandatory_and_never_falls_back_to_cpu():

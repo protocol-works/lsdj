@@ -103,7 +103,7 @@ impl AppPaths {
         self.legacy_data.as_deref()
     }
 
-    fn backend_env(&self) -> [(OsString, OsString); 9] {
+    pub(crate) fn backend_env(&self) -> [(OsString, OsString); 9] {
         [
             pair("LSDJ_CONFIG_HOME", &self.config),
             pair("LSDJ_DATA_HOME", &self.data),
@@ -178,9 +178,15 @@ fn resolve(platform: Platform, native: NativeDirs) -> AppPaths {
             )
         }
     };
+    let sa3_home = match platform {
+        Platform::MacOs => assets.join("stable-audio-3"),
+        Platform::Windows | Platform::Linux => {
+            crate::managed_runtime::service_root(&assets, crate::managed_runtime::Service::Sa3)
+        }
+    };
     AppPaths {
         magenta_base: assets.clone(),
-        sa3_home: assets.join("stable-audio-3"),
+        sa3_home,
         loras_home: assets.join("sa3-loras"),
         config,
         data,
@@ -391,10 +397,7 @@ mod tests {
     fn macos_preserves_existing_user_visible_locations() {
         let roots = resolve(Platform::MacOs, native("/Users/DJ Name"));
         assert_eq!(roots.data, Path::new("/Users/DJ Name/Documents/LSDJ"));
-        assert_eq!(
-            roots.assets,
-            Path::new("/Users/DJ Name/data base/LSDJ")
-        );
+        assert_eq!(roots.assets, Path::new("/Users/DJ Name/data base/LSDJ"));
         assert_eq!(
             roots.config,
             Path::new("/Users/DJ Name/config base/works.protocol.lsdj")
@@ -404,7 +407,9 @@ mod tests {
     #[test]
     fn windows_roots_are_non_roaming_shallow_and_unicode_safe() {
         let roots = resolve(Platform::Windows, native(r"C:\Users\Zoë 王"));
-        let base = Path::new(r"C:\Users\Zoë 王").join("local data").join("LSDJ");
+        let base = Path::new(r"C:\Users\Zoë 王")
+            .join("local data")
+            .join("LSDJ");
         assert_eq!(roots.config, base.join("config"));
         assert_eq!(roots.data, base.join("data"));
         assert_eq!(roots.cache, base.join("cache"));
@@ -502,10 +507,8 @@ mod tests {
 
     #[test]
     fn failed_migration_keeps_the_legacy_directory_active() {
-        let root = std::env::temp_dir().join(format!(
-            "lsdj-path-migrate-failure-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("lsdj-path-migrate-failure-{}", std::process::id()));
         let old = root.join("legacy").join("models");
         let blocked_parent = root.join("blocked");
         let new = blocked_parent.join("models");

@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "python": [
+      {
+        "target":"x86_64-unknown-linux-gnu",
+        "version":"3.12.13",
+        "url":"https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.12.13%2B20260807-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "size":34163738,
+        "sha256":"506191be3ee7bd190a8834dcdc1b3bc70aab50608deccc711935aa007239cabd",
+        "archiveRoot":"python",
+        "executable":"bin/python3",
+        "maxFiles":12000,
+        "maxExpandedBytes":536870912
+      },
+      {
+        "target":"x86_64-pc-windows-msvc",
+        "version":"3.12.13",
+        "url":"https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.12.13%2B20260807-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "size":21962247,
+        "sha256":"18bcc65b17921806b72cdc88bcf000bf67a2c99a8fc381fe1629f2b9ba56858d",
+        "archiveRoot":"python",
+        "executable":"python.exe",
+        "maxFiles":12000,
+        "maxExpandedBytes":536870912
+      }
+    ],
+    "uv": [
+      {
+        "target":"x86_64-unknown-linux-gnu","version":"0.11.7",
+        "url":"https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-unknown-linux-gnu.tar.gz",
+        "size":24249861,"sha256":"6681d691eb7f9c00ac6a3af54252f7ab29ae72f0c8f95bdc7f9d1401c23ea868",
+        "archiveRoot":"uv-x86_64-unknown-linux-gnu","executable":"uv","maxFiles":8,"maxExpandedBytes":67108864
+      },
+      {
+        "target":"x86_64-pc-windows-msvc","version":"0.11.7",
+        "url":"https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip",
+        "size":23572531,"sha256":"fe0c7815acf4fc45f8a5eff58ed3cf7ae2e15c3cf1dceadbd10c816ec1690cc1",
+        "archiveRoot":"uv-x86_64-pc-windows-msvc","archiveFormat":"zip","executable":"uv.exe","maxFiles":8,"maxExpandedBytes":67108864
+      }
+    ],
+    "locks": {
+      "x86_64-unknown-linux-gnu":"4749398e83c72359f04081f6c0090461cec823a67845766410b7b49ae55b1785",
+      "x86_64-pc-windows-msvc":"63c86af3d4ee0efe70318539272288cb193a38a7af4096ae7c12ec2c48e5b7dc"
+    },
+    "wheelManifestSha256":"e7717a1b7b77dfc1b4497fc375e595c5fa8786005451da087b0d49a84b27ceac"
+  },
+  "models": {
+    "mrt2_small": {
+      "repository": "magenta-community/magenta-realtime-2-small",
+      "revision": "7037d99551c84ac5c6afb7f1a5e58c65e7233dbb",
+      "files": [
+        {"path":"aoti.py","size":5953,"sha256":"52056e706de328df3a12637b359ce349bacdfb9793cc57ddcc756e62e4b66c86"},
+        {"path":"codec_shapes.json","size":2824,"sha256":"5df62019bd7c0f7428b34005b7de2691e8396989d98b6a295948655f13d410f5"},
+        {"path":"config.json","size":6151,"sha256":"88100af0e4a9bcb8462ce1145d902983cbdcd5ac8b9ade496aca1ad6d42109c8"},
+        {"path":"configuration_magenta_rt2.py","size":4085,"sha256":"9fdbd0564174b1f7a7b71735ab310ecd64846a08d2d006becf77301b13a1190e"},
+        {"path":"cudagraph.py","size":8624,"sha256":"68f53fe2b8578f37a6730e2c78622712b099d8d31014b946a08ab86fca15be3f"},
+        {"path":"depthformer.py","size":17995,"sha256":"36e10c6206b66992ae75c94c0f4859007e6deb8a4f7a451dee20736e358b13a7"},
+        {"path":"layers.py","size":14432,"sha256":"ea328a1f4c9a8ed2cbdabe801e5f976f2437ea8cf6c4978dcbcf09558b4644ef"},
+        {"path":"model.safetensors","size":1128837704,"sha256":"da0146d5c442f16006fde3721f7ce6584e4c8f96024887a990f36bac46a625f5"},
+        {"path":"modeling_magenta_rt2.py","size":26862,"sha256":"ea3bfbc9e998de706f36c956a8e59ea4f6313663279d5e814934e1e5668336fb"},
+        {"path":"musiccoca.py","size":8064,"sha256":"b134f8db41ef0212929fc6377812b961dcf042a0cf4aa8344a9640796635625b"},
+        {"path":"processing_musiccoca.py","size":3154,"sha256":"8293875ebac4221dcfcbfe4c795302fcf9c5360c43fb609729cb170e1199a1ef"},
+        {"path":"spectrostream.py","size":14917,"sha256":"0cd124454bda9a1ee01c33077e6c506a65e827d87b4ef01c481b86776001dfbe"}
+      ]
+    },
+    "mrt2_base": {
+      "repository": "magenta-community/magenta-realtime-2",
+      "revision": "92087988d05d0fe38b11f021f0b0d00a75afb86b",
+      "files": [
+        {"path":"aoti.py","size":5953,"sha256":"52056e706de328df3a12637b359ce349bacdfb9793cc57ddcc756e62e4b66c86"},
+        {"path":"codec_shapes.json","size":2824,"sha256":"5df62019bd7c0f7428b34005b7de2691e8396989d98b6a295948655f13d410f5"},
+        {"path":"config.json","size":6153,"sha256":"8c89a1cfe10e9f4618aded3f29d64a49aefd51e0bafd9a1aac0b26a5628e7530"},
+        {"path":"configuration_magenta_rt2.py","size":4085,"sha256":"9fdbd0564174b1f7a7b71735ab310ecd64846a08d2d006becf77301b13a1190e"},
+        {"path":"cudagraph.py","size":8624,"sha256":"68f53fe2b8578f37a6730e2c78622712b099d8d31014b946a08ab86fca15be3f"},
+        {"path":"depthformer.py","size":17995,"sha256":"36e10c6206b66992ae75c94c0f4859007e6deb8a4f7a451dee20736e358b13a7"},
+        {"path":"layers.py","size":14432,"sha256":"ea328a1f4c9a8ed2cbdabe801e5f976f2437ea8cf6c4978dcbcf09558b4644ef"},
+        {"path":"model.safetensors","size":9836752784,"sha256":"045ac86f5be520d37020c94ef13cad3a84e336f18d82166748fd6b36a305540e"},
+        {"path":"modeling_magenta_rt2.py","size":26862,"sha256":"ea3bfbc9e998de706f36c956a8e59ea4f6313663279d5e814934e1e5668336fb"},
+        {"path":"musiccoca.py","size":8064,"sha256":"b134f8db41ef0212929fc6377812b961dcf042a0cf4aa8344a9640796635625b"},
+        {"path":"processing_musiccoca.py","size":3154,"sha256":"8293875ebac4221dcfcbfe4c795302fcf9c5360c43fb609729cb170e1199a1ef"},
+        {"path":"spectrostream.py","size":14917,"sha256":"0cd124454bda9a1ee01c33077e6c506a65e827d87b4ef01c481b86776001dfbe"}
+      ]
+    }
+  },
+  "processor": {
+    "repository": "magenta-community/magenta-rt-musiccoca-torch",
+    "revision": "236c488e38aa98643805514996934d705668298b",
+    "files": [
+      {"path":"mel_params.npz","size":526388,"sha256":"8dbeb3747e1ad349c771f6bed5b1600f2be6fb361d82e996bc992d8d7e061d97"},
+      {"path":"music_encoder.pt","size":371441867,"sha256":"97af5b160739e7699c67217049e5c35d9fa95a9abaa19debc0c52ea46c0ca8de"},
+      {"path":"quantizer.pt","size":72678385,"sha256":"090e8ebab0a817d21833ca048a6ab9c3782c51890068d85d9fb14115aa1d79cf"},
+      {"path":"spm.model","size":517448,"sha256":"ff325a99b61ba5726cf6437cde6eefbb633dbaa363a684f7a97ed99b55202cca"},
+      {"path":"text_encoder.pt","size":419819353,"sha256":"d23093557e151d9cf9bdea5320434b5d5f441386d870577fc741ec5609ba5618"}
+    ]
+  }
+}

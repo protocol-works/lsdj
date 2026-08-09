@@ -20,6 +20,12 @@ path = "src/main.rs"
 # runtime and startup must resolve it from Contents/Resources. Developer builds
 # omit the feature and retain the uv-based source-tree commands.
 bundled-backend = []
+# Linux and Windows packages never consult developer tooling.  They resolve a
+# hash-verified, atomically promoted service manifest under app-owned storage.
+managed-runtime = []
+# Compatibility name used by the Windows packaging slice.  Keep one policy in
+# Rust even while the stacked shipping PRs converge on the canonical name.
+managed-backend = ["managed-runtime"]
 
 # The cargo WORKSPACE. The app is the root package; the audio engine is a member
 # library crate so it stays headless-testable (`cargo test -p lsdj-engine`)

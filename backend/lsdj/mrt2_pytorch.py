@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import math
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +48,6 @@ from .mrt2 import (
     MODEL_SNAPSHOTS,
     PROCESSOR_SNAPSHOT,
     PYTORCH_CUDA_RUNTIME,
-    UPSTREAM_SOURCE,
     RuntimeSelection,
     RuntimeUnavailable,
 )
@@ -59,7 +59,6 @@ MAX_SEED = (1 << 63) - 1
 class PytorchBindings:
     torch: Any
     auto_model: Any
-    snapshot_download: Any
     versions: dict[str, str]
 
 
@@ -75,7 +74,6 @@ def load_bindings() -> PytorchBindings:
 
     try:
         import torch
-        from huggingface_hub import snapshot_download
         from transformers import AutoModel
     except ImportError as error:
         raise RuntimeUnavailable(
@@ -85,7 +83,6 @@ def load_bindings() -> PytorchBindings:
     return PytorchBindings(
         torch=torch,
         auto_model=AutoModel,
-        snapshot_download=snapshot_download,
         versions={
             "torch": _package_version("torch"),
             "transformers": _package_version("transformers"),
@@ -109,6 +106,38 @@ def _driver_version(torch: Any) -> str | None:
     major = value // 1000
     minor = (value % 1000) // 10
     return f"{major}.{minor}"
+
+
+def _verified_local_directory(root: Path, child: Path, required: tuple[str, ...]) -> Path:
+    """Reject links/reparse escapes before Transformers imports remote code."""
+
+    try:
+        canonical_root = root.resolve(strict=True)
+        canonical_child = child.resolve(strict=True)
+        root_link = root.is_symlink() or (
+            hasattr(os.path, "isjunction") and os.path.isjunction(root)
+        )
+        child_link = child.is_symlink() or (
+            hasattr(os.path, "isjunction") and os.path.isjunction(child)
+        )
+        if root_link or child_link or not child.is_dir():
+            raise RuntimeUnavailable("managed MRT2 snapshot is not a regular directory")
+        canonical_child.relative_to(canonical_root)
+        for filename in required:
+            artifact = child / filename
+            artifact_link = artifact.is_symlink() or (
+                hasattr(os.path, "isjunction") and os.path.isjunction(artifact)
+            )
+            if artifact_link or not artifact.is_file():
+                raise RuntimeUnavailable(
+                    f"managed MRT2 snapshot is missing regular artifact {filename!r}"
+                )
+            artifact.resolve(strict=True).relative_to(canonical_child)
+    except (OSError, ValueError) as error:
+        raise RuntimeUnavailable(
+            "the managed MRT2 snapshot escapes its verified service generation"
+        ) from error
+    return canonical_child
 
 
 class PytorchMrt2Engine:
@@ -147,28 +176,26 @@ class PytorchMrt2Engine:
                     "LSDJ_ASSETS_HOME is missing; the native host must supply the "
                     "app-owned model root"
                 )
-            cache = assets / "mrt2-pytorch" / "huggingface"
+            runtime_root = assets / "backend" / "services" / "mrt2" / "current"
         else:
-            cache = cache_root
+            runtime_root = cache_root
         model_pin = MODEL_SNAPSHOTS[model]
-        try:
-            model_path = self._bindings.snapshot_download(
-                repo_id=model_pin["repository"],
-                revision=model_pin["revision"],
-                cache_dir=str(cache),
-                local_files_only=True,
-            )
-            processor_path = self._bindings.snapshot_download(
-                repo_id=PROCESSOR_SNAPSHOT["repository"],
-                revision=PROCESSOR_SNAPSHOT["revision"],
-                cache_dir=str(cache),
-                local_files_only=True,
-            )
-        except Exception as error:
-            raise RuntimeUnavailable(
-                "the pinned MRT2 model or MusicCoCa snapshot is missing or corrupt; "
-                "install/repair it through LSDJ's model manager"
-            ) from error
+        model_path = _verified_local_directory(
+            runtime_root,
+            runtime_root / "models" / model,
+            ("config.json", "model.safetensors", "modeling_magenta_rt2.py"),
+        )
+        processor_path = _verified_local_directory(
+            runtime_root,
+            runtime_root / "models" / "musiccoca",
+            (
+                "mel_params.npz",
+                "music_encoder.pt",
+                "quantizer.pt",
+                "spm.model",
+                "text_encoder.pt",
+            ),
+        )
 
         # `trust_remote_code` is safe only because model_path resolves the exact
         # installer-verified revision above.  Never pass a mutable repository ID.
@@ -440,7 +467,10 @@ class PytorchMrt2Engine:
             "model_revision": self._model_pin["revision"],
             "processor_repository": PROCESSOR_SNAPSHOT["repository"],
             "processor_revision": PROCESSOR_SNAPSHOT["revision"],
-            "upstream_source_revision": UPSTREAM_SOURCE["revision"],
+            "remote_code_repository": self._model_pin["repository"],
+            "remote_code_revision": self._model_pin["revision"],
+            "processor_repository": PROCESSOR_SNAPSHOT["repository"],
+            "processor_revision": PROCESSOR_SNAPSHOT["revision"],
             "torch_version": self._bindings.versions["torch"],
             "transformers_version": self._bindings.versions["transformers"],
             "huggingface_hub_version": self._bindings.versions["huggingface_hub"],

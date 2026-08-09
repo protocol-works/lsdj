@@ -89,7 +89,10 @@ impl PcmTaps {
         // so the restart hung holding the deck-slot mutex.
         let channel = slot.lock().unwrap_or_else(|p| p.into_inner()).clone();
         if let Some(channel) = channel {
-            if channel.send(InvokeResponseBody::Raw(bytes.to_vec())).is_err() {
+            if channel
+                .send(InvokeResponseBody::Raw(bytes.to_vec()))
+                .is_err()
+            {
                 *slot.lock().unwrap_or_else(|p| p.into_inner()) = None;
             }
         }
@@ -375,7 +378,9 @@ fn start_reader(
             // we asked it to stop (a clean shutdown / model switch).
             *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = None;
             if !stop_for_reader.load(Ordering::Acquire) {
-                on_status(format!("{{\"event\":\"worker_died\",\"deck\":\"{deck_label}\"}}"));
+                on_status(format!(
+                    "{{\"event\":\"worker_died\",\"deck\":\"{deck_label}\"}}"
+                ));
             }
             ReaderExit { handle, on_status }
         })
@@ -855,7 +860,12 @@ impl Drop for Sidecar {
         // first; this also tells a healthy Python worker to stop cleanly. Then
         // kill the whole process group so a `uv run` wrapper cannot leave that
         // worker alive holding the peer socket open.
-        if let Some(writer) = self.control.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(writer) = self
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
         if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
@@ -907,29 +917,44 @@ fn accept_with_timeout(
 /// build on this, so the resolution lives in one place — a download is NOT a
 /// deck, so it must not inherit `--deck`/`--model`/`--port`.
 pub fn sidecar_base_command() -> io::Result<Command> {
+    #[cfg(feature = "managed-runtime")]
+    {
+        let paths = crate::platform_paths::get();
+        return crate::managed_runtime::resolve(
+            paths.assets(),
+            crate::managed_runtime::Service::Mrt2,
+        )
+        .and_then(|resolved| resolved.into_command([], paths.backend_env()))
+        .map_err(io::Error::other);
+    }
+
     // A distributable app sets this to the exact bundled executable during
     // Tauri setup. Keep it as an OsString and pass it directly to Command so an
     // app copied into a path containing spaces still works.
+    #[cfg(not(feature = "managed-runtime"))]
     if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
         return Ok(Command::new(program));
     }
 
-    let overridden = std::env::var("LSDJ_SIDECAR_CMD");
-    let spec = overridden
-        .clone()
-        .unwrap_or_else(|_| "uv run python -m lsdj.sidecar".to_string());
-    let mut parts = spec.split_whitespace();
-    let program = parts
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_SIDECAR_CMD"))?;
-    let mut cmd = Command::new(program);
-    cmd.args(parts);
-    if overridden.is_err() {
-        // The default `uv run` needs the backend project dir as its CWD. A packaged
-        // build returned through LSDJ_BACKEND_BIN above and never reaches this path.
-        cmd.current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
+    #[cfg(not(feature = "managed-runtime"))]
+    {
+        let overridden = std::env::var("LSDJ_SIDECAR_CMD");
+        let spec = overridden
+            .clone()
+            .unwrap_or_else(|_| "uv run python -m lsdj.sidecar".to_string());
+        let mut parts = spec.split_whitespace();
+        let program = parts
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_SIDECAR_CMD"))?;
+        let mut cmd = Command::new(program);
+        cmd.args(parts);
+        if overridden.is_err() {
+            // The default `uv run` needs the backend project dir as its CWD. A packaged
+            // build returned through LSDJ_BACKEND_BIN above and never reaches this path.
+            cmd.current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
+        }
+        Ok(cmd)
     }
-    Ok(cmd)
 }
 
 /// Runtime selected by the native platform.  The value is always sent over the
@@ -968,10 +993,7 @@ pub fn mrt2_runtime_for_platform() -> io::Result<String> {
 pub fn transport_ended(status_json: &str) -> bool {
     matches!(
         status_event(status_json).as_deref(),
-        Some("worker_died")
-            | Some("startup_failed")
-            | Some("model_loading")
-            | Some("stopped")
+        Some("worker_died") | Some("startup_failed") | Some("model_loading") | Some("stopped")
     )
 }
 
@@ -1055,14 +1077,20 @@ mod tests {
         assert!(transport_ended(
             r#"{"event":"startup_failed","deck":"a","error":"CUDA unavailable"}"#
         ));
-        assert!(transport_ended(r#"{"event":"model_loading","deck":"a","model":"mrt2_base"}"#));
+        assert!(transport_ended(
+            r#"{"event":"model_loading","deck":"a","model":"mrt2_base"}"#
+        ));
         // The worker halting itself (a generation failure) ends the transport
         // too — missing it wedged the play button behind a stale store.
-        assert!(transport_ended(r#"{"event":"stopped","reason":"generation failed"}"#));
+        assert!(transport_ended(
+            r#"{"event":"stopped","reason":"generation failed"}"#
+        ));
         // Everything else — including the events of a healthy stream — is not a
         // transport signal, and neither is garbage. A plain error is NOT a
         // stop: the worker survives bad payloads without ending the stream.
-        assert!(!transport_ended(r#"{"event":"ready","deck":"a","model":"mrt2_small"}"#));
+        assert!(!transport_ended(
+            r#"{"event":"ready","deck":"a","model":"mrt2_small"}"#
+        ));
         assert!(!transport_ended(r#"{"event":"chunk","index":3,"rtf":1.2}"#));
         assert!(!transport_ended(r#"{"event":"error","error":"boom"}"#));
         assert!(!transport_ended("not json"));
@@ -1228,10 +1256,8 @@ s.sendall(struct.pack('<BI', 2, len(b)) + b)
 while True:
     time.sleep(60)
 "#;
-        let tmp = std::env::temp_dir().join(format!(
-            "lsdj-sidecar-lifecycle-{}",
-            std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("lsdj-sidecar-lifecycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let python = tmp.join("sidecar.py");
@@ -1285,7 +1311,10 @@ while True:
             false
         };
 
-        assert!(saw_ready("model_a"), "first child should report ready with model_a");
+        assert!(
+            saw_ready("model_a"),
+            "first child should report ready with model_a"
+        );
         sidecar.restart("model_b").expect("restart");
         assert!(
             saw_ready("model_b"),
@@ -1297,7 +1326,8 @@ while True:
             "a deliberate model switch must not emit worker_died"
         );
         assert!(
-            log.iter().any(|s| s.contains("model_loading") && s.contains("model_b")),
+            log.iter()
+                .any(|s| s.contains("model_loading") && s.contains("model_b")),
             "the switch should emit model_loading for the new model"
         );
         drop(log);
@@ -1349,7 +1379,10 @@ while True:
                     libc::kill(pid, libc::SIGKILL);
                 }
             }
-            assert!(gone, "Python sidecar child {pid} survived process-group teardown");
+            assert!(
+                gone,
+                "Python sidecar child {pid} survived process-group teardown"
+            );
         }
         std::env::remove_var("LSDJ_SIDECAR_CMD");
         let _ = std::fs::remove_dir_all(&tmp);

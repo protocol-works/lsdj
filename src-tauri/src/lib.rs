@@ -45,6 +45,7 @@ mod decode;
 mod generation;
 mod library;
 mod loras;
+mod managed_runtime;
 mod mcp;
 mod midi;
 mod models;
@@ -58,6 +59,9 @@ mod store;
 mod style;
 mod style_send;
 mod watcher;
+
+#[cfg(all(feature = "bundled-backend", feature = "managed-runtime"))]
+compile_error!("bundled-backend and managed-runtime are mutually exclusive");
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
 /// `DEFAULT_MODEL`).
@@ -256,9 +260,7 @@ fn start_sidecars(
             Err((error, handles)) => {
                 eprintln!("lsdj-app: shared MRT2 sidecar spawn failed: {error}");
                 (
-                    sidecar::Sidecars::new(
-                        (0..lsdj_engine::DECK_COUNT).map(|_| None).collect(),
-                    ),
+                    sidecar::Sidecars::new((0..lsdj_engine::DECK_COUNT).map(|_| None).collect()),
                     handles.into_iter().collect(),
                 )
             }
@@ -399,8 +401,9 @@ fn reopen_main(
     } else {
         (None, None)
     };
-    let stream = engine_device::open_main_stream(selector(main_name), master_consumer, cue_consumer)
-        .map_err(|e| e.to_string())?;
+    let stream =
+        engine_device::open_main_stream(selector(main_name), master_consumer, cue_consumer)
+            .map_err(|e| e.to_string())?;
     if !host.install_master_ring(master_ring) {
         return Err(ENGINE_BUSY.into());
     }
@@ -424,8 +427,8 @@ fn reopen_main(
 /// switch never interrupt the audience's master.
 fn reopen_cue_split(host: &Host, audio: &AudioState, cue_name: &str) -> Result<(), String> {
     let (cue_ring, cue_consumer) = host.new_output_ring();
-    let stream =
-        engine_device::open_cue_stream(selector(cue_name), cue_consumer).map_err(|e| e.to_string())?;
+    let stream = engine_device::open_cue_stream(selector(cue_name), cue_consumer)
+        .map_err(|e| e.to_string())?;
     if !host.install_cue_ring(cue_ring) {
         return Err(ENGINE_BUSY.into());
     }
@@ -449,7 +452,11 @@ fn set_main_device(
     app: tauri::AppHandle,
     name: String,
 ) -> Result<(), String> {
-    let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let cue_name = audio
+        .cue_name
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     reopen_main(&host, &audio, &name, &cue_name)?;
     *audio.main_name.lock().unwrap_or_else(|p| p.into_inner()) = name.clone();
     // Persistence follows ownership (ADR-0020 phase A): a successful switch
@@ -472,7 +479,11 @@ fn set_cue_device(
     app: tauri::AppHandle,
     name: String,
 ) -> Result<(), String> {
-    let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let main_name = audio
+        .main_name
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     let was_combined = {
         let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner());
         // Re-selecting the already-active cue device would tear down and rebuild
@@ -507,7 +518,11 @@ fn set_cue_device(
         }
     }
     *audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = name.clone();
-    let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let main_name = audio
+        .main_name
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     settings::update(&app, |s| s.cue_device = name.clone());
     store.set_output_devices(main_name, name);
     Ok(())
@@ -556,8 +571,10 @@ pub fn run() {
                 let cue = &shell_settings.cue_device;
                 match reopen_main(&host, &audio_state, main, cue) {
                     Ok(()) => {
-                        *audio_state.main_name.lock().unwrap_or_else(|p| p.into_inner()) =
-                            main.clone();
+                        *audio_state
+                            .main_name
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner()) = main.clone();
                         if !is_combined(main, cue) {
                             match reopen_cue_split(&host, &audio_state, cue) {
                                 Ok(()) => {
@@ -571,13 +588,15 @@ pub fn run() {
                                 ),
                             }
                         } else {
-                            *audio_state.cue_name.lock().unwrap_or_else(|p| p.into_inner()) =
-                                cue.clone();
+                            *audio_state
+                                .cue_name
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner()) = cue.clone();
                         }
                     }
-                    Err(e) => eprintln!(
-                        "lsdj-app: persisted main device '{main}' not applied: {e}"
-                    ),
+                    Err(e) => {
+                        eprintln!("lsdj-app: persisted main device '{main}' not applied: {e}")
+                    }
                 }
             }
             // The per-deck analysis PCM taps (gap 1): the sidecars tee model PCM
@@ -907,7 +926,9 @@ mod tests {
     #[test]
     fn bundled_backend_lives_under_the_tauri_resource_dir() {
         assert_eq!(
-            bundled_backend_path(std::path::Path::new("/Applications/LSDJ.app/Contents/Resources")),
+            bundled_backend_path(std::path::Path::new(
+                "/Applications/LSDJ.app/Contents/Resources"
+            )),
             std::path::Path::new(
                 "/Applications/LSDJ.app/Contents/Resources/lsdj_backend/lsdj_backend"
             )

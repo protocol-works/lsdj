@@ -68,6 +68,87 @@ pub(crate) fn client() -> Result<Client, String> {
         .map_err(|error| format!("cannot create HTTPS client: {error}"))
 }
 
+/// Fetch a small HTTPS resource (metadata or an immutable text/config file)
+/// with the same redirect, cancellation, response, and body-stall policy as
+/// artifact downloads. The caller supplies a strict maximum; the response is
+/// never written or parsed after that bound is crossed.
+pub(crate) fn fetch_bytes_bounded<F: Fn() -> bool>(
+    client: &Client,
+    url: &str,
+    bearer_token: Option<&str>,
+    max_bytes: u64,
+    is_cancelled: F,
+) -> Result<Vec<u8>, String> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|error| format!("resource URL is invalid: {error}"))?;
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("resource URL must be credential-free HTTPS".into());
+    }
+    if max_bytes == 0 {
+        return Err("resource byte bound must be non-zero".into());
+    }
+    if is_cancelled() {
+        return Err("cancelled".into());
+    }
+    let mut request = client.get(parsed);
+    if let Some(token) = bearer_token.filter(|token| !token.is_empty()) {
+        request = request.bearer_auth(token);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start resource transfer runtime: {error}"))?;
+    runtime.block_on(async {
+        let mut response = wait_for_progress(
+            request.send(),
+            &is_cancelled,
+            tokio::time::Instant::now() + DOWNLOAD_RESPONSE_TIMEOUT,
+            "resource response headers timed out",
+        )
+        .await?
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| format!("resource download failed: {error}"))?;
+        if response.url().scheme() != "https" {
+            return Err("resource response did not use HTTPS".into());
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > max_bytes)
+        {
+            return Err("resource response exceeds its byte bound".into());
+        }
+        let mut bytes = Vec::new();
+        let mut idle_deadline = tokio::time::Instant::now() + DOWNLOAD_READ_IDLE_TIMEOUT;
+        loop {
+            let chunk = wait_for_progress(
+                response.chunk(),
+                &is_cancelled,
+                idle_deadline,
+                "resource response body stalled",
+            )
+            .await?
+            .map_err(|error| format!("cannot read resource response: {error}"))?;
+            let Some(chunk) = chunk else { break };
+            if chunk.is_empty() {
+                continue;
+            }
+            idle_deadline = tokio::time::Instant::now() + DOWNLOAD_READ_IDLE_TIMEOUT;
+            let total = bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or("resource byte count overflow")?;
+            if total as u64 > max_bytes {
+                return Err("resource response exceeds its byte bound".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if is_cancelled() {
+            return Err("cancelled".into());
+        }
+        Ok(bytes)
+    })
+}
+
 /// Download to a sibling `.part`, checking the expected byte count and digest
 /// while streaming. A previously verified destination is reused, which makes a
 /// retry after interruption deterministic without trusting a partial file.

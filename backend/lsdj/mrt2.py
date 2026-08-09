@@ -24,10 +24,12 @@ RUNTIME_CHOICES = (AUTO_RUNTIME, MLX_RUNTIME, PYTORCH_CUDA_RUNTIME)
 PYTORCH_HARDWARE_QUALIFIED = False
 UNVERIFIED_OPT_IN = "LSDJ_ALLOW_UNVERIFIED_MRT2_CUDA"
 
-UPSTREAM_SOURCE = {
+ADAPTER_REFERENCE = {
     "repository": "https://github.com/multimodalart/magenta-realtime-torch.git",
     "revision": "6d076baa3df3b10448876c400521a015a5137c59",
     "license": "Apache-2.0",
+    "credit": "Apolinario",
+    "role": "implementation reference; not executed by LSDJ",
 }
 MODEL_SNAPSHOTS = {
     "mrt2_base": {
@@ -200,7 +202,10 @@ def runtime_manifest() -> dict[str, object]:
         "cpu_fallback": False,
         "topology": "shared-worker-two-state",
         "topology_implemented": True,
-        "source": dict(UPSTREAM_SOURCE),
+        "adapter_reference": dict(ADAPTER_REFERENCE),
+        "executable_remote_code": {
+            name: dict(pin) for name, pin in MODEL_SNAPSHOTS.items()
+        },
         "models": {name: dict(pin) for name, pin in MODEL_SNAPSHOTS.items()},
         "processor": dict(PROCESSOR_SNAPSHOT),
         "runtime_candidate": dict(RUNTIME_CANDIDATE),

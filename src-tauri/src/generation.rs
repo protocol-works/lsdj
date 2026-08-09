@@ -13,6 +13,7 @@
 
 use std::io;
 use std::net::{TcpListener, TcpStream};
+#[cfg(not(feature = "managed-runtime"))]
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
@@ -112,32 +113,52 @@ impl Drop for GenerationServer {
 /// `LSDJ_GENERATION_CMD` and defaults to `uv run python -m lsdj.controller`.
 /// `--port` is always appended.
 pub fn generation_command(port: u16) -> io::Result<Command> {
+    #[cfg(feature = "managed-runtime")]
+    {
+        let paths = crate::platform_paths::get();
+        return crate::managed_runtime::resolve(
+            paths.assets(),
+            crate::managed_runtime::Service::Sa3,
+        )
+        .and_then(|resolved| {
+            resolved.into_command(
+                ["--port".into(), port.to_string().into()],
+                paths.backend_env(),
+            )
+        })
+        .map_err(io::Error::other);
+    }
+
     // The release bundle shares one frozen dependency tree with the deck
     // sidecars. Its dispatcher needs an explicit mode because both CLIs accept
     // `--port`; the exact OsString also preserves paths containing spaces.
+    #[cfg(not(feature = "managed-runtime"))]
     if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
         let mut cmd = Command::new(program);
         cmd.args(["--generation-server", "--port", &port.to_string()]);
         return Ok(cmd);
     }
 
-    let overridden = std::env::var("LSDJ_GENERATION_CMD");
-    let spec = overridden
-        .clone()
-        .unwrap_or_else(|_| "uv run python -m lsdj.controller".to_string());
-    let mut parts = spec.split_whitespace();
-    let program = parts.next().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_GENERATION_CMD")
-    })?;
-    let mut cmd = Command::new(program);
-    cmd.args(parts);
-    cmd.args(["--port", &port.to_string()]);
-    if overridden.is_err() {
-        // The default `uv run` needs the backend project dir as its CWD. A packaged
-        // build returned through LSDJ_BACKEND_BIN above and never reaches this path.
-        cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
+    #[cfg(not(feature = "managed-runtime"))]
+    {
+        let overridden = std::env::var("LSDJ_GENERATION_CMD");
+        let spec = overridden
+            .clone()
+            .unwrap_or_else(|_| "uv run python -m lsdj.controller".to_string());
+        let mut parts = spec.split_whitespace();
+        let program = parts.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_GENERATION_CMD")
+        })?;
+        let mut cmd = Command::new(program);
+        cmd.args(parts);
+        cmd.args(["--port", &port.to_string()]);
+        if overridden.is_err() {
+            // The default `uv run` needs the backend project dir as its CWD. A packaged
+            // build returned through LSDJ_BACKEND_BIN above and never reaches this path.
+            cmd.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"));
+        }
+        Ok(cmd)
     }
-    Ok(cmd)
 }
 
 #[cfg(test)]
@@ -152,7 +173,10 @@ mod tests {
 
         // The override is split into program + args with `--port` always appended.
         let cmd = generation_command(5123).unwrap();
-        let argv: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let argv: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(cmd.get_program().to_string_lossy(), "echo");
         assert_eq!(argv, ["hi", "--port", "5123"]);
 
