@@ -57,8 +57,10 @@ if (Test-Path -LiteralPath $dataRoot) {
 
 $app = Join-Path $dataRoot 'lsdj-app.exe'
 $uninstaller = Join-Path $dataRoot 'uninstall.exe'
+$marker = Join-Path $dataRoot '.lsdj-data-root'
 $startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\LSDJ\LSDJ.lnk'
 $registryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\LSDJ'
+$ciPurgeReady = Join-Path $env:TEMP 'lsdj-ci-before-purge.ready'
 
 function Invoke-CheckedProcess {
     param(
@@ -115,6 +117,115 @@ function Require-No-Workers {
     }
 }
 
+function Remove-ReparseDirectoryEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $entry = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -or -not $entry.PSIsContainer) {
+        throw "Refusing to unlink an entry that is not a directory reparse point: $Path"
+    }
+    [System.IO.Directory]::Delete($entry.FullName)
+}
+
+function New-RecognizedLsdjLayout {
+    New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+    foreach ($name in @('config', 'data', 'cache', 'assets', 'staging')) {
+        New-Item -ItemType Directory -Path (Join-Path $dataRoot $name) -Force | Out-Null
+    }
+}
+
+# An empty foreign root is still not evidence of ownership. This also proves
+# the hook's hidden root probe runs before Tauri's path-creating SetOutPath:
+# otherwise fresh and pre-existing empty roots would be indistinguishable.
+New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+if ((Test-Path -LiteralPath $marker) -or (Test-Path -LiteralPath $app)) {
+    throw 'Installer claimed a pre-existing empty LocalAppData root.'
+}
+Remove-Item -LiteralPath $dataRoot -Recurse -Force
+
+# A foreign pre-existing directory must never be claimed just because it has the
+# expected basename. The failed installer must not add a marker or payload.
+New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+$foreignSentinel = Join-Path $dataRoot 'foreign-owner.txt'
+[System.IO.File]::WriteAllText($foreignSentinel, 'not LSDJ')
+Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+if (-not (Test-Path -LiteralPath $foreignSentinel -PathType Leaf) -or
+    (Test-Path -LiteralPath $marker) -or
+    (Test-Path -LiteralPath $app)) {
+    throw 'Installer claimed or modified a pre-existing foreign LocalAppData root.'
+}
+Remove-Item -LiteralPath $dataRoot -Recurse -Force
+
+# A root junction must be rejected before either its target or an ownership
+# marker is touched.
+$rootJunctionTarget = Join-Path $env:RUNNER_TEMP 'lsdj-root-junction-target'
+New-Item -ItemType Directory -Path $rootJunctionTarget -Force | Out-Null
+$rootJunctionSentinel = Join-Path $rootJunctionTarget 'outside.txt'
+[System.IO.File]::WriteAllText($rootJunctionSentinel, 'outside root')
+New-Item -ItemType Junction -Path $dataRoot -Target $rootJunctionTarget | Out-Null
+Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+if (-not (Test-Path -LiteralPath $rootJunctionSentinel -PathType Leaf) -or
+    (Test-Path -LiteralPath (Join-Path $rootJunctionTarget '.lsdj-data-root'))) {
+    throw 'Installer followed or marked a LocalAppData root junction.'
+}
+Remove-ReparseDirectoryEntry $dataRoot
+Remove-Item -LiteralPath $rootJunctionTarget -Recurse -Force
+
+# Even an otherwise recognizable legacy layout is unsafe when its marker entry
+# is a junction/reparse point.
+New-RecognizedLsdjLayout
+$installMarkerTarget = Join-Path $env:RUNNER_TEMP 'lsdj-install-marker-target'
+New-Item -ItemType Directory -Path $installMarkerTarget -Force | Out-Null
+$installMarkerSentinel = Join-Path $installMarkerTarget 'outside.txt'
+[System.IO.File]::WriteAllText($installMarkerSentinel, 'outside marker')
+New-Item -ItemType Junction -Path $marker -Target $installMarkerTarget | Out-Null
+Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+if (-not (Test-Path -LiteralPath $installMarkerSentinel -PathType Leaf) -or
+    (Test-Path -LiteralPath $app)) {
+    throw 'Installer followed or accepted a marker reparse point.'
+}
+Remove-ReparseDirectoryEntry $marker
+Remove-Item -LiteralPath $dataRoot -Recurse -Force
+Remove-Item -LiteralPath $installMarkerTarget -Recurse -Force
+
+# A recognizable five-root shell is not safe to adopt if anything nested below
+# it is a junction. Installation must not mark or write through the link.
+New-RecognizedLsdjLayout
+$installNestedTarget = Join-Path $env:RUNNER_TEMP 'lsdj-install-nested-target'
+New-Item -ItemType Directory -Path $installNestedTarget -Force | Out-Null
+$installNestedSentinel = Join-Path $installNestedTarget 'outside.txt'
+[System.IO.File]::WriteAllText($installNestedSentinel, 'outside nested install')
+$installNestedJunction = Join-Path $dataRoot 'assets\linked-outside'
+New-Item -ItemType Junction -Path $installNestedJunction -Target $installNestedTarget | Out-Null
+Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+if (-not (Test-Path -LiteralPath $installNestedSentinel -PathType Leaf) -or
+    (Test-Path -LiteralPath $marker) -or
+    (Test-Path -LiteralPath $app)) {
+    throw 'Installer adopted or followed a nested directory reparse point.'
+}
+Remove-ReparseDirectoryEntry $installNestedJunction
+Remove-Item -LiteralPath $dataRoot -Recurse -Force
+Remove-Item -LiteralPath $installNestedTarget -Recurse -Force
+
+# The one markerless migration case is the complete five-root layout created by
+# platform_paths.rs. It may be adopted, upgraded, and preserved normally.
+New-RecognizedLsdjLayout
+$legacySentinel = Join-Path $dataRoot 'data\recognized-layout.txt'
+[System.IO.File]::WriteAllText($legacySentinel, 'recognized LSDJ layout')
+Invoke-CheckedProcess $older.FullName @('/S')
+if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+    throw 'Installer did not establish ownership for a recognized LSDJ layout.'
+}
+Invoke-CheckedProcess $uninstaller @('/S')
+if (-not (Test-Path -LiteralPath $legacySentinel -PathType Leaf)) {
+    throw 'Default uninstall did not preserve an adopted LSDJ layout.'
+}
+Remove-Item -LiteralPath $dataRoot -Recurse -Force
+
 # Initial per-user install: version metadata, Start menu integration, and the
 # marker that scopes the optional destructive uninstall.
 Invoke-CheckedProcess $older.FullName @('/S')
@@ -122,7 +233,7 @@ Require-InstalledVersion $OlderVersion
 if (-not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
     throw "Start menu shortcut is missing: $startMenuShortcut"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $dataRoot '.lsdj-data-root') -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
     throw 'Installer did not create the data-root ownership marker.'
 }
 
@@ -179,12 +290,98 @@ foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
 # An invalid marker must make explicit automation fail closed while preserving
 # the exact root. Restore the installer-owned marker only after proving refusal.
 Invoke-CheckedProcess $newer.FullName @('/S')
-[System.IO.File]::WriteAllText((Join-Path $dataRoot '.lsdj-data-root'), 'foreign-owner')
+[System.IO.File]::WriteAllText($marker, 'foreign-owner')
 Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
     throw 'Invalid ownership marker allowed explicit data removal.'
 }
-[System.IO.File]::WriteAllText((Join-Path $dataRoot '.lsdj-data-root'), 'works.protocol.lsdj')
+[System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
+
+# Replace the entire owned root with a junction immediately before explicit
+# purge. The purge-time root junction check must stop before even Tauri's narrow
+# payload deletion, and
+# the outside target must remain byte-for-byte untouched.
+Invoke-CheckedProcess $newer.FullName @('/S')
+$parkedRoot = Join-Path $env:RUNNER_TEMP 'lsdj-owned-root-parked'
+Move-Item -LiteralPath $dataRoot -Destination $parkedRoot
+$purgeRootTarget = Join-Path $env:RUNNER_TEMP 'lsdj-purge-root-target'
+New-Item -ItemType Directory -Path $purgeRootTarget -Force | Out-Null
+$purgeRootMarker = Join-Path $purgeRootTarget '.lsdj-data-root'
+$purgeRootSentinel = Join-Path $purgeRootTarget 'lsdj-app.exe'
+[System.IO.File]::WriteAllText($purgeRootMarker, 'works.protocol.lsdj')
+[System.IO.File]::WriteAllText($purgeRootSentinel, 'outside root payload')
+New-Item -ItemType Junction -Path $dataRoot -Target $purgeRootTarget | Out-Null
+$parkedUninstaller = Join-Path $parkedRoot 'uninstall.exe'
+Invoke-ExpectedFailure $parkedUninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+if (([System.IO.File]::ReadAllText($purgeRootSentinel)) -ne 'outside root payload' -or
+    -not (Test-Path -LiteralPath $parkedUninstaller -PathType Leaf)) {
+    throw 'Purge-time root junction was followed or ordinary uninstall continued after refusal.'
+}
+Remove-ReparseDirectoryEntry $dataRoot
+Remove-Item -LiteralPath $purgeRootTarget -Recurse -Force
+Move-Item -LiteralPath $parkedRoot -Destination $dataRoot
+
+# A marker junction is rejected both as ownership evidence and as a tree entry;
+# its outside target must remain untouched.
+Invoke-CheckedProcess $newer.FullName @('/S')
+[System.IO.File]::Delete($marker)
+$purgeMarkerTarget = Join-Path $env:RUNNER_TEMP 'lsdj-purge-marker-target'
+New-Item -ItemType Directory -Path $purgeMarkerTarget -Force | Out-Null
+$purgeMarkerSentinel = Join-Path $purgeMarkerTarget 'outside.txt'
+[System.IO.File]::WriteAllText($purgeMarkerSentinel, 'outside purge marker')
+New-Item -ItemType Junction -Path $marker -Target $purgeMarkerTarget | Out-Null
+Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+if (-not (Test-Path -LiteralPath $purgeMarkerSentinel -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
+    throw 'Explicit purge followed or removed a marker reparse point.'
+}
+Remove-ReparseDirectoryEntry $marker
+[System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
+Remove-Item -LiteralPath $purgeMarkerTarget -Recurse -Force
+
+# Unsigned CI installers pause after the initial ownership/size decision and
+# core binary removal. Replace the marker during that window; the immediate
+# destructive revalidation must detect the change and preserve the root.
+Invoke-CheckedProcess $newer.FullName @('/S')
+Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
+$racedPurge = Start-Process -FilePath $uninstaller `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA', '/LSDJ-CI-PAUSE-BEFORE-PURGE') `
+    -PassThru
+$raceDeadline = [DateTime]::UtcNow.AddSeconds(20)
+while (-not (Test-Path -LiteralPath $ciPurgeReady -PathType Leaf) -and -not $racedPurge.HasExited) {
+    if ([DateTime]::UtcNow -ge $raceDeadline) {
+        $racedPurge.Kill($true)
+        throw 'Timed out waiting for the CI purge synchronization point.'
+    }
+    Start-Sleep -Milliseconds 100
+}
+if ($racedPurge.HasExited) {
+    throw "Purge exited before the marker-replacement test (exit $($racedPurge.ExitCode))."
+}
+[System.IO.File]::WriteAllText($marker, 'replaced-after-confirmation')
+$racedPurge.WaitForExit()
+if ($racedPurge.ExitCode -eq 0 -or -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
+    throw 'Marker replacement after confirmation did not fail closed.'
+}
+Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
+[System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
+
+# Nested junctions are never traversed for size or removal. Purge refuses the
+# tree and leaves both the root and outside target intact.
+Invoke-CheckedProcess $newer.FullName @('/S')
+$nestedTarget = Join-Path $env:RUNNER_TEMP 'lsdj-nested-junction-target'
+New-Item -ItemType Directory -Path $nestedTarget -Force | Out-Null
+$nestedSentinel = Join-Path $nestedTarget 'outside.txt'
+[System.IO.File]::WriteAllText($nestedSentinel, 'outside nested junction')
+$nestedJunction = Join-Path $dataRoot 'data\linked-outside'
+New-Item -ItemType Junction -Path $nestedJunction -Target $nestedTarget | Out-Null
+Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+if (-not (Test-Path -LiteralPath $nestedSentinel -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
+    throw 'Explicit purge traversed a nested directory reparse point.'
+}
+Remove-ReparseDirectoryEntry $nestedJunction
+Remove-Item -LiteralPath $nestedTarget -Recurse -Force
 
 # Explicit automation opt-in mirrors the GUI checkbox + path/size confirmation.
 Invoke-CheckedProcess $newer.FullName @('/S')

@@ -38,9 +38,31 @@ $tempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     $env:RUNNER_TEMP
 }
 $versionConfig = Join-Path $tempRoot "lsdj-windows-version-$([guid]::NewGuid().ToString('N')).json"
+$ciInstallerHooks = $null
+$versionConfiguration = @{ version = $version }
+if ($UnsignedDevelopment) {
+    # Hosted installer tests need one synchronization point after purge
+    # confirmation and before the destructive revalidation. Compile that test
+    # branch only into explicitly unsigned development installers; the release
+    # config always uses the reviewed production hook directly.
+    $ciInstallerHooks = Join-Path $tempRoot "lsdj-windows-hooks-$([guid]::NewGuid().ToString('N')).nsh"
+    $productionHooks = Join-Path $tauriRoot 'windows/installer-hooks.nsh'
+    $ciHookText = "!define LSDJ_CI_ADVERSARIAL_TESTS`r`n" +
+        [System.IO.File]::ReadAllText($productionHooks)
+    [System.IO.File]::WriteAllText(
+        $ciInstallerHooks,
+        $ciHookText,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    $versionConfiguration['bundle'] = @{
+        windows = @{
+            nsis = @{ installerHooks = $ciInstallerHooks }
+        }
+    }
+}
 [System.IO.File]::WriteAllText(
     $versionConfig,
-    (@{ version = $version } | ConvertTo-Json -Compress),
+    ($versionConfiguration | ConvertTo-Json -Depth 8 -Compress),
     [System.Text.UTF8Encoding]::new($false)
 )
 
@@ -67,6 +89,9 @@ try {
     }
 } finally {
     Remove-Item -LiteralPath $versionConfig -Force -ErrorAction SilentlyContinue
+    if ($null -ne $ciInstallerHooks) {
+        Remove-Item -LiteralPath $ciInstallerHooks -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $bundleRoot = Join-Path $tauriRoot 'target/release/bundle/nsis'

@@ -43,11 +43,34 @@ runtimes, settings, and user data.
 The graphical uninstaller offers an unchecked option to remove the preserved
 data. If selected, it calculates the tree size and presents a second confirmation
 showing `%LOCALAPPDATA%\LSDJ` and the measured KiB before deletion. Removal is
-allowed only while the installer-owned `.lsdj-data-root` marker is present. The
-marker must also contain LSDJ's exact application identifier; a same-named or
-empty file is not sufficient. The equivalent explicit automation switch is
-`/PURGE-LSDJ-DATA`; `/S` alone always preserves data. There is intentionally no
-broad or caller-supplied recursive target.
+allowed only while the installer-owned `.lsdj-data-root` marker is a plain file
+containing LSDJ's exact application identifier; a same-named, empty, linked, or
+reparse-point entry is not sufficient. Marker creation uses exclusive Windows
+file creation, and marker validation opens the reparse entry itself while
+denying write/delete sharing, so neither operation follows or overwrites a link
+raced into the marker path.
+
+Before installation, a hidden, always-selected NSIS section runs before Tauri's
+path-creating `SetOutPath`. It canonicalizes the target, requires it to be
+exactly `%LOCALAPPDATA%\LSDJ`, and records whether the root was absent or already
+owned. The pre-install hook then accepts or creates a new root only when that
+early probe saw it absent and the result is a plain empty directory. Creation in
+the hook is required when `/D` puts application binaries somewhere other than
+the fixed LocalAppData data root. A pre-existing empty root is rejected rather
+than guessed to be LSDJ-owned. A pre-existing markerless root is adopted only
+when its top level is exactly the five plain directories created by LSDJ's path
+contract (`config`, `data`, `cache`, `assets`, and `staging`); foreign, partial,
+file-bearing, and recursively reparse-bearing layouts are rejected. Root
+junctions, symlinks, and other reparse points are always rejected.
+
+Explicit purge scans the tree without traversing reparse points before measuring
+it, repeats the canonical-root, ownership-marker, and tree checks immediately
+before deletion, and uses a custom recursive walk that never follows links or
+uses a broad `RMDir /r`. A reparse point or marker replacement fails the purge
+before ordinary uninstall payload deletion when detected during the initial
+check, and always preserves the remaining tree. The equivalent explicit
+automation switch is `/PURGE-LSDJ-DATA`; `/S` alone always preserves data. There
+is no caller-supplied recursive target.
 
 ## WebView2
 
@@ -164,5 +187,10 @@ configuration is unavailable.
 Hosted `windows-2025` CI builds two unsigned versions, installs and upgrades
 them, rejects a downgrade, verifies default preservation and explicit purge,
 checks version metadata and the Start menu shortcut, and exercises a conservative
-sub-`MAX_PATH` install location containing spaces and Unicode. These checks do
-not claim hardware or antivirus qualification.
+sub-`MAX_PATH` install location containing spaces and Unicode. It also attacks
+ownership with pre-existing empty and foreign roots, install-time and purge-time
+root junctions, marker junctions, a marker replacement between confirmation and
+deletion, and a nested junction; every outside target must remain untouched. The
+fresh-install success case plus empty-root rejection also guards the required
+ordering of the early ownership probe relative to Tauri's `SetOutPath`. These
+checks do not claim hardware or antivirus qualification.
