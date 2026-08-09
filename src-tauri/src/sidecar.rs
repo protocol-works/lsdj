@@ -700,7 +700,7 @@ impl SharedSidecar {
         }
     }
 
-    #[cfg(all(test, not(feature = "managed-runtime")))]
+    #[cfg(all(test, unix, not(feature = "managed-runtime")))]
     pub fn spawn(
         models: [String; lsdj_engine::DECK_COUNT],
         handles: [DeckHandle; lsdj_engine::DECK_COUNT],

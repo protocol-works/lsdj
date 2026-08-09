@@ -221,23 +221,33 @@ function hasVersionedRecipe(value: unknown): boolean {
   )
 }
 
+type LibraryRefreshState = {
+  issued: number
+  applied: number
+  idsByFile: Map<string, number>
+}
+
 /** Re-list one library (songs or samples) from its on-disk registry, reconciled
  * against the folder by the Rust shell (hand-added files appear; deleted files drop
  * out). A row already held for a file keeps its id + in-memory wav (reuse by
  * filename), so a live re-list never churns; a row whose file vanished is dropped; an
- * in-session take not yet on disk is kept. `ref` is read after the fetch resolves
- * (freshest), and the id mint (`toRow`) runs OUTSIDE the state updater — StrictMode
- * replays updaters, so they must be pure. A no-op outside Tauri. */
+ * in-session take not yet on disk is kept. Overlapping scans are ordered by request,
+ * so an older startup scan cannot replace a newer watcher scan. New rows get a stable
+ * id per filename before the state updater; the updater itself reconciles against
+ * React's freshest `current` state and remains pure under StrictMode. A no-op outside
+ * Tauri. */
 function reListLibrary<
   R extends { id: number; state: string; file?: string | null },
   E extends { file: string },
 >(
   command: string,
-  ref: { current: R[] },
+  refresh: { current: LibraryRefreshState },
   setRows: (next: (current: R[]) => R[]) => void,
-  toRow: (entry: E) => R,
+  mintId: () => number,
+  toRow: (entry: E, id: number) => R,
 ): void {
   if (!isTauri()) return
+  const request = ++refresh.current.issued
   void (async () => {
     let entries: E[]
     try {
@@ -245,17 +255,34 @@ function reListLibrary<
     } catch {
       return // a failed scan just means no refresh; composing still works
     }
-    const byFile = new Map(
-      ref.current
-        .map((row) => [fileOf(row), row] as const)
-        .filter((pair): pair is readonly [string, R] => pair[0] != null),
-    )
-    const restored = entries.map((entry) => byFile.get(entry.file) ?? toRow(entry))
+    // A newer successful request already represents a later view of the registry.
+    // Failed newer requests do not advance `applied`, so an older successful scan
+    // may still provide the best available view.
+    if (request < refresh.current.applied) return
+    refresh.current.applied = request
+    const restored = entries.map((entry) => {
+      let id = refresh.current.idsByFile.get(entry.file)
+      if (id == null) {
+        id = mintId()
+        refresh.current.idsByFile.set(entry.file, id)
+      }
+      return [entry.file, toRow(entry, id)] as const
+    })
     // Newest-first: in-session takes not yet on disk lead, above the restored
     // library reversed so the most recently composed file sits at the top (the
     // registry stores composition order, oldest first), sparing a scroll to the
     // take you just made.
-    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...restored.reverse()])
+    setRows((current) => {
+      const byFile = new Map(
+        current
+          .map((row) => [fileOf(row), row] as const)
+          .filter((pair): pair is readonly [string, R] => pair[0] != null),
+      )
+      return [
+        ...current.filter((row) => fileOf(row) == null),
+        ...restored.map(([file, row]) => byFile.get(file) ?? row).reverse(),
+      ]
+    })
   })()
 }
 
@@ -414,6 +441,16 @@ export function MediaExplorer({
   // A ref, not state: two composes batched into one render (Enter +
   // click) must not mint the same id.
   const nextIdRef = useRef(1)
+  const trackRefreshRef = useRef<LibraryRefreshState>({
+    issued: 0,
+    applied: 0,
+    idsByFile: new Map(),
+  })
+  const sampleRefreshRef = useRef<LibraryRefreshState>({
+    issued: 0,
+    applied: 0,
+    idsByFile: new Map(),
+  })
   const trackTasksRef = useRef(new Map<number, Sa3GenerationTask>())
   const sampleTasksRef = useRef(new Map<number, Sa3GenerationTask>())
   useEffect(
@@ -424,18 +461,6 @@ export function MediaExplorer({
     },
     [],
   )
-  // The latest lists mirrored in refs (synced after commit). A live re-list (tab
-  // open, or the folder watcher firing) reads these from its effect/callback to reuse
-  // a row's id + in-memory wav by filename, so a refresh never churns ids or re-reads
-  // bytes — and the id mint stays OUTSIDE the state updater (StrictMode replays
-  // updaters, so they must be pure). At most one render stale, which is fine here.
-  const tracksRef = useRef<GeneratedTrack[]>([])
-  const samplesRef = useRef<GeneratedSample[]>([])
-  useEffect(() => {
-    tracksRef.current = tracks
-    samplesRef.current = samples
-  }, [tracks, samples])
-
   const filteredTracks = tracks.filter((track) =>
     matchesSearch(
       search,
@@ -667,17 +692,18 @@ export function MediaExplorer({
   }
 
   // The two libraries' re-list, each a thin {@link reListLibrary} call differing only
-  // in the command, the ref, the setter, and the registry-entry → row mapping (a
+  // in the command, the refresh state, the setter, and the registry-entry → row mapping (a
   // sample carries `oneShot`; a song's model runs through `asTrackEngine`). Used at
   // startup and by the folder watcher.
   const refreshSongs = useCallback(
     () =>
       reListLibrary<GeneratedTrack, SongEntry>(
         'list_generated_songs',
-        tracksRef,
+        trackRefreshRef,
         setTracks,
-        (entry) => ({
-          id: nextIdRef.current++,
+        () => nextIdRef.current++,
+        (entry, id) => ({
+          id,
           state: 'ready',
           title: entry.title,
           prompt: entry.prompt,
@@ -692,10 +718,11 @@ export function MediaExplorer({
     () =>
       reListLibrary<GeneratedSample, SampleEntry>(
         'list_generated_samples',
-        samplesRef,
+        sampleRefreshRef,
         setSamples,
-        (entry) => ({
-          id: nextIdRef.current++,
+        () => nextIdRef.current++,
+        (entry, id) => ({
+          id,
           state: 'ready',
           title: entry.title,
           prompt: entry.prompt,
