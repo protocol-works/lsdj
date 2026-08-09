@@ -59,15 +59,12 @@ artifacts. It has five stages:
 
 1. `validate` accepts only a calendar-version `v*` tag whose commit is contained
    in `main`.
-2. Independent producers build their platform artifacts. `produce-macos` waits
+2. `produce_macos` waits
    behind the protected `macos-release` Environment,
    freezes the backend, imports ephemeral signing material, builds, signs,
    notarizes, staples, and verifies the app and DMG. It then uploads one Actions
    artifact containing the DMG, `SHA256SUMS.txt`, and metadata binding the
-   producer to the tag and exact source revision. `produce-linux` builds the
-   x86_64 AppImage on Ubuntu 22.04 (glibc 2.35), verifies its desktop/resource
-   layout and ELF dependencies, performs an isolated-XDG virtual-X11 smoke, and
-   uploads the AppImage with the same checksum/tag/revision contract.
+   producer to the tag and exact source revision.
 3. `produce_linux` builds the x86_64 AppImage on Ubuntu 22.04 (glibc 2.35),
    verifies its desktop/resource layout and ELF dependencies, performs an
    isolated-XDG virtual-X11 smoke, and uploads the AppImage with the same

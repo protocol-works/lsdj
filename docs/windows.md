@@ -127,9 +127,9 @@ this branch is represented as signed. The owner decisions and operational drill
 are explicit gates in the release checklist.
 
 The single publisher has no signing credentials. It requires the exact
-`macos-arm64` and `windows-x64` producer set, recomputes sizes and SHA-256 hashes,
-and refuses to create a public release if Windows production, signature
-verification, or artifact verification is missing.
+`macos-arm64`, `linux-x64`, and `windows-x64` producer set, recomputes sizes and
+SHA-256 hashes, and refuses to create a public release if Windows production,
+signature verification, or artifact verification is missing.
 
 ## Defender and SmartScreen response
 
@@ -160,7 +160,8 @@ announced.
 
 ## Diagnostics and known limitations
 
-- Confirm the installer hash against `SHA256SUMS.txt` and `release-index.json`.
+- Confirm the installer hash against `windows-x64-SHA256SUMS.txt` and
+  `release-index.json`.
 - In Explorer, open **Properties → Digital Signatures** and require the publisher
   documented for the release. Do not install if the signature is absent or
   invalid.

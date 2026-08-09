@@ -119,7 +119,8 @@ tauri-linux-release:
 
 # Create and push the next protected vYYYY.MM.N tag from a clean, current main.
 # Remote calendar-version tags are the ledger; no version file or bump is needed.
-# The tag starts the macOS signing workflow and its Engineering approval gate.
+# The tag starts the three-platform release workflow; macOS and Windows signing
+# remain behind their protected Engineering approval gates.
 release:
     ./scripts/create-release.sh
 

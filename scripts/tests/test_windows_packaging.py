@@ -7,6 +7,24 @@ TAURI_ROOT = REPO_ROOT / "src-tauri"
 
 
 class WindowsPackagingContractTest(unittest.TestCase):
+    def test_windows_release_security_files_require_engineering_review(self):
+        owner = "@protocol-works/engineering"
+        entries = {
+            line.strip()
+            for line in (REPO_ROOT / ".github/CODEOWNERS").read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        windows_scripts = sorted((REPO_ROOT / "scripts").glob("*windows*.ps1"))
+        self.assertGreaterEqual(len(windows_scripts), 6)
+        protected = [
+            *(path.relative_to(REPO_ROOT) for path in windows_scripts),
+            Path("src-tauri/windows/English.nsh"),
+            Path("src-tauri/windows/installer-hooks.nsh"),
+        ]
+        for path in protected:
+            with self.subTest(path=path):
+                self.assertIn(f"/{path.as_posix()} {owner}", entries)
+
     def test_nsis_is_current_user_and_blocks_downgrades(self):
         config = json.loads((TAURI_ROOT / "tauri.windows.conf.json").read_text())
         bundle = config["bundle"]

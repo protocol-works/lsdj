@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -58,6 +59,26 @@ def desktop_entries(root: Path, path: Path) -> dict[str, str]:
     return entries
 
 
+def desktop_exec(value: str) -> list[str]:
+    """Parse the desktop Exec field and allow only LSDJ's declared launch form."""
+    try:
+        argv = shlex.split(value, comments=False, posix=True)
+    except ValueError as error:
+        raise AppImageError(f"desktop Exec is malformed: {error}") from None
+    supported = {
+        ("lsdj-app",),
+        ("lsdj-app", "%f"),
+        ("lsdj-app", "%F"),
+        ("lsdj-app", "%u"),
+        ("lsdj-app", "%U"),
+    }
+    require(
+        tuple(argv) in supported,
+        "desktop Exec must launch exactly lsdj-app with at most one supported field code",
+    )
+    return argv
+
+
 def needed_libraries(binary: Path) -> list[str]:
     readelf = shutil.which("readelf")
     require(readelf is not None, "readelf is required for the build-time ELF audit")
@@ -87,15 +108,19 @@ def needed_libraries(binary: Path) -> list[str]:
 
 def verify_extracted(root: Path, libraries: list[str]) -> dict:
     require(root.is_dir() and not root.is_symlink(), "missing extracted AppImage root")
-    app_run = root / "AppRun"
-    require(app_run.exists(), "AppImage has no AppRun entry point")
+    app_run = safe_packaged_file(root, root / "AppRun", "AppRun entry point")
+    if os.name != "nt":
+        require(
+            app_run.stat().st_mode & stat.S_IXUSR != 0,
+            "AppRun entry point is not executable",
+        )
 
     desktop_files = sorted(root.glob("*.desktop"))
     require(len(desktop_files) == 1, "AppImage must contain exactly one desktop entry")
     desktop = desktop_entries(root, desktop_files[0])
     require(desktop.get("Type") == "Application", "desktop Type must be Application")
     require(desktop.get("Name") == "LSDJ", "desktop Name must be LSDJ")
-    require("lsdj-app" in desktop.get("Exec", ""), "desktop Exec must launch lsdj-app")
+    desktop_exec(desktop.get("Exec", ""))
     categories = {item for item in desktop.get("Categories", "").split(";") if item}
     require(
         bool(categories & {"Audio", "AudioVideo", "Music"}),
