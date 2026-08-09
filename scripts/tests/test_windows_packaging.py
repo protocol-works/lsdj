@@ -33,7 +33,21 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("CreateFileW", hooks)
         self.assertIn("LSDJ_FILE_FLAG_OPEN_REPARSE_POINT", hooks)
         self.assertIn("!define LSDJ_OWNER_ID_BYTES 19", hooks)
+        self.assertIn("!define LSDJ_OWNER_ID_READ_BYTES 20", hooks)
         self.assertEqual(len("works.protocol.lsdj".encode("ascii")), 19)
+        self.assertIn("System::Alloc 52", hooks)
+        self.assertIn(
+            "GetFileInformationByHandle(p R6, p R7)",
+            hooks,
+        )
+        self.assertIn("System::Call '*$R7(&i4 .R8)'", hooks)
+        self.assertIn("System::Free $R7", hooks)
+        self.assertIn(
+            "ReadFile(p R6, m .R8, i ${LSDJ_OWNER_ID_READ_BYTES}, *i .R7, p 0)",
+            hooks,
+        )
+        self.assertNotIn("GetFileInformationByHandle(p R6, *(", hooks)
+        self.assertNotIn('FileOpen $R5 "${LSDJ_DATA_MARKER}" r', hooks)
         self.assertIn("LSDJ_FILE_ATTRIBUTE_REPARSE_POINT", hooks)
         self.assertIn("LsdjExistingLayoutIsRecognized", hooks)
         self.assertIn("Section -LsdjProbeDataRootBeforeTauri", hooks)

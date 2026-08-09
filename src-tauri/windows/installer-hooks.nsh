@@ -9,6 +9,7 @@
 !define LSDJ_DATA_MARKER_NEW "${LSDJ_DATA_ROOT}\.lsdj-data-root.new"
 !define LSDJ_OWNER_ID "works.protocol.lsdj"
 !define LSDJ_OWNER_ID_BYTES 19
+!define LSDJ_OWNER_ID_READ_BYTES 20
 !define LSDJ_FILE_ATTRIBUTE_DIRECTORY 0x10
 !define LSDJ_FILE_ATTRIBUTE_REPARSE_POINT 0x400
 !define LSDJ_FILE_ATTRIBUTE_NORMAL 0x80
@@ -116,10 +117,10 @@ FunctionEnd
 !insertmacro LSDJ_DEFINE_CANONICAL_ROOT_VALIDATOR un.LsdjCanonicalDataRootIsValid
 
 ; Return LsdjMarkerSafe=1 only for a plain, non-reparse marker whose complete
-; first line is the exact LSDJ application identifier. CreateFile opens the
-; reparse entry itself and denies write/delete sharing. Keeping that native
-; handle open while FileOpen reads the path prevents replacement between the
-; attribute and content checks.
+; contents are the exact LSDJ application identifier. CreateFile opens the
+; reparse entry itself and denies write/delete sharing. Both metadata and
+; content are then read from that same native handle, so validation never
+; reopens the marker by path.
 !macro LSDJ_DEFINE_MARKER_VALIDATOR FUNCTION_NAME
 Function ${FUNCTION_NAME}
   Push $R5
@@ -138,43 +139,51 @@ Function ${FUNCTION_NAME}
     System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER}", i ${LSDJ_GENERIC_READ}, i ${LSDJ_FILE_SHARE_READ}, p 0, i ${LSDJ_OPEN_EXISTING}, i ${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6'
   !endif
   StrCmp $R6 ${LSDJ_INVALID_HANDLE_VALUE} lsdj_marker_done
+  StrCpy $R7 0
+  System::Alloc 52
+  Pop $R7
+  !insertmacro LSDJ_CI_TRACE "marker-validate: info buffer=$R7"
+  StrCmp $R7 0 lsdj_marker_close
   !ifdef LSDJ_CI_ADVERSARIAL_TESTS
-    System::Call 'kernel32::GetFileInformationByHandle(p R6, *(&i4 .R7, &v48)) i .R8 ?e'
+    System::Call 'kernel32::GetFileInformationByHandle(p R6, p R7) i .R8 ?e'
     Pop $R9
-    !insertmacro LSDJ_CI_TRACE "marker-validate: info result=$R8 attrs=$R7 error=$R9"
+    !insertmacro LSDJ_CI_TRACE "marker-validate: info result=$R8 error=$R9"
   !else
-    System::Call 'kernel32::GetFileInformationByHandle(p R6, *(&i4 .R7, &v48)) i .R8'
+    System::Call 'kernel32::GetFileInformationByHandle(p R6, p R7) i .R8'
   !endif
   ${If} $R8 = 0
+    Goto lsdj_marker_info_failed
+  ${EndIf}
+  System::Call '*$R7(&i4 .R8)'
+  System::Free $R7
+  StrCpy $R7 0
+  !insertmacro LSDJ_CI_TRACE "marker-validate: attrs=$R8"
+  IntOp $R5 $R8 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
+  ${If} $R5 <> 0
     Goto lsdj_marker_close
   ${EndIf}
-  IntOp $R8 $R7 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
-  ${If} $R8 <> 0
+  IntOp $R5 $R8 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
+  ${If} $R5 <> 0
     Goto lsdj_marker_close
   ${EndIf}
-  IntOp $R8 $R7 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
-  ${If} $R8 <> 0
-    Goto lsdj_marker_close
-  ${EndIf}
-  ClearErrors
-  FileOpen $R5 "${LSDJ_DATA_MARKER}" r
   !ifdef LSDJ_CI_ADVERSARIAL_TESTS
-    ${If} ${Errors}
-      StrCpy $R9 1
-    ${Else}
-      StrCpy $R9 0
-    ${EndIf}
-    !insertmacro LSDJ_CI_TRACE "marker-validate: file-open error=$R9"
+    System::Call 'kernel32::ReadFile(p R6, m .R8, i ${LSDJ_OWNER_ID_READ_BYTES}, *i .R7, p 0) i .R5 ?e'
+    Pop $R9
+    !insertmacro LSDJ_CI_TRACE "marker-validate: read result=$R5 bytes=$R7 error=$R9"
+  !else
+    System::Call 'kernel32::ReadFile(p R6, m .R8, i ${LSDJ_OWNER_ID_READ_BYTES}, *i .R7, p 0) i .R5'
   !endif
-  IfErrors lsdj_marker_close
-  FileRead $R5 $R8
-  FileClose $R5
-  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
-    StrLen $R9 $R8
-    !insertmacro LSDJ_CI_TRACE "marker-validate: content length=$R9"
-  !endif
+  ${If} $R5 = 0
+  ${OrIf} $R7 != ${LSDJ_OWNER_ID_BYTES}
+    Goto lsdj_marker_close
+  ${EndIf}
   StrCmp $R8 "${LSDJ_OWNER_ID}" 0 lsdj_marker_close
   StrCpy $LsdjMarkerSafe 1
+  Goto lsdj_marker_close
+
+  lsdj_marker_info_failed:
+  System::Free $R7
+  StrCpy $R7 0
 
   lsdj_marker_close:
   System::Call 'kernel32::CloseHandle(p R6)'
