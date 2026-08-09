@@ -580,15 +580,17 @@ fn reopen_main(
     };
     let stream = engine_device::open_main_stream(selector(main_name), master_consumer, cue_consumer)
         .map_err(|error| error.to_string())?;
-    if !host.install_master_ring(master_ring) {
-        return Err(ENGINE_BUSY.to_string());
-    }
     if let Some(cue_ring) = cue_ring {
-        // Combined: the cue now rides the main stream's 3/4 — install its ring
-        // (best-effort; the cue is secondary) and drop any split cue stream.
-        host.install_cue_ring(cue_ring);
+        // A combined stream consumes both buses. Install the pair with one
+        // queue command; a full queue must leave both old rings and any split
+        // cue stream intact rather than accepting only the master half.
+        if !host.install_output_rings(master_ring, cue_ring) {
+            return Err(ENGINE_BUSY.to_string());
+        }
         *audio.cue_stream.lock().unwrap_or_else(|p| p.into_inner()) = None;
         audio.set_cue_error(None);
+    } else if !host.install_master_ring(master_ring) {
+        return Err(ENGINE_BUSY.to_string());
     }
     let info = stream.info();
     println!(
@@ -1272,6 +1274,38 @@ mod tests {
             "Persisted USB",
             "failed boot hydration must not fall back to the default target"
         );
+    }
+
+    #[test]
+    fn combined_install_backpressure_remains_visible_and_retryable() {
+        let audio = headless_audio_state();
+        audio.retain_requested_routes("Four-channel USB".into(), "".into());
+        audio.set_main_error(Some("stream stopped".into()));
+
+        let result = reconnect_audio_outputs_with(
+            &audio,
+            |main_name, cue_name| {
+                assert_eq!(main_name, "Four-channel USB");
+                assert_eq!(cue_name, "");
+                Err(super::ENGINE_BUSY.into())
+            },
+            |_| panic!("combined topology must not attempt an independent cue swap"),
+        );
+
+        assert_eq!(
+            result,
+            Err(format!(
+                "Couldn't reconnect audio outputs (main: {})",
+                super::ENGINE_BUSY
+            )),
+            "queue pressure must be reported to the caller"
+        );
+        let health = audio.output_health();
+        assert_eq!(health.main_error.as_deref(), Some(super::ENGINE_BUSY));
+        assert!(!health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(health.can_reconnect);
+        assert_eq!(recovery_targets(&health, true), (true, false));
     }
 
     #[test]
