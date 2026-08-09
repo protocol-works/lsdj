@@ -248,6 +248,42 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("function Get-UninstallRegistrySnapshot", lifecycle)
         self.assertIn("function Assert-CiInstallerTraceContract", lifecycle)
         self.assertIn("function Set-DisplayVersionEvidence", lifecycle)
+        self.assertIn("function New-UninstallerWorkerCopy", lifecycle)
+        self.assertIn("function Invoke-ExpectedUninstallFailure", lifecycle)
+        self.assertNotIn("Invoke-ExpectedFailure $uninstaller", lifecycle)
+        worker_helper_start = lifecycle.index(
+            "function Invoke-ExpectedUninstallFailure"
+        )
+        worker_helper_end = lifecycle.index(
+            "function Require-InstalledVersion", worker_helper_start
+        )
+        worker_helper = lifecycle[worker_helper_start:worker_helper_end]
+        self.assertIn(
+            '-ArgumentList (@($ArgumentList) + "_?=$InstallDirectory")',
+            worker_helper,
+        )
+        self.assertIn("-ExpectedExitCodes @(2)", worker_helper)
+        self.assertIn("} finally {", worker_helper)
+        self.assertIn(
+            "Remove-Item -LiteralPath $workerPath",
+            worker_helper,
+        )
+        race_start = lifecycle.index(
+            "Start-LifecycleScenario 'reject ownership-marker replacement"
+        )
+        race_end = lifecycle.index(
+            "Start-LifecycleScenario 'reject purge with nested junction'",
+            race_start,
+        )
+        race = lifecycle[race_start:race_end]
+        self.assertIn('"_?=$dataRoot"\n        )', race)
+        self.assertIn("$racedPurge.ExitCode -ne 2", race)
+        self.assertIn("} finally {", race)
+        self.assertIn("$racedPurge.WaitForExit()", race)
+        self.assertIn(
+            "Remove-Item -LiteralPath $racedPurgeWorker",
+            race,
+        )
         self.assertIn("$lastRequiredIndex = -1", lifecycle)
         self.assertIn("[StringComparison]::Ordinal", lifecycle)
         self.assertIn(
