@@ -9,6 +9,39 @@ Set `LSDJ_ALLOW_UNVERIFIED_SA3_CUDA=1` only on a dedicated qualification host.
 It permits explicit GPU probes; it does not enable Auto or make a build
 release-ready.
 
+## Current no-go: resident MRT2 ownership
+
+The following checks record reviewed code behavior, not Windows NVIDIA
+qualification evidence:
+
+- [x] `5cbe842` retains Windows lease records when owner-process liveness is
+  uncertain and prunes only owners positively known to have exited. This
+  fail-closed safety behavior is approved.
+- [x] `7fdbb32` acquires the shared MRT2 lease before CUDA or model load and
+  holds it for the worker lifetime, including after a CUDA load failure. This
+  ordering deliberately prevents resident MRT2 VRAM from being treated as
+  free.
+
+**NO-GO:** the process-lifetime MRT2 lease prevents SA3 admission while the
+MRT2 worker is alive. Releasing it between generations is unsafe because model
+VRAM remains resident. Issue #114 cannot pass its broker or dual-deck
+acceptance sections until one of these alternatives is complete:
+
+- [ ] On Windows NVIDIA hardware, measure resident and active-generation VRAM
+  separately for each MRT2 model and worker, both decks/multiple model
+  combinations, and SA3 Small Music and Small SFX.
+- [ ] Implement and validate a two-level broker: long-lived reservations for
+  every resident model/worker plus short active-generation priority leases for
+  realtime MRT2 versus background SA3 work. Prove that capacity is neither
+  double-counted nor inferred from VRAM that remains resident.
+- [ ] Alternatively, obtain explicit product acceptance to unload MRT2 before
+  SA3 starts and re-load/warm it afterward, then replace the coexistence tests
+  below with evidence for that lifecycle.
+
+Until that decision and the required hardware evidence exist, Auto and public
+SA3 CUDA remain disabled, `HARDWARE_QUALIFIED` and the release gate remain
+unchanged, and no Windows SA3 CUDA release claim may be made.
+
 ## Immutable inputs and shared runtime
 
 - [x] Pin the official upstream source commit without an LSDJ fork.
@@ -86,8 +119,9 @@ route it explicitly to TFLite.
 
 - [ ] Start SA3, then request MRT2 work during loading, sampling, and decoding.
   The watchdog/callback exits SA3, releases its lease/context, and MRT2 proceeds.
-- [ ] Queue SA3 while MRT2 holds a lease. SA3 waits without disturbing either
-  deck or the native audio callback.
+- [ ] With the two-level broker, queue SA3 while MRT2 holds an active-generation
+  priority lease. SA3 waits without disturbing either deck or the native audio
+  callback; MRT2's resident reservation remains accounted for.
 - [ ] Cancel while waiting, loading, sampling, and decoding; no child or CUDA
   allocation remains.
 - [ ] Force CUDA OOM, worker exception, invalid output, and abrupt worker death;
