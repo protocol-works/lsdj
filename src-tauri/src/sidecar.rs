@@ -983,12 +983,12 @@ pub fn sidecar_base_command() -> io::Result<Command> {
     #[cfg(feature = "managed-runtime")]
     {
         let paths = crate::platform_paths::get();
-        return crate::managed_runtime::resolve(
+        crate::managed_runtime::resolve(
             paths.assets(),
             crate::managed_runtime::Service::Mrt2,
         )
         .and_then(|resolved| resolved.into_command([], paths.backend_env()))
-        .map_err(io::Error::other);
+        .map_err(io::Error::other)
     }
 
     // A distributable app sets this to the exact bundled executable during
@@ -1120,10 +1120,10 @@ mod tests {
     use super::*;
     use lsdj_engine::Engine;
     use std::net::TcpStream;
-    #[cfg(unix)]
+    #[cfg(all(unix, not(feature = "managed-runtime")))]
     use std::os::unix::fs::PermissionsExt;
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(feature = "managed-runtime")))]
     static SIDECAR_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -1303,7 +1303,7 @@ mod tests {
     /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only
     /// wrapper + Python stand-in (no models) via `LSDJ_SIDECAR_CMD`, matching the
     /// `uv run` parent/grandchild topology used in development.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(feature = "managed-runtime")))]
     #[test]
     fn restart_switches_model_without_a_worker_died() {
         let _env_guard = SIDECAR_ENV_LOCK.lock().unwrap();
@@ -1459,7 +1459,7 @@ while True:
     /// two generations resident at once can OOM the minimum supported card.
     /// This model-free process test proves stop/reap-before-spawn, both-deck
     /// loading state, a failed replacement parked for retry, and recovery.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(feature = "managed-runtime")))]
     #[test]
     fn shared_restart_serializes_cuda_generations_and_recovers_after_launch_failure() {
         let _env_guard = SIDECAR_ENV_LOCK.lock().unwrap();

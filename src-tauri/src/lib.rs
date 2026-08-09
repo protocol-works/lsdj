@@ -45,6 +45,7 @@ mod decode;
 mod generation;
 mod library;
 mod loras;
+#[cfg_attr(not(feature = "managed-runtime"), allow(dead_code))]
 mod managed_runtime;
 mod mcp;
 mod midi;

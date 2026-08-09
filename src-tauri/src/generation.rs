@@ -116,7 +116,7 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
     #[cfg(feature = "managed-runtime")]
     {
         let paths = crate::platform_paths::get();
-        return crate::managed_runtime::resolve(
+        crate::managed_runtime::resolve(
             paths.assets(),
             crate::managed_runtime::Service::Sa3,
         )
@@ -126,7 +126,7 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
                 paths.backend_env(),
             )
         })
-        .map_err(io::Error::other);
+        .map_err(io::Error::other)
     }
 
     // The release bundle shares one frozen dependency tree with the deck
@@ -161,7 +161,7 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "managed-runtime")))]
 mod tests {
     use super::*;
 

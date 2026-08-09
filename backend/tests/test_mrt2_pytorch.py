@@ -126,7 +126,7 @@ def make_engine(*, cuda=True):
 
 def test_loads_only_pinned_local_snapshots():
     engine, model, auto_model, runtime_root = make_engine()
-    assert auto_model.calls[0][0] == runtime_root / "models" / "mrt2_small"
+    assert auto_model.calls[0][0] == (runtime_root / "models" / "mrt2_small").resolve()
     assert auto_model.calls[0][1] == {
         "trust_remote_code": True,
         "dtype": "bf16",

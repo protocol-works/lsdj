@@ -43,7 +43,7 @@
       "x86_64-unknown-linux-gnu":"4749398e83c72359f04081f6c0090461cec823a67845766410b7b49ae55b1785",
       "x86_64-pc-windows-msvc":"63c86af3d4ee0efe70318539272288cb193a38a7af4096ae7c12ec2c48e5b7dc"
     },
-    "wheelManifestSha256":"e7717a1b7b77dfc1b4497fc375e595c5fa8786005451da087b0d49a84b27ceac"
+    "wheelManifestSha256":"9dfd22a3f751831fcc1aaf457372d68838fd7432657dbdba2e43a8384f79b701"
   },
   "models": {
     "mrt2_small": {

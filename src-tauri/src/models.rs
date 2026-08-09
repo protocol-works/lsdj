@@ -62,13 +62,18 @@ const INSTALL_MANIFEST_STAMP: &str = ".lsdj-install-manifest.json";
 const MLX_REQUIREMENTS_LOCK: &str = include_str!("../../scripts/sa3-requirements.lock");
 const TFLITE_REQUIREMENTS_LOCK: &str = include_str!("../../scripts/sa3-tflite-requirements.lock");
 const TFLITE_WHEEL_PIN_JSON: &str = include_str!("../../sa3-tflite-wheels.json");
+#[cfg(any(feature = "managed-runtime", test))]
 const MRT2_PIN_JSON: &str = include_str!("../../mrt2-pytorch-pin.json");
+#[cfg(any(feature = "managed-runtime", test))]
 const MRT2_WHEEL_PIN_JSON: &str = include_str!("../../mrt2-pytorch-wheels.json");
+#[cfg(any(feature = "managed-runtime", test))]
 const MRT2_LINUX_LOCK: &str =
     include_str!("../../backend/runtime-locks/mrt2-pytorch-linux-x86_64.txt");
+#[cfg(any(feature = "managed-runtime", test))]
 const MRT2_WINDOWS_LOCK: &str =
     include_str!("../../backend/runtime-locks/mrt2-pytorch-windows-x86_64.txt");
 const TFLITE_PROVENANCE_STAMP: &str = ".lsdj-provenance.json";
+#[cfg(feature = "managed-runtime")]
 const MRT2_IDENTITY_STAMP: &str = ".lsdj-mrt2-install";
 
 const BACKEND_SOURCES: &[(&str, &[u8])] = &[
@@ -827,6 +832,7 @@ fn wheel_manifest() -> WheelManifest {
     serde_json::from_str(TFLITE_WHEEL_PIN_JSON).expect("sa3-tflite-wheels.json is valid JSON")
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotFilePin {
@@ -835,6 +841,7 @@ struct SnapshotFilePin {
     sha256: String,
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SnapshotPin {
@@ -843,6 +850,7 @@ struct SnapshotPin {
     files: Vec<SnapshotFilePin>,
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Mrt2RuntimePin {
@@ -852,6 +860,7 @@ struct Mrt2RuntimePin {
     wheel_manifest_sha256: String,
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Mrt2Pin {
@@ -861,6 +870,7 @@ struct Mrt2Pin {
     processor: SnapshotPin,
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Mrt2WheelManifest {
@@ -869,10 +879,12 @@ struct Mrt2WheelManifest {
     targets: BTreeMap<String, Vec<WheelPin>>,
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn mrt2_pin() -> Mrt2Pin {
     serde_json::from_str(MRT2_PIN_JSON).expect("mrt2-pytorch-pin.json is valid JSON")
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn mrt2_wheel_manifest() -> Mrt2WheelManifest {
     serde_json::from_str(MRT2_WHEEL_PIN_JSON).expect("mrt2-pytorch-wheels.json is valid JSON")
 }
@@ -1164,7 +1176,7 @@ pub(crate) type Progress = dyn Fn(&str, Option<String>, Option<String>);
 fn install_magenta(progress: &Progress, shared: &InstallShared, name: &str) -> Result<(), String> {
     #[cfg(feature = "managed-runtime")]
     {
-        return install_mrt2_managed(progress, shared, name);
+        install_mrt2_managed(progress, shared, name)
     }
 
     #[cfg(not(feature = "managed-runtime"))]
@@ -1934,6 +1946,7 @@ fn wheel_pins_for(target: &str) -> Result<Vec<WheelPin>, String> {
     Ok(pins)
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn snapshot_artifact(
     snapshot: &SnapshotPin,
     file: &SnapshotFilePin,
@@ -1958,6 +1971,7 @@ fn snapshot_artifact(
     Ok(artifact)
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn mrt2_lock_for(target: &str) -> Result<&'static str, String> {
     match target {
         "x86_64-unknown-linux-gnu" => Ok(MRT2_LINUX_LOCK),
@@ -1966,6 +1980,7 @@ fn mrt2_lock_for(target: &str) -> Result<&'static str, String> {
     }
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn mrt2_wheel_pins_for(target: &str) -> Result<Vec<WheelPin>, String> {
     let manifest = mrt2_wheel_manifest();
     if manifest.schema_version != 1 || manifest.python != "3.12" {
@@ -2022,6 +2037,7 @@ fn mrt2_wheel_pins_for(target: &str) -> Result<Vec<WheelPin>, String> {
     Ok(pins)
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn validate_snapshot(snapshot: &SnapshotPin, expected: &BTreeSet<&str>) -> Result<(), String> {
     if snapshot.revision.len() != 40
         || !snapshot
@@ -2045,6 +2061,7 @@ fn validate_snapshot(snapshot: &SnapshotPin, expected: &BTreeSet<&str>) -> Resul
     Ok(())
 }
 
+#[cfg(any(feature = "managed-runtime", test))]
 fn validate_mrt2_pin(pin: &Mrt2Pin) -> Result<(), String> {
     if pin.schema_version != 1
         || content_digest(MRT2_WHEEL_PIN_JSON.as_bytes()) != pin.runtime.wheel_manifest_sha256
