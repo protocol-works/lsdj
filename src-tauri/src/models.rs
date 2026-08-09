@@ -1299,7 +1299,7 @@ pub(crate) fn stream_child(
 
 /// One parsed line of the sidecar's JSON progress contract.
 #[derive(Deserialize)]
-#[cfg(any(not(feature = "managed-runtime"), test))]
+#[cfg(any(not(feature = "managed-runtime"), all(test, unix)))]
 struct SidecarLine {
     event: String,
     file: Option<String>,
@@ -1817,7 +1817,7 @@ fn validate_mrt2_candidate(
 /// Spawn the download tooling and map its JSON progress contract onto the sink.
 /// Takes the fully-built command so the spawn+parse path is testable against a
 /// stub without mutating the process environment.
-#[cfg(any(not(feature = "managed-runtime"), test))]
+#[cfg(any(not(feature = "managed-runtime"), all(test, unix)))]
 fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Result<(), String> {
     let mut last_error: Option<String> = None;
     let result = stream_child(shared, "download-model", cmd, |line| {
