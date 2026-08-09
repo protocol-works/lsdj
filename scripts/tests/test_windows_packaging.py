@@ -140,6 +140,8 @@ class WindowsPackagingContractTest(unittest.TestCase):
             'nsis_tauri_utils::SemverCompare "$LsdjInstalledVersion" "lsdj-invalid-semver"',
             preinstall,
         )
+        self.assertIn('${If} "$LsdjInstalledVersion" == ""', preinstall)
+        self.assertNotIn('${If} $LsdjInstalledVersion = ""', preinstall)
         self.assertIn(
             'nsis_tauri_utils::SemverCompare "${VERSION}" "$LsdjInstalledVersion"',
             preinstall,

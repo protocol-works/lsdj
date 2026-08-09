@@ -837,7 +837,7 @@ FunctionEnd
     !insertmacro LSDJ_CI_TRACE "preinstall: version evidence installed=$LsdjInstalledVersion present=$LsdjInstalledVersionPresent existing=$LsdjExistingInstall"
 
     ${If} $LsdjExistingInstall = 1
-      ${If} $LsdjInstalledVersion = ""
+      ${If} "$LsdjInstalledVersion" == ""
         !insertmacro LSDJ_CI_TRACE "abort: installed version missing"
         SetErrorLevel 2
         Abort "Unable to verify the existing LSDJ version."
