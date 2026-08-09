@@ -26,6 +26,7 @@ model-loaded round-trip is a native-checklist item.
 
 import argparse
 import json
+import os
 import queue
 import re
 import socket
@@ -48,14 +49,29 @@ FRAME_CONTROL = 3
 # Engine → sidecar: a style-sample embed (M15). Binary, not JSON, because it
 # carries raw PCM: [u32 LE id length][id utf-8][interleaved f32 LE PCM].
 FRAME_EMBED = 4
+# First sidecar -> host frame. The per-launch token is delivered only through the
+# child's scrubbed environment and proves that the connector is the process Rust
+# just spawned, rather than another local process racing the loopback accept.
+FRAME_AUTH = 5
+
+MAX_FRAME_BYTES = 16 * 1024 * 1024
+MAX_EMBED_ID_BYTES = 4 * 1024
+WORKER_TOKEN_ENV = "LSDJ_WORKER_LAUNCH_TOKEN"
 
 # u8 frame type, u32 little-endian payload length.
 _HEADER = struct.Struct("<BI")
+_FRAME_TYPES = frozenset(
+    {FRAME_PCM, FRAME_STATUS, FRAME_CONTROL, FRAME_EMBED, FRAME_AUTH}
+)
 
 
 def write_frame(sock: socket.socket, frame_type: int, payload: bytes) -> None:
     """Send one framed message. `sendall` is atomic enough here: the worker loop
     is the only writer, so frames never interleave."""
+    if frame_type not in _FRAME_TYPES:
+        raise ValueError(f"unknown sidecar frame type {frame_type}")
+    if len(payload) > MAX_FRAME_BYTES:
+        raise ValueError(f"sidecar frame length {len(payload)} exceeds the cap")
     sock.sendall(_HEADER.pack(frame_type, len(payload)) + payload)
 
 
@@ -66,10 +82,24 @@ def read_frame(reader) -> tuple[int, bytes] | None:
     if len(head) < _HEADER.size:
         return None
     frame_type, length = _HEADER.unpack(head)
+    if length > MAX_FRAME_BYTES:
+        raise ValueError(f"sidecar frame length {length} exceeds the cap")
     payload = reader.read(length)
     if len(payload) < length:
         return None
     return frame_type, payload
+
+
+def authenticate_to_host(
+    sock: socket.socket, env: dict[str, str] | None = None
+) -> None:
+    """Send the in-memory launch capability before any worker traffic."""
+
+    env = os.environ if env is None else env
+    token = env.get(WORKER_TOKEN_ENV, "")
+    if not 32 <= len(token) <= 256 or not token.isascii():
+        raise RuntimeError("the authenticated sidecar launch token is missing")
+    write_frame(sock, FRAME_AUTH, token.encode("ascii"))
 
 
 class SocketOutQueue:
@@ -105,7 +135,10 @@ class SocketCmdQueue:
 
     def _pump(self) -> None:
         while True:
-            frame = read_frame(self._reader)
+            try:
+                frame = read_frame(self._reader)
+            except (OSError, ValueError):
+                frame = None
             if frame is None:
                 self._queue.put({"type": "shutdown"})
                 return
@@ -116,7 +149,14 @@ class SocketCmdQueue:
                 if len(payload) < 4:
                     continue
                 id_len = int.from_bytes(payload[:4], "little")
-                sample_id = payload[4 : 4 + id_len].decode("utf-8", "replace")
+                if id_len > MAX_EMBED_ID_BYTES or id_len > len(payload) - 4:
+                    continue
+                try:
+                    sample_id = payload[4 : 4 + id_len].decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if not sample_id:
+                    continue
                 pcm = bytes(payload[4 + id_len :])
                 self._queue.put({"type": "embed_sample", "id": sample_id, "pcm": pcm})
                 continue
@@ -169,7 +209,10 @@ class SharedSocketCmdQueues:
 
     def _pump(self) -> None:
         while True:
-            frame = read_frame(self._reader)
+            try:
+                frame = read_frame(self._reader)
+            except (OSError, ValueError):
+                frame = None
             if frame is None:
                 for target in self.queues:
                     target.put({"type": "shutdown"})
@@ -183,9 +226,14 @@ class SharedSocketCmdQueues:
                 if len(body) < 4:
                     continue
                 id_len = int.from_bytes(body[:4], "little")
-                if id_len > len(body) - 4:
+                if id_len > MAX_EMBED_ID_BYTES or id_len > len(body) - 4:
                     continue
-                sample_id = body[4 : 4 + id_len].decode("utf-8", "replace")
+                try:
+                    sample_id = body[4 : 4 + id_len].decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if not sample_id:
+                    continue
                 target.put(
                     {
                         "type": "embed_sample",
@@ -454,6 +502,8 @@ def main(argv=None) -> None:
             )
         sock = socket.create_connection(("127.0.0.1", args.port))
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        authenticate_to_host(sock)
+        os.environ.pop(WORKER_TOKEN_ENV, None)
         run_shared_sidecar(
             sock,
             (args.model_a, args.model_b),
@@ -472,6 +522,8 @@ def main(argv=None) -> None:
 
     sock = socket.create_connection(("127.0.0.1", args.port))
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    authenticate_to_host(sock)
+    os.environ.pop(WORKER_TOKEN_ENV, None)
     run_sidecar(sock, args.deck, args.model, runtime=args.runtime)
 
 

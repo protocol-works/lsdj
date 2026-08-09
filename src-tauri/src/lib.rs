@@ -45,6 +45,7 @@ mod decode;
 mod generation;
 mod library;
 mod loras;
+mod local_auth;
 mod mcp;
 mod midi;
 mod models;
@@ -298,6 +299,9 @@ struct AppInfo {
     /// The loopback port the generation server bound (`None` if disabled / not
     /// running). The webview builds the `/api/*` base URL from it (gap 2).
     generation_port: Option<u16>,
+    /// Per-launch bearer capability for the generation service. It exists only in
+    /// Rust state/the webview process and is never written to settings or logs.
+    generation_capability: Option<String>,
     /// The loopback port the MCP server bound (`None` only if the loopback bind
     /// failed — the server is otherwise always on), and the bearer token a client must
     /// present (ADR-0020 Phase 2). Surfaced so the client config can point at
@@ -316,6 +320,7 @@ fn app_info(
         version: env!("CARGO_PKG_VERSION").to_string(),
         audio_device_started: state.device_started,
         generation_port: generation.port(),
+        generation_capability: generation.capability(),
         mcp_port: mcp.port(),
         mcp_token: mcp.token(),
     }

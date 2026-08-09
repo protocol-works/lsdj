@@ -25,6 +25,7 @@ use crate::child_process::{Readiness, SupervisedChild};
 /// dropping it kills the child.
 pub struct GenerationServer {
     port: Option<u16>,
+    capability: Option<String>,
     child: Mutex<Option<SupervisedChild>>,
 }
 
@@ -33,11 +34,13 @@ impl GenerationServer {
     /// failed spawn yields `port() == None` and generation is simply unreachable (the
     /// webview surfaces that as fetch errors).
     pub fn start() -> GenerationServer {
-        match Self::spawn() {
+        let capability = crate::local_auth::generate_capability();
+        match Self::spawn(&capability) {
             Ok((port, child)) => {
                 println!("lsdj-app: generation server on 127.0.0.1:{port}");
                 GenerationServer {
                     port: Some(port),
+                    capability: Some(capability),
                     child: Mutex::new(Some(child)),
                 }
             }
@@ -45,20 +48,21 @@ impl GenerationServer {
                 eprintln!("lsdj-app: generation server spawn failed: {e}");
                 GenerationServer {
                     port: None,
+                    capability: None,
                     child: Mutex::new(None),
                 }
             }
         }
     }
 
-    fn spawn() -> io::Result<(u16, SupervisedChild)> {
+    fn spawn(capability: &str) -> io::Result<(u16, SupervisedChild)> {
         // Pick a free loopback port, then hand it to the child (uvicorn binds it).
         // The brief drop→rebind window on loopback is benign.
         let port = {
             let listener = TcpListener::bind("127.0.0.1:0")?;
             listener.local_addr()?.port()
         };
-        let mut command = generation_command(port)?;
+        let mut command = generation_command(port, capability)?;
         let mut child = crate::child_process::spawn_grouped(&mut command)?;
 
         // Confirm the child actually came up before advertising the port — a
@@ -87,6 +91,11 @@ impl GenerationServer {
         self.port
     }
 
+    /// The in-memory capability paired with [`port`](Self::port). Never persisted.
+    pub fn capability(&self) -> Option<String> {
+        self.capability.clone()
+    }
+
     /// Kill the generation server child. Called explicitly from the app's
     /// `RunEvent::Exit` handler because Tauri does NOT drop managed state on a
     /// macOS quit (`process::exit` skips destructors), so [`Drop`] alone would
@@ -111,12 +120,13 @@ impl Drop for GenerationServer {
 /// `LSDJ_BACKEND_BIN --generation-server`; dev is overridable via
 /// `LSDJ_GENERATION_CMD` and defaults to `uv run python -m lsdj.controller`.
 /// `--port` is always appended.
-pub fn generation_command(port: u16) -> io::Result<Command> {
+pub fn generation_command(port: u16, capability: &str) -> io::Result<Command> {
     // The release bundle shares one frozen dependency tree with the deck
     // sidecars. Its dispatcher needs an explicit mode because both CLIs accept
     // `--port`; the exact OsString also preserves paths containing spaces.
     if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
         let mut cmd = Command::new(program);
+        cmd.env("LSDJ_API_CAPABILITY", capability);
         cmd.args(["--generation-server", "--port", &port.to_string()]);
         return Ok(cmd);
     }
@@ -130,6 +140,7 @@ pub fn generation_command(port: u16) -> io::Result<Command> {
         io::Error::new(io::ErrorKind::InvalidInput, "empty LSDJ_GENERATION_CMD")
     })?;
     let mut cmd = Command::new(program);
+    cmd.env("LSDJ_API_CAPABILITY", capability);
     cmd.args(parts);
     cmd.args(["--port", &port.to_string()]);
     if overridden.is_err() {
@@ -151,10 +162,14 @@ mod tests {
         std::env::set_var("LSDJ_GENERATION_CMD", "echo hi");
 
         // The override is split into program + args with `--port` always appended.
-        let cmd = generation_command(5123).unwrap();
+        let cmd = generation_command(5123, "test-capability-0123456789abcdef").unwrap();
         let argv: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(cmd.get_program().to_string_lossy(), "echo");
         assert_eq!(argv, ["hi", "--port", "5123"]);
+        assert!(cmd.get_envs().any(|(key, value)| {
+            key == "LSDJ_API_CAPABILITY"
+                && value.is_some_and(|value| value == "test-capability-0123456789abcdef")
+        }));
 
         // Now-always-on `start()` never fails the app: a command that exits without
         // binding the port (echo) degrades to no advertised port.

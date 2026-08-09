@@ -8,12 +8,16 @@ import asyncio
 import io
 import json
 import queue
+import threading
 import wave
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
 
 from lsdj import controller, sa3
+
+API_TOKEN = "test-api-capability-0123456789abcdef"
 
 
 class FakeProcess:
@@ -53,10 +57,89 @@ class FakeRenderWorker:
         if command.get("type") == "render_clip" and self.render_response is not None:
             self.clip_queue.put((command["id"], self.render_response))
 
+    def shutdown(self):
+        self.process.terminate()
+
 
 @pytest.fixture
-def client():
-    return TestClient(controller.app)
+def client(monkeypatch):
+    controller.configure_local_api(API_TOKEN)
+    monkeypatch.setattr(controller, "generation_jobs", controller.JobRegistry())
+    with TestClient(
+        controller.app, headers={controller.API_CAPABILITY_HEADER: API_TOKEN}
+    ) as test_client:
+        yield test_client
+
+
+def request_options(options):
+    """Remove controller-owned lifecycle hooks from a captured SA3 call."""
+
+    return {
+        key: value
+        for key, value in options.items()
+        if key not in {"cancel_event", "on_progress", "on_state"}
+    }
+
+
+def test_local_api_rejects_missing_wrong_and_foreign_credentials():
+    controller.configure_local_api(API_TOKEN)
+    with TestClient(controller.app) as unauthenticated:
+        assert unauthenticated.get("/api/models").status_code == 401
+        assert (
+            unauthenticated.get(
+                "/api/models", headers={controller.API_CAPABILITY_HEADER: "x" * 40}
+            ).status_code
+            == 401
+        )
+        assert (
+            unauthenticated.get(
+                "/api/models",
+                headers={
+                    controller.API_CAPABILITY_HEADER: API_TOKEN,
+                    "origin": "https://attacker.example",
+                },
+            ).status_code
+            == 403
+        )
+
+
+def test_local_api_preflight_allows_only_the_exact_tauri_origin_and_headers():
+    controller.configure_local_api(API_TOKEN)
+    with TestClient(controller.app) as browser:
+        allowed = browser.options(
+            "/api/generate",
+            headers={
+                "origin": "http://tauri.localhost",
+                "access-control-request-method": "POST",
+                "access-control-request-headers": (
+                    "content-type, x-lsdj-capability, x-lsdj-job-id"
+                ),
+            },
+        )
+        assert allowed.status_code == 204
+        assert (
+            allowed.headers["access-control-allow-origin"] == "http://tauri.localhost"
+        )
+        assert "access-control-allow-credentials" not in allowed.headers
+
+        foreign = browser.options(
+            "/api/generate",
+            headers={
+                "origin": "https://attacker.example",
+                "access-control-request-method": "POST",
+            },
+        )
+        assert foreign.status_code == 403
+
+        extra_header = browser.options(
+            "/api/generate",
+            headers={
+                "origin": "tauri://localhost",
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "x-lsdj-capability, authorization",
+            },
+        )
+        assert extra_header.status_code == 403
 
 
 # --- /api/generate (M18, ADR-0012) ---------------------------------------
@@ -93,7 +176,7 @@ def generate_multipart(metadata, audio=None, extra=()):
 def test_generate_returns_wav_and_strips_the_prompt(client, monkeypatch):
     calls = []
 
-    async def fake_generate(prompt, seconds, kind):
+    async def fake_generate(prompt, seconds, kind, **options):
         calls.append((prompt, seconds, kind))
         return b"RIFFwav"
 
@@ -111,7 +194,7 @@ def test_generate_forwards_optional_json_controls(client, monkeypatch):
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append((prompt, seconds, kind, options))
+        calls.append((prompt, seconds, kind, request_options(options)))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -166,7 +249,7 @@ def test_generate_forwards_the_lora_stack_with_aligned_strengths(
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append(options)
+        calls.append(request_options(options))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -199,7 +282,7 @@ def test_generate_accepts_the_lora_strength_boundaries(
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append(options)
+        calls.append(request_options(options))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -217,7 +300,7 @@ def test_generate_treats_an_empty_lora_stack_as_no_adapters(
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append(options)
+        calls.append(request_options(options))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -288,7 +371,7 @@ def test_generate_forwards_multipart_init_audio_and_inpaint(
     )
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append((prompt, seconds, kind, options))
+        calls.append((prompt, seconds, kind, request_options(options)))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -314,7 +397,7 @@ def test_generate_accepts_the_optional_control_boundaries(client, monkeypatch):
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append(options)
+        calls.append(request_options(options))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -346,7 +429,7 @@ def test_generate_accepts_the_optional_control_upper_boundaries(client, monkeypa
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append(options)
+        calls.append(request_options(options))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -393,7 +476,7 @@ def test_generate_accepts_the_optional_control_upper_boundaries(client, monkeypa
     ],
 )
 def test_generate_validates_the_trust_boundary(client, monkeypatch, body):
-    async def fake_generate(prompt, seconds, kind):  # pragma: no cover
+    async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
         raise AssertionError("invalid input must not reach generation")
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -406,7 +489,7 @@ def test_generate_accepts_a_track_at_track_length(client, monkeypatch):
     # while pad kinds keep the small-model 32 s bound.
     calls = []
 
-    async def fake_generate(prompt, seconds, kind):
+    async def fake_generate(prompt, seconds, kind, **options):
         calls.append((prompt, seconds, kind))
         return b"RIFFwav"
 
@@ -421,7 +504,7 @@ def test_generate_accepts_a_track_at_track_length(client, monkeypatch):
 def test_generate_rejects_nan_seconds(client, monkeypatch):
     # httpx's json= encoder refuses NaN, but Python's json.loads parses it —
     # so it can reach the server, and the boundary must catch it.
-    async def fake_generate(prompt, seconds, kind):  # pragma: no cover
+    async def fake_generate(prompt, seconds, kind, **options):  # pragma: no cover
         raise AssertionError("invalid input must not reach generation")
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -496,7 +579,7 @@ def test_generate_treats_a_blank_negative_prompt_as_absent(client, monkeypatch):
     calls = []
 
     async def fake_generate(prompt, seconds, kind, **options):
-        calls.append(options)
+        calls.append(request_options(options))
         return b"RIFFwav"
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -642,7 +725,7 @@ def test_generate_rejects_bad_content_types_and_malformed_bodies(client):
 
 
 def test_generate_maps_missing_checkout_to_503(client, monkeypatch):
-    async def fake_generate(prompt, seconds, kind):
+    async def fake_generate(prompt, seconds, kind, **options):
         raise controller.sa3.GenerationUnavailable("setup hint")
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -652,7 +735,7 @@ def test_generate_maps_missing_checkout_to_503(client, monkeypatch):
 
 
 def test_generate_maps_cli_failure_to_502(client, monkeypatch):
-    async def fake_generate(prompt, seconds, kind):
+    async def fake_generate(prompt, seconds, kind, **options):
         raise controller.sa3.GenerationFailed("error: no DiT weights found")
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -662,7 +745,7 @@ def test_generate_maps_cli_failure_to_502(client, monkeypatch):
 
 
 def test_generate_maps_cancellation_to_499(client, monkeypatch):
-    async def fake_generate(prompt, seconds, kind):
+    async def fake_generate(prompt, seconds, kind, **options):
         raise controller.sa3.GenerationCancelled("generation cancelled")
 
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
@@ -670,11 +753,53 @@ def test_generate_maps_cancellation_to_499(client, monkeypatch):
     assert response.status_code == 499
 
 
+def test_job_cancel_is_responsive_and_does_not_cancel_another_job(client, monkeypatch):
+    started = {"cancel": threading.Event(), "keep": threading.Event()}
+    release_keep = threading.Event()
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        options["on_state"]("running")
+        started[prompt].set()
+        if prompt == "cancel":
+            await options["cancel_event"].wait()
+            raise controller.sa3.GenerationCancelled("generation cancelled")
+        await asyncio.to_thread(release_keep.wait)
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    cancel_id = "cancel_job_0000000001"
+    keep_id = "keep_job_000000000001"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancelled = pool.submit(
+            client.post,
+            "/api/generate",
+            json=generate_request(prompt="cancel"),
+            headers={controller.JOB_ID_HEADER: cancel_id},
+        )
+        kept = pool.submit(
+            client.post,
+            "/api/generate",
+            json=generate_request(prompt="keep"),
+            headers={controller.JOB_ID_HEADER: keep_id},
+        )
+        assert started["cancel"].wait(2)
+        assert started["keep"].wait(2)
+        assert client.get(f"/api/jobs/{cancel_id}").json()["state"] == "running"
+        assert client.post(f"/api/jobs/{cancel_id}/cancel").status_code == 200
+        assert cancelled.result(timeout=2).status_code == 499
+        assert client.get(f"/api/jobs/{keep_id}").json()["state"] == "running"
+        release_keep.set()
+        assert kept.result(timeout=2).status_code == 200
+
+    assert client.get(f"/api/jobs/{cancel_id}").json()["state"] == "cancelled"
+    assert client.get(f"/api/jobs/{keep_id}").json()["state"] == "succeeded"
+
+
 def test_sa3_status_exposes_the_runtime_contract(client, monkeypatch):
     monkeypatch.setattr(controller.sa3, "status", lambda: {"backend": "tflite"})
     response = client.get("/api/sa3/status")
     assert response.status_code == 200
-    assert response.json() == {"backend": "tflite"}
+    assert response.json() == {"backend": "tflite", "jobs": []}
 
 
 # --- /api/render (M18, the third Magenta engine) --------------------------
@@ -710,6 +835,16 @@ def test_render_returns_the_worker_clip_as_wav(client, render_worker):
     assert command["type"] == "render_clip"
     assert command["prompt"] == "air horn"
     assert command["seconds"] == 2.0
+
+
+def test_render_rejects_oversized_body_before_worker_use(client, render_worker):
+    response = client.post(
+        "/api/render",
+        content=b"{" + b" " * controller.MAX_RENDER_BODY_BYTES + b"}",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert render_worker.ready_waits == 0
 
 
 def test_render_maps_worker_failure_to_502(client, render_worker):

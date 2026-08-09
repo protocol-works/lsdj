@@ -6,7 +6,9 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import sys
+import time
 import wave
 
 import pytest
@@ -63,6 +65,12 @@ with wave.open(str(out), "wb") as target:
     target.writeframes(b"\\0" * round(0.25 * 44100) * 4)
 """
 TIMEOUT_STUB = "import time\ntime.sleep(30)\n"
+TREE_STUB = r"""import pathlib, subprocess, sys, time
+runtime_dir = pathlib.Path(__file__).resolve().parent.parent
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+(runtime_dir / "grandchild.pid").write_text(str(child.pid))
+time.sleep(30)
+"""
 
 
 def pcm16_wav(seconds: float = 0.25) -> bytes:
@@ -430,6 +438,38 @@ def test_explicit_cancellation_stops_the_worker(tflite_runtime):
     with pytest.raises(sa3.GenerationCancelled, match="cancelled"):
         asyncio.run(run())
     assert sa3.status()["generation"]["state"] == "idle"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix process-group contract")
+def test_cancellation_stops_the_generation_grandchild(tflite_runtime):
+    selection = tflite_runtime(TREE_STUB)
+
+    async def run():
+        cancelled = asyncio.Event()
+        task = asyncio.create_task(
+            sa3.generate("anything", 0.5, "sfx", cancel_event=cancelled)
+        )
+        pidfile = selection.runtime_dir / "grandchild.pid"
+        for _ in range(100):
+            if pidfile.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pidfile.exists(), "stub did not launch its grandchild"
+        cancelled.set()
+        await task
+
+    with pytest.raises(sa3.GenerationCancelled, match="cancelled"):
+        asyncio.run(run())
+    pid = int((selection.runtime_dir / "grandchild.pid").read_text())
+    for _ in range(100):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail(f"generation grandchild {pid} survived cancellation")
 
 
 def test_progress_is_normalized_from_the_official_text_stream(tflite_runtime):

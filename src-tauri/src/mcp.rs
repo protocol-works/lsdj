@@ -915,11 +915,13 @@ impl McpHandler {
     /// validation. `magenta` routes to the Magenta renderer (`/api/render`, body
     /// `{prompt, seconds}`); the rest are Stable Audio 3 (`/api/generate`).
     async fn generate_clip(&self, prompt: &str, seconds: f32, kind: &str) -> Result<Vec<u8>, String> {
-        let port = self
-            .app
-            .state::<GenerationServer>()
+        let generation = self.app.state::<GenerationServer>();
+        let port = generation
             .port()
             .ok_or("the generation server is not running")?;
+        let capability = generation
+            .capability()
+            .ok_or("the generation server authentication capability is unavailable")?;
         // sa3 generation is serialised; a full track (medium model) can take minutes,
         // so allow generous headroom but never wait forever for a wedged worker.
         let client = reqwest::Client::builder()
@@ -933,6 +935,8 @@ impl McpHandler {
         };
         let response = client
             .post(format!("http://127.0.0.1:{port}{path}"))
+            .header("x-lsdj-capability", capability)
+            .header("x-lsdj-job-id", crate::local_auth::generate_capability())
             .json(&body)
             .send()
             .await

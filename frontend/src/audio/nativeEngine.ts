@@ -60,7 +60,32 @@ export function isTauri(): boolean {
   return tauriGlobal() !== null
 }
 
-let apiBaseUrlPromise: Promise<string> | null = null
+type ApiConnection = { baseUrl: string; capability: string | null }
+let apiConnectionPromise: Promise<ApiConnection> | null = null
+let apiConnectionOwner: TauriGlobal | null = null
+
+function getApiConnection(): Promise<ApiConnection> {
+  const owner = tauriGlobal()
+  if (!owner) return Promise.resolve({ baseUrl: '', capability: null })
+  // A webview has one bridge for its lifetime. Coupling the cache to that bridge
+  // also avoids carrying a stale launch capability across test/dev hot reloads.
+  if (apiConnectionOwner !== owner) {
+    apiConnectionOwner = owner
+    apiConnectionPromise = null
+  }
+  if (!apiConnectionPromise) {
+    apiConnectionPromise = invoke<{
+      generationPort: number | null
+      generationCapability: string | null
+    }>('app_info')
+      .then((info) => ({
+        baseUrl: info.generationPort ? `http://127.0.0.1:${info.generationPort}` : '',
+        capability: info.generationCapability ?? null,
+      }))
+      .catch(() => ({ baseUrl: '', capability: null }))
+  }
+  return apiConnectionPromise
+}
 
 /** Base URL for the backend `/api/*` generation endpoints (sa3/Magenta pad+track
  * render). FastAPI no longer serves the UI, so the Rust shell runs a generation
@@ -68,12 +93,18 @@ let apiBaseUrlPromise: Promise<string> | null = null
  * `http://127.0.0.1:<port>/api/...`. Resolved once and cached; falls back to ''
  * (relative) if the port can't be resolved. */
 export function getApiBaseUrl(): Promise<string> {
-  if (!apiBaseUrlPromise) {
-    apiBaseUrlPromise = invoke<{ generationPort: number | null }>('app_info')
-      .then((info) => (info.generationPort ? `http://127.0.0.1:${info.generationPort}` : ''))
-      .catch(() => '')
+  return getApiConnection().then((connection) => connection.baseUrl)
+}
+
+/** Authenticated fetch to the app-owned loopback generation service. */
+export async function fetchGenerationApi(path: string, init: RequestInit = {}): Promise<Response> {
+  const connection = await getApiConnection()
+  if (isTauri() && !connection.capability) {
+    throw new Error('generation server authentication is unavailable')
   }
-  return apiBaseUrlPromise
+  const headers = new Headers(init.headers)
+  if (connection.capability) headers.set('x-lsdj-capability', connection.capability)
+  return fetch(`${connection.baseUrl}${path}`, { ...init, headers })
 }
 
 /** The native MCP server endpoint + bearer token (ADR-0020 Phase 2), reported by

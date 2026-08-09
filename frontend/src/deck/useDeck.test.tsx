@@ -140,7 +140,7 @@ function installNativeTauri() {
     }
     // app_info feeds getApiBaseUrl(); null port → '' (relative fetches).
     return cmd === 'app_info'
-      ? Promise.resolve({ generationPort: null })
+      ? Promise.resolve({ generationPort: null, generationCapability: "a".repeat(64) })
       : Promise.resolve(undefined)
   })
   class Channel {
@@ -1957,7 +1957,7 @@ describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
     // Sever the harness echo: deck_play reaches Rust, no snapshot has landed yet.
     native.invoke.mockImplementation((cmd: string) =>
       cmd === 'app_info'
-        ? Promise.resolve({ generationPort: null })
+        ? Promise.resolve({ generationPort: null, generationCapability: "a".repeat(64) })
         : Promise.resolve(undefined),
     )
 
@@ -2011,7 +2011,7 @@ describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
     // Sever the echo: the first tap's round-trip has not landed yet.
     native.invoke.mockImplementation((cmd: string) =>
       cmd === 'app_info'
-        ? Promise.resolve({ generationPort: null })
+        ? Promise.resolve({ generationPort: null, generationCapability: "a".repeat(64) })
         : Promise.resolve(undefined),
     )
 

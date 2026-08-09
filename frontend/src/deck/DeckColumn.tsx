@@ -1041,6 +1041,12 @@ export function DeckColumn({
                 : 'default'
             }
           />
+          {state.runtimeDiagnostics?.capabilities?.negative_prompt === false && (
+            <Stat
+              label={t('deck.health.negativePrompt')}
+              value={t('deck.health.negativePromptUnavailable')}
+            />
+          )}
         </div>
         )}
       </div>

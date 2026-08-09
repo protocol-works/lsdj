@@ -2,6 +2,7 @@
 
 import io
 import struct
+import threading
 import wave
 
 import pytest
@@ -117,3 +118,37 @@ def test_output_validation_rejects_corruption_and_wrong_duration():
 
 def test_long_duration_frame_contract_is_exact_without_allocating_a_fixture():
     assert round(380.0 * sa3_audio.SAMPLE_RATE) == 16_758_000
+
+
+def test_normalization_can_be_cancelled_while_converting():
+    cancel = threading.Event()
+    source = pcm_wav(
+        bytes([128]) * 20_000,
+        sample_rate=8_000,
+        channels=1,
+        sample_width=1,
+    )
+
+    def progress(current, total):
+        assert total > current
+        cancel.set()
+
+    with pytest.raises(sa3_audio.AudioNormalizationCancelled):
+        sa3_audio.normalize_wav(source, cancel_event=cancel, on_progress=progress)
+
+
+def test_decoded_work_and_normalized_frame_limits_are_enforced(monkeypatch):
+    source = pcm_wav(
+        b"\0" * 16,
+        sample_rate=8_000,
+        channels=1,
+        sample_width=1,
+    )
+    monkeypatch.setattr(sa3_audio, "MAX_DECODED_PCM_BYTES", 8)
+    with pytest.raises(sa3_audio.AudioFormatError, match="decoded PCM"):
+        sa3_audio.normalize_wav(source)
+
+    monkeypatch.setattr(sa3_audio, "MAX_DECODED_PCM_BYTES", 1024)
+    monkeypatch.setattr(sa3_audio, "MAX_NORMALIZED_FRAMES", 10)
+    with pytest.raises(sa3_audio.AudioFormatError, match="normalized WAV"):
+        sa3_audio.normalize_wav(source)
