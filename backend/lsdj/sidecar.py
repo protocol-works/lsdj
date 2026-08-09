@@ -17,10 +17,11 @@ Wire protocol (mirrors `src-tauri/src/sidecar.rs`):
   as UTF-8 JSON.
 
 The dedicated MRT2 clip renderer uses the same authenticated connection but a
-separate strict protocol: one JSON RENDER_REQUEST (or matching RENDER_CANCEL),
-then RENDER_BEGIN metadata, bounded aligned RENDER_CHUNK frames, and a
-RENDER_END carrying the exact byte count and SHA-256. It never accepts deck
-control frames or unbounded PCM.
+separate strict protocol: serial JSON RENDER_REQUEST messages with authoritative
+integer frame counts and monotonically increasing sequence numbers (or a cancel
+matching the active job/sequence), then exact RENDER_BEGIN metadata, bounded
+aligned RENDER_CHUNK frames, and a RENDER_END carrying the exact identity, byte
+count, and SHA-256. It never accepts deck control frames or unbounded PCM.
 
 Shared-worker frames prefix payloads with a single deck byte (0 or 1). The Rust
 and Python transport tests cover both forms without loading either model stack.
@@ -41,8 +42,9 @@ import socket
 import struct
 import sys
 import threading
+import time
 from dataclasses import dataclass
-from typing import Any, BinaryIO, Callable, Mapping
+from typing import Any, BinaryIO, Callable, Mapping, MutableMapping
 
 from .mrt2 import (
     AUTO_RUNTIME,
@@ -90,14 +92,17 @@ RENDER_SAMPLE_WIDTH = 4
 RENDER_BYTES_PER_FRAME = RENDER_CHANNELS * RENDER_SAMPLE_WIDTH
 MIN_RENDER_SECONDS = 0.5
 MAX_RENDER_SECONDS = 180.0
+MIN_RENDER_FRAMES = 24_000
+MAX_RENDER_FRAMES = 8_640_000
 MAX_RENDER_PROMPT_CHARS = 32_000
 MAX_RENDER_REQUEST_BYTES = 64 * 1024
 MAX_RENDER_CONTROL_BYTES = 1024
-MAX_RENDER_PCM_BYTES = (
-    round(MAX_RENDER_SECONDS * RENDER_SAMPLE_RATE) * RENDER_BYTES_PER_FRAME
-)
+MAX_RENDER_PCM_BYTES = MAX_RENDER_FRAMES * RENDER_BYTES_PER_FRAME
 RENDER_PCM_CHUNK_BYTES = 1024 * 1024
 MAX_RENDER_METADATA_BYTES = 8 * 1024
+RENDER_WRITE_POLL_SECONDS = 0.01
+RENDER_WRITE_TIMEOUT_SECONDS = 5.0
+MAX_U64 = (1 << 64) - 1
 _RENDER_JOB_ID = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
 
 # u8 frame type, u32 little-endian payload length.
@@ -126,12 +131,16 @@ class RenderProtocolError(ValueError):
 @dataclass(frozen=True)
 class RenderRequest:
     job_id: str
+    sequence: int
     prompt: str
-    seconds: float
+    frames: int
 
     @property
-    def frames(self) -> int:
-        return round(self.seconds * RENDER_SAMPLE_RATE)
+    def seconds(self) -> float:
+        # Frames are authoritative on the wire. Seconds exist only at the
+        # upstream engine boundary, so Python never independently rounds the
+        # user's duration.
+        return self.frames / RENDER_SAMPLE_RATE
 
     @property
     def pcm_bytes(self) -> int:
@@ -141,6 +150,7 @@ class RenderRequest:
 @dataclass(frozen=True)
 class RenderCancel:
     job_id: str
+    sequence: int
 
 
 @dataclass(frozen=True)
@@ -149,6 +159,14 @@ class _RenderReaderFailure:
 
 
 _RenderCommand = RenderRequest | RenderCancel | _RenderReaderFailure | None
+
+
+class _RenderWorkerStopped(Exception):
+    """Internal control-flow marker after the disposable worker is stopped."""
+
+
+class _RenderWriteError(Exception):
+    """A response frame could not be committed within the bounded deadline."""
 
 
 def write_frame(sock: socket.socket, frame_type: int, payload: bytes) -> None:
@@ -177,12 +195,18 @@ def read_frame(reader) -> tuple[int, bytes] | None:
 
 
 def authenticate_to_host(
-    sock: socket.socket, env: dict[str, str] | None = None
+    sock: socket.socket, env: MutableMapping[str, str] | None = None
 ) -> None:
-    """Send the in-memory launch capability before any worker traffic."""
+    """Consume and send the per-child capability before any worker traffic.
+
+    The token is removed before the write, including on failure, so a child can
+    never reconnect or retry with the same capability. The native listener must
+    accept it as the exact first frame, compare it in constant time, and consume
+    its expected token after that one connection attempt.
+    """
 
     env = os.environ if env is None else env
-    token = env.get(WORKER_TOKEN_ENV, "")
+    token = env.pop(WORKER_TOKEN_ENV, "")
     if not 32 <= len(token) <= 256 or not token.isascii():
         raise RuntimeError("the authenticated sidecar launch token is missing")
     write_frame(sock, FRAME_AUTH, token.encode("ascii"))
@@ -201,7 +225,13 @@ def _strict_json_object(payload: bytes) -> dict[str, object]:
         value = json.loads(payload.decode("utf-8"), object_pairs_hook=pairs)
     except RenderProtocolError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        RecursionError,
+        OverflowError,
+    ):
         raise RenderProtocolError("render JSON is invalid") from None
     if not isinstance(value, dict):
         raise RenderProtocolError("render JSON must be an object")
@@ -236,6 +266,38 @@ def _validate_job_id(value: object) -> str:
     return value
 
 
+def _validate_exact_int(value: object, *, name: str, minimum: int, maximum: int) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise RenderProtocolError(f"render {name} is invalid")
+    return value
+
+
+def render_frames_for_seconds(seconds: float) -> int:
+    """Reference conversion for the native gateway's user-facing duration.
+
+    The gateway performs this once, before sending an integer frame count:
+    ``floor(seconds_f64 * 48000 + 0.5)``. This deliberately avoids Python's
+    ties-to-even ``round`` behavior at half-frame boundaries.
+    """
+
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or not MIN_RENDER_SECONDS <= float(seconds) <= MAX_RENDER_SECONDS
+    ):
+        raise RenderProtocolError(
+            f"render seconds must be {MIN_RENDER_SECONDS:g}-{MAX_RENDER_SECONDS:g}"
+        )
+    frames = math.floor(float(seconds) * RENDER_SAMPLE_RATE + 0.5)
+    return _validate_exact_int(
+        frames,
+        name="frames",
+        minimum=MIN_RENDER_FRAMES,
+        maximum=MAX_RENDER_FRAMES,
+    )
+
+
 def read_render_command(reader: BinaryIO) -> RenderRequest | RenderCancel | None:
     """Read one strict host command, distinguishing clean EOF from truncation."""
 
@@ -250,15 +312,19 @@ def read_render_command(reader: BinaryIO) -> RenderRequest | RenderCancel | None
         return None
     frame_type, payload = frame
     value = _strict_json_object(payload)
-    if value.get("schemaVersion") != RENDER_SCHEMA_VERSION:
+    schema_version = value.get("schemaVersion")
+    if type(schema_version) is not int or schema_version != RENDER_SCHEMA_VERSION:
         raise RenderProtocolError("render command schema is unsupported")
     job_id = _validate_job_id(value.get("jobId"))
+    sequence = _validate_exact_int(
+        value.get("sequence"), name="sequence", minimum=1, maximum=MAX_U64
+    )
     if frame_type == FRAME_RENDER_CANCEL:
-        if set(value) != {"schemaVersion", "jobId"}:
+        if set(value) != {"schemaVersion", "jobId", "sequence"}:
             raise RenderProtocolError("render cancel contains unknown fields")
-        return RenderCancel(job_id=job_id)
+        return RenderCancel(job_id=job_id, sequence=sequence)
 
-    if set(value) != {"schemaVersion", "jobId", "prompt", "seconds"}:
+    if set(value) != {"schemaVersion", "jobId", "sequence", "prompt", "frames"}:
         raise RenderProtocolError("render request contains missing or unknown fields")
     prompt = value.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -266,20 +332,18 @@ def read_render_command(reader: BinaryIO) -> RenderRequest | RenderCancel | None
     prompt = prompt.strip()
     if len(prompt) > MAX_RENDER_PROMPT_CHARS:
         raise RenderProtocolError("render prompt exceeds its character cap")
-    seconds = value.get("seconds")
-    if (
-        isinstance(seconds, bool)
-        or not isinstance(seconds, (int, float))
-        or not math.isfinite(seconds)
-        or not MIN_RENDER_SECONDS <= float(seconds) <= MAX_RENDER_SECONDS
-    ):
-        raise RenderProtocolError(
-            f"render seconds must be {MIN_RENDER_SECONDS:g}-{MAX_RENDER_SECONDS:g}"
-        )
-    request = RenderRequest(job_id=job_id, prompt=prompt, seconds=float(seconds))
-    if request.pcm_bytes > MAX_RENDER_PCM_BYTES:
-        raise RenderProtocolError("render output exceeds its PCM byte cap")
-    return request
+    frames = _validate_exact_int(
+        value.get("frames"),
+        name="frames",
+        minimum=MIN_RENDER_FRAMES,
+        maximum=MAX_RENDER_FRAMES,
+    )
+    return RenderRequest(
+        job_id=job_id,
+        sequence=sequence,
+        prompt=prompt,
+        frames=frames,
+    )
 
 
 def _render_json(value: Mapping[str, object]) -> bytes:
@@ -293,16 +357,28 @@ def write_render_error(
     sock: socket.socket,
     *,
     job_id: str | None,
+    sequence: int,
     code: str,
     message: str,
+    send_frame: Callable[[int, bytes], None] | None = None,
 ) -> None:
-    write_frame(
-        sock,
+    sequence = _validate_exact_int(
+        sequence, name="sequence", minimum=0, maximum=MAX_U64
+    )
+    if job_id is not None:
+        _validate_job_id(job_id)
+    sender = (
+        (lambda frame_type, payload: write_frame(sock, frame_type, payload))
+        if send_frame is None
+        else send_frame
+    )
+    sender(
         FRAME_RENDER_ERROR,
         _render_json(
             {
                 "schemaVersion": RENDER_SCHEMA_VERSION,
                 "jobId": job_id,
+                "sequence": sequence,
                 "code": code[:64],
                 "message": message[:512],
             }
@@ -311,23 +387,43 @@ def write_render_error(
 
 
 def write_render_response(
-    sock: socket.socket, request: RenderRequest, pcm: bytes
+    sock: socket,
+    request: RenderRequest,
+    pcm: bytes,
+    *,
+    send_frame: Callable[[int, bytes], None] | None = None,
+    before_frame: Callable[[], None] | None = None,
 ) -> None:
     """Write one complete, size-checked f32le render response."""
 
+    _validate_job_id(request.job_id)
+    _validate_exact_int(request.sequence, name="sequence", minimum=1, maximum=MAX_U64)
+    _validate_exact_int(
+        request.frames,
+        name="frames",
+        minimum=MIN_RENDER_FRAMES,
+        maximum=MAX_RENDER_FRAMES,
+    )
     if not isinstance(pcm, bytes):
         raise RenderProtocolError("render engine returned a non-bytes payload")
     if len(pcm) != request.pcm_bytes or len(pcm) > MAX_RENDER_PCM_BYTES:
         raise RenderProtocolError(
             f"render engine returned {len(pcm)} PCM bytes; expected {request.pcm_bytes}"
         )
-    write_frame(
-        sock,
+    sender = (
+        (lambda frame_type, payload: write_frame(sock, frame_type, payload))
+        if send_frame is None
+        else send_frame
+    )
+    check = (lambda: None) if before_frame is None else before_frame
+    check()
+    sender(
         FRAME_RENDER_BEGIN,
         _render_json(
             {
                 "schemaVersion": RENDER_SCHEMA_VERSION,
                 "jobId": request.job_id,
+                "sequence": request.sequence,
                 "sampleRate": RENDER_SAMPLE_RATE,
                 "channels": RENDER_CHANNELS,
                 "sampleFormat": "f32le",
@@ -338,16 +434,19 @@ def write_render_response(
     )
     digest = hashlib.sha256()
     for start in range(0, len(pcm), RENDER_PCM_CHUNK_BYTES):
+        check()
         chunk = pcm[start : start + RENDER_PCM_CHUNK_BYTES]
         digest.update(chunk)
-        write_frame(sock, FRAME_RENDER_CHUNK, chunk)
-    write_frame(
-        sock,
+        sender(FRAME_RENDER_CHUNK, chunk)
+    check()
+    sender(
         FRAME_RENDER_END,
         _render_json(
             {
                 "schemaVersion": RENDER_SCHEMA_VERSION,
                 "jobId": request.job_id,
+                "sequence": request.sequence,
+                "frames": request.frames,
                 "pcmBytes": request.pcm_bytes,
                 "sha256": digest.hexdigest(),
             }
@@ -355,12 +454,36 @@ def write_render_response(
     )
 
 
+def _validate_render_error(value: Mapping[str, object], request: RenderRequest) -> str:
+    if (
+        set(value) != {"schemaVersion", "jobId", "sequence", "code", "message"}
+        or type(value.get("schemaVersion")) is not int
+        or value.get("schemaVersion") != RENDER_SCHEMA_VERSION
+        or value.get("jobId") != request.job_id
+        or type(value.get("sequence")) is not int
+        or value.get("sequence") != request.sequence
+        or type(value.get("code")) is not str
+        or not 1 <= len(value["code"]) <= 64
+        or type(value.get("message")) is not str
+        or len(value["message"]) > 512
+    ):
+        raise RenderProtocolError("render error metadata is invalid")
+    return value["code"]
+
+
 def read_render_response(
-    reader: BinaryIO, expected_job_id: str, *, require_eof: bool = False
+    reader: BinaryIO, request: RenderRequest, *, require_eof: bool = False
 ) -> bytes:
     """Validate and assemble one response; the native host mirrors this parser."""
 
-    expected_job_id = _validate_job_id(expected_job_id)
+    _validate_job_id(request.job_id)
+    _validate_exact_int(request.sequence, name="sequence", minimum=1, maximum=MAX_U64)
+    _validate_exact_int(
+        request.frames,
+        name="frames",
+        minimum=MIN_RENDER_FRAMES,
+        maximum=MAX_RENDER_FRAMES,
+    )
     first = _read_bounded_render_frame(
         reader,
         {
@@ -373,19 +496,12 @@ def read_render_response(
     frame_type, payload = first
     value = _strict_json_object(payload)
     if frame_type == FRAME_RENDER_ERROR:
-        if (
-            set(value) != {"schemaVersion", "jobId", "code", "message"}
-            or value.get("schemaVersion") != RENDER_SCHEMA_VERSION
-            or value.get("jobId") != expected_job_id
-            or not isinstance(value.get("code"), str)
-            or not isinstance(value.get("message"), str)
-        ):
-            raise RenderProtocolError("render error metadata is invalid")
-        code = value.get("code")
+        code = _validate_render_error(value, request)
         raise RenderProtocolError(f"render worker returned {code}")
     expected_fields = {
         "schemaVersion",
         "jobId",
+        "sequence",
         "sampleRate",
         "channels",
         "sampleFormat",
@@ -394,24 +510,28 @@ def read_render_response(
     }
     if (
         set(value) != expected_fields
+        or type(value.get("schemaVersion")) is not int
         or value.get("schemaVersion") != RENDER_SCHEMA_VERSION
     ):
         raise RenderProtocolError("render begin metadata is invalid")
-    if value.get("jobId") != expected_job_id:
-        raise RenderProtocolError("render response jobId is out of turn")
+    if (
+        value.get("jobId") != request.job_id
+        or type(value.get("sequence")) is not int
+        or value.get("sequence") != request.sequence
+    ):
+        raise RenderProtocolError("render response identity is out of turn")
     frames = value.get("frames")
     pcm_bytes = value.get("pcmBytes")
     if (
-        value.get("sampleRate") != RENDER_SAMPLE_RATE
+        type(value.get("sampleRate")) is not int
+        or value.get("sampleRate") != RENDER_SAMPLE_RATE
+        or type(value.get("channels")) is not int
         or value.get("channels") != RENDER_CHANNELS
         or value.get("sampleFormat") != "f32le"
-        or isinstance(frames, bool)
-        or not isinstance(frames, int)
-        or frames < 1
-        or isinstance(pcm_bytes, bool)
-        or not isinstance(pcm_bytes, int)
-        or pcm_bytes != frames * RENDER_BYTES_PER_FRAME
-        or pcm_bytes > MAX_RENDER_PCM_BYTES
+        or type(frames) is not int
+        or frames != request.frames
+        or type(pcm_bytes) is not int
+        or pcm_bytes != request.pcm_bytes
     ):
         raise RenderProtocolError("render begin audio identity is invalid")
 
@@ -423,6 +543,7 @@ def read_render_response(
             {
                 FRAME_RENDER_CHUNK: RENDER_PCM_CHUNK_BYTES,
                 FRAME_RENDER_END: MAX_RENDER_METADATA_BYTES,
+                FRAME_RENDER_ERROR: MAX_RENDER_METADATA_BYTES,
             },
         )
         if frame is None:
@@ -437,12 +558,31 @@ def read_render_response(
             digest.update(payload)
             continue
 
+        if frame_type == FRAME_RENDER_ERROR:
+            code = _validate_render_error(_strict_json_object(payload), request)
+            raise RenderProtocolError(f"render worker returned {code}")
+
         end = _strict_json_object(payload)
         if (
-            set(end) != {"schemaVersion", "jobId", "pcmBytes", "sha256"}
+            set(end)
+            != {
+                "schemaVersion",
+                "jobId",
+                "sequence",
+                "frames",
+                "pcmBytes",
+                "sha256",
+            }
+            or type(end.get("schemaVersion")) is not int
             or end.get("schemaVersion") != RENDER_SCHEMA_VERSION
-            or end.get("jobId") != expected_job_id
+            or end.get("jobId") != request.job_id
+            or type(end.get("sequence")) is not int
+            or end.get("sequence") != request.sequence
+            or type(end.get("frames")) is not int
+            or end.get("frames") != request.frames
+            or type(end.get("pcmBytes")) is not int
             or end.get("pcmBytes") != pcm_bytes
+            or type(end.get("sha256")) is not str
             or end.get("sha256") != digest.hexdigest()
             or len(output) != pcm_bytes
         ):
@@ -707,7 +847,7 @@ class _RenderCommandReader:
     def __init__(self, reader: BinaryIO) -> None:
         # Socket backpressure bounds requests that arrive faster than the single
         # render slot can consume them; no unbounded JSON queue exists.
-        self.commands: queue.Queue[_RenderCommand] = queue.Queue(maxsize=4)
+        self.commands: queue.Queue[_RenderCommand] = queue.Queue(maxsize=1)
         self._reader = reader
         self._thread = threading.Thread(
             target=self._pump, name="mrt2-render-control", daemon=True
@@ -718,12 +858,12 @@ class _RenderCommandReader:
         while True:
             try:
                 command = read_render_command(self._reader)
-            except (OSError, RenderProtocolError) as error:
-                message = (
-                    str(error)
-                    if isinstance(error, RenderProtocolError)
-                    else "render control connection failed"
-                )
+            except RenderProtocolError as error:
+                message = str(error)
+                self.commands.put(_RenderReaderFailure(message[:512]))
+                return
+            except Exception:  # noqa: BLE001 - never expose unexpected details
+                message = "render control connection failed"
                 self.commands.put(_RenderReaderFailure(message[:512]))
                 return
             self.commands.put(command)
@@ -735,6 +875,64 @@ def _render_startup_error(error: Exception) -> str:
     # `public_startup_error` preserves deliberately bounded RuntimeUnavailable
     # diagnostics and collapses unknown exceptions to their class only.
     return public_startup_error(error)[:512]
+
+
+def _shutdown_render_socket(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except (AttributeError, OSError):
+        pass
+
+
+def _write_render_frame_bounded(
+    sock: socket.socket,
+    frame_type: int,
+    payload: bytes,
+    *,
+    poll: Callable[[], None] | None = None,
+    timeout: float = RENDER_WRITE_TIMEOUT_SECONDS,
+) -> None:
+    """Commit a frame without blocking the cancellation/control loop.
+
+    ``sendall`` runs in a daemon because Python cannot portably make a socket's
+    send side nonblocking without also disturbing the concurrent buffered read
+    side. The caller remains live, polls control every 10 ms, and enforces one
+    absolute write deadline. Closing the socket before process termination
+    prevents a blocked writer from emitting late output in injected tests too.
+    """
+
+    result: queue.Queue[Exception | None] = queue.Queue(maxsize=1)
+
+    def send() -> None:
+        try:
+            write_frame(sock, frame_type, payload)
+        except Exception as error:  # noqa: BLE001 - sanitized below
+            result.put(error)
+        else:
+            result.put(None)
+
+    if poll is not None:
+        poll()
+    threading.Thread(
+        target=send,
+        name=f"mrt2-render-write-{frame_type}",
+        daemon=True,
+    ).start()
+    deadline = time.monotonic() + timeout
+    while True:
+        if poll is not None:
+            poll()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _shutdown_render_socket(sock)
+            raise _RenderWriteError("render connection write timed out")
+        try:
+            error = result.get(timeout=min(RENDER_WRITE_POLL_SECONDS, remaining))
+        except queue.Empty:
+            continue
+        if error is not None:
+            raise _RenderWriteError("render connection write failed") from None
+        return
 
 
 def run_render_worker(
@@ -752,6 +950,11 @@ def run_render_worker(
     be interrupted safely inside upstream PyTorch, so cancellation or EOF while
     it is active terminates this disposable process and releases its CUDA
     context; the native supervisor may start a fresh worker for the next job.
+
+    The supervisor owns an outer startup/job deadline and must kill and reap the
+    full child tree on cancellation, disconnect, deadline, or owner drop,
+    including before ``render_ready``. A child has one connection and one
+    consumed auth token; it never reconnects or retries a sequence.
     """
 
     try:
@@ -764,124 +967,194 @@ def run_render_worker(
         if callable(warm_up):
             warm_up()
     except Exception as error:
-        write_render_error(
-            sock,
-            job_id=None,
-            code="startup_failed",
-            message=_render_startup_error(error),
-        )
-        return
-
-    write_frame(
-        sock,
-        FRAME_STATUS,
-        _render_json(
-            {
-                "schemaVersion": RENDER_SCHEMA_VERSION,
-                "event": "render_ready",
-                "model": model,
-                "runtime": runtime,
-            }
-        ),
-    )
-    commands = _RenderCommandReader(sock.makefile("rb"))
-
-    while True:
-        command = commands.commands.get()
-        if command is None:
-            return
-        if isinstance(command, _RenderReaderFailure):
+        try:
             write_render_error(
                 sock,
                 job_id=None,
-                code="protocol_error",
-                message=command.message,
+                sequence=0,
+                code="startup_failed",
+                message=_render_startup_error(error),
+                send_frame=lambda frame_type, payload: _write_render_frame_bounded(
+                    sock, frame_type, payload, timeout=1.0
+                ),
             )
-            return
-        if isinstance(command, RenderCancel):
-            write_render_error(
-                sock,
-                job_id=command.job_id,
-                code="no_active_job",
-                message="render job is not active",
-            )
-            continue
+        except _RenderWriteError:
+            pass
+        return
 
-        result: queue.Queue[tuple[bool, bytes | Exception]] = queue.Queue(maxsize=1)
+    try:
+        _write_render_frame_bounded(
+            sock,
+            FRAME_STATUS,
+            _render_json(
+                {
+                    "schemaVersion": RENDER_SCHEMA_VERSION,
+                    "event": "render_ready",
+                    "model": model,
+                    "runtime": runtime,
+                    "nextSequence": 1,
+                }
+            ),
+        )
+    except _RenderWriteError:
+        return
+    commands = _RenderCommandReader(sock.makefile("rb"))
+    expected_sequence: int | None = 1
 
-        def render() -> None:
-            try:
-                result.put((True, engine.render_clip(command.prompt, command.seconds)))
-            except Exception as error:  # noqa: BLE001 - collapsed at the boundary
-                result.put((False, error))
+    def stop(code: int) -> None:
+        _shutdown_render_socket(sock)
+        terminate(code)
+        raise _RenderWorkerStopped
 
-        threading.Thread(
-            target=render,
-            name=f"mrt2-render-{command.job_id[:16]}",
-            daemon=True,
-        ).start()
-
-        while True:
-            try:
-                succeeded, value = result.get(timeout=0.025)
-                break
-            except queue.Empty:
-                pass
-            try:
-                pending = commands.commands.get_nowait()
-            except queue.Empty:
-                continue
-
-            if pending is None:
-                terminate(0)
-                return
-            if isinstance(pending, RenderCancel) and pending.job_id == command.job_id:
-                write_render_error(
-                    sock,
-                    job_id=command.job_id,
-                    code="cancelled",
-                    message="render job was cancelled",
-                )
-                terminate(2)
-                return
-            if isinstance(pending, _RenderReaderFailure):
-                message = pending.message
-                job_id = command.job_id
-            elif isinstance(pending, RenderRequest):
-                message = "render requests must not overlap"
-                job_id = pending.job_id
-            else:
-                message = "render cancellation is out of turn"
-                job_id = pending.job_id
+    def send_error(
+        *, job_id: str | None, sequence: int, code: str, message: str
+    ) -> None:
+        try:
             write_render_error(
                 sock,
                 job_id=job_id,
-                code="protocol_error",
+                sequence=sequence,
+                code=code,
                 message=message,
+                send_frame=lambda frame_type, payload: _write_render_frame_bounded(
+                    sock, frame_type, payload, timeout=1.0
+                ),
             )
-            terminate(2)
-            return
+        except _RenderWriteError:
+            pass
 
-        if not succeeded:
-            write_render_error(
-                sock,
-                job_id=command.job_id,
-                code="render_failed",
-                message="MRT2 render failed; the worker must be restarted",
+    try:
+        while True:
+            command = commands.commands.get()
+            if command is None:
+                return
+            if isinstance(command, _RenderReaderFailure):
+                send_error(
+                    job_id=None,
+                    sequence=expected_sequence or MAX_U64,
+                    code="protocol_error",
+                    message=command.message,
+                )
+                stop(2)
+            if isinstance(command, RenderCancel):
+                send_error(
+                    job_id=command.job_id,
+                    sequence=command.sequence,
+                    code="no_active_job",
+                    message="render job is not active",
+                )
+                stop(2)
+            if expected_sequence is None or command.sequence != expected_sequence:
+                send_error(
+                    job_id=command.job_id,
+                    sequence=command.sequence,
+                    code="sequence_error",
+                    message="render sequence is duplicate or out of order",
+                )
+                stop(2)
+            expected_sequence = (
+                None if command.sequence == MAX_U64 else command.sequence + 1
             )
-            return
-        try:
-            if not isinstance(value, bytes):
-                raise RenderProtocolError("render engine returned a non-bytes payload")
-            write_render_response(sock, command, value)
-        except RenderProtocolError:
-            write_render_error(
-                sock,
-                job_id=command.job_id,
-                code="invalid_audio",
-                message="MRT2 render returned an invalid PCM payload",
-            )
-            return
+
+            result: queue.Queue[tuple[bool, bytes | Exception]] = queue.Queue(maxsize=1)
+
+            def render() -> None:
+                try:
+                    result.put(
+                        (True, engine.render_clip(command.prompt, command.seconds))
+                    )
+                except Exception as error:  # noqa: BLE001 - boundary collapse
+                    result.put((False, error))
+
+            threading.Thread(
+                target=render,
+                name=f"mrt2-render-{command.job_id[:16]}",
+                daemon=True,
+            ).start()
+
+            def poll_active(*, can_reply: bool = True) -> None:
+                try:
+                    pending = commands.commands.get_nowait()
+                except queue.Empty:
+                    return
+
+                if pending is None:
+                    stop(0)
+                if (
+                    isinstance(pending, RenderCancel)
+                    and pending.job_id == command.job_id
+                    and pending.sequence == command.sequence
+                ):
+                    if can_reply:
+                        send_error(
+                            job_id=command.job_id,
+                            sequence=command.sequence,
+                            code="cancelled",
+                            message="render job was cancelled",
+                        )
+                    stop(2)
+                message = (
+                    pending.message
+                    if isinstance(pending, _RenderReaderFailure)
+                    else "render command is overlapping or out of turn"
+                )
+                if can_reply:
+                    send_error(
+                        job_id=command.job_id,
+                        sequence=command.sequence,
+                        code="protocol_error",
+                        message=message,
+                    )
+                stop(2)
+
+            # Control always gets first look. Once the result arrives, poll
+            # again before BEGIN so a cancel already queued behind it wins.
+            while True:
+                poll_active()
+                try:
+                    succeeded, value = result.get(timeout=RENDER_WRITE_POLL_SECONDS)
+                    break
+                except queue.Empty:
+                    continue
+            poll_active()
+
+            if not succeeded:
+                send_error(
+                    job_id=command.job_id,
+                    sequence=command.sequence,
+                    code="render_failed",
+                    message="MRT2 render failed; the worker must be restarted",
+                )
+                return
+            try:
+                if not isinstance(value, bytes):
+                    raise RenderProtocolError(
+                        "render engine returned a non-bytes payload"
+                    )
+                write_render_response(
+                    sock,
+                    command,
+                    value,
+                    before_frame=poll_active,
+                    send_frame=lambda frame_type, payload: _write_render_frame_bounded(
+                        sock,
+                        frame_type,
+                        payload,
+                        poll=lambda: poll_active(can_reply=False),
+                    ),
+                )
+            except RenderProtocolError:
+                send_error(
+                    job_id=command.job_id,
+                    sequence=command.sequence,
+                    code="invalid_audio",
+                    message="MRT2 render returned an invalid PCM payload",
+                )
+                return
+            except _RenderWriteError:
+                stop(2)
+    except _RenderWorkerStopped:
+        return
 
 
 # --- Model tooling (the in-app model manager, issue #43) -------------------
@@ -1044,7 +1317,6 @@ def main(argv=None) -> None:
         sock = socket.create_connection(("127.0.0.1", args.port))
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         authenticate_to_host(sock)
-        os.environ.pop(WORKER_TOKEN_ENV, None)
         run_render_worker(sock, args.model, runtime=args.runtime)
         return
 
@@ -1062,7 +1334,6 @@ def main(argv=None) -> None:
         sock = socket.create_connection(("127.0.0.1", args.port))
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         authenticate_to_host(sock)
-        os.environ.pop(WORKER_TOKEN_ENV, None)
         run_shared_sidecar(
             sock,
             (args.model_a, args.model_b),
@@ -1082,7 +1353,6 @@ def main(argv=None) -> None:
     sock = socket.create_connection(("127.0.0.1", args.port))
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     authenticate_to_host(sock)
-    os.environ.pop(WORKER_TOKEN_ENV, None)
     run_sidecar(sock, args.deck, args.model, runtime=args.runtime)
 
 
