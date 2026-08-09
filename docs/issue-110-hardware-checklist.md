@@ -65,6 +65,15 @@ is not an underrun measurement.
   process remains.
 - [ ] Prove the production Rust host owns one model worker with independent deck
   continuation states, as selected by #109.
+- [ ] On the minimum-VRAM Windows and Linux hosts, switch the shared worker from
+  equal models to different models and back while both decks are active. Verify
+  both decks enter loading/unavailable together, the old process and CUDA
+  allocation are fully reaped before replacement allocation starts, and no
+  transient second generation appears in process/VRAM telemetry.
+- [ ] Force the replacement launch and model load to fail after the old shared
+  worker is reaped. Verify both decks remain clearly unavailable and a later
+  valid selection recovers them. This serialized minimum-VRAM transition does
+  not promise live hardware rollback to the old worker.
 
 ## Release gate
 

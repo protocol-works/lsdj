@@ -165,6 +165,7 @@ type StatusSink = Box<dyn FnMut(String) + Send>;
 type PcmSink = Box<dyn FnMut(&[u8]) + Send>;
 type DeckStatusSinks = [StatusSink; lsdj_engine::DECK_COUNT];
 type DeckPcmSinks = [PcmSink; lsdj_engine::DECK_COUNT];
+type SharedStatusSinks = [Arc<Mutex<StatusSink>>; lsdj_engine::DECK_COUNT];
 
 /// The read loop: drain frames from the sidecar until EOF/error. PCM frames are
 /// posted to the deck's ring (the non-RT producer side) and then TEED to `on_pcm`
@@ -262,7 +263,6 @@ struct ReaderParts {
 
 struct SharedReaderExit {
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
-    on_status: DeckStatusSinks,
 }
 
 struct SharedReaderParts {
@@ -408,7 +408,7 @@ fn start_shared_reader(
     listener: TcpListener,
     child: SupervisedChild,
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
-    mut on_status: DeckStatusSinks,
+    on_status: SharedStatusSinks,
     mut on_pcm: DeckPcmSinks,
 ) -> SharedReaderParts {
     let control: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
@@ -418,11 +418,20 @@ fn start_shared_reader(
     let reader = thread::Builder::new()
         .name("lsdj-sidecar-shared".to_string())
         .spawn(move || {
+            let mut reader_status: DeckStatusSinks = std::array::from_fn(|deck| {
+                let sink = on_status[deck].clone();
+                let status_stop = stop_for_reader.clone();
+                Box::new(move |message| {
+                    if !status_stop.load(Ordering::Acquire) {
+                        (sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))(message)
+                    }
+                }) as StatusSink
+            });
             let stream = match accept_with_timeout(&listener, &stop_for_reader, ACCEPT_TIMEOUT) {
                 Some(stream) => stream,
                 None => {
                     eprintln!("lsdj-sidecar-shared: sidecar never connected");
-                    return SharedReaderExit { handles, on_status };
+                    return SharedReaderExit { handles };
                 }
             };
             stream.set_nodelay(true).ok();
@@ -432,20 +441,20 @@ fn start_shared_reader(
                 }
                 Err(error) => {
                     eprintln!("lsdj-sidecar-shared: cannot split socket: {error}");
-                    return SharedReaderExit { handles, on_status };
+                    return SharedReaderExit { handles };
                 }
             }
-            let handles = run_shared_reader(stream, handles, &mut on_status, &mut on_pcm);
+            let handles = run_shared_reader(stream, handles, &mut reader_status, &mut on_pcm);
             *control_for_reader.lock().unwrap_or_else(|p| p.into_inner()) = None;
             if !stop_for_reader.load(Ordering::Acquire) {
-                for (deck, sink) in on_status.iter_mut().enumerate() {
-                    sink(format!(
+                for (deck, sink) in on_status.iter().enumerate() {
+                    (sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))(format!(
                         "{{\"event\":\"worker_died\",\"deck\":\"{}\"}}",
                         ["a", "b"][deck]
                     ));
                 }
             }
-            SharedReaderExit { handles, on_status }
+            SharedReaderExit { handles }
         })
         .expect("failed to spawn shared LSDJ sidecar reader thread");
     SharedReaderParts {
@@ -606,10 +615,14 @@ pub struct SharedSidecar {
     models: [String; lsdj_engine::DECK_COUNT],
     taps: PcmTaps,
     feed: AnalysisFeed,
+    on_status: SharedStatusSinks,
     control: Arc<Mutex<Option<TcpStream>>>,
     child: Arc<Mutex<Option<SupervisedChild>>>,
     stop: Arc<AtomicBool>,
     reader: Option<JoinHandle<SharedReaderExit>>,
+    /// Reclaimed ring producers parked after a replacement launch failure. A
+    /// later selection can recover without reconstructing the native engine.
+    parked: Option<SharedReaderExit>,
 }
 
 impl SharedSidecar {
@@ -624,19 +637,22 @@ impl SharedSidecar {
             Ok(launch) => launch,
             Err(error) => return Err((error, handles)),
         };
+        let on_status = on_status.map(|sink| Arc::new(Mutex::new(sink)));
         let on_pcm: DeckPcmSinks = [
             Box::new(pcm_tee(taps.clone(), feed.clone(), 0)),
             Box::new(pcm_tee(taps.clone(), feed.clone(), 1)),
         ];
-        let parts = start_shared_reader(listener, child, handles, on_status, on_pcm);
+        let parts = start_shared_reader(listener, child, handles, on_status.clone(), on_pcm);
         Ok(Self {
             models,
             taps,
             feed,
+            on_status,
             control: parts.control,
             child: parts.child,
             stop: parts.stop,
             reader: Some(parts.reader),
+            parked: None,
         })
     }
 
@@ -680,7 +696,65 @@ impl SharedSidecar {
         }
         let mut models = self.models.clone();
         models[deck] = model.to_string();
-        let (listener, child) = bind_and_launch_shared(&models)?;
+
+        // A single shared CUDA worker owns both deck states, so both become
+        // unavailable together. Publish that fact before stopping the old
+        // generation and before any replacement model allocation can begin.
+        // Gate the old reader first so a final stale `ready` cannot race after
+        // these loading events; the process itself is stopped below.
+        self.stop.store(true, Ordering::Release);
+        for (index, sink) in self.on_status.iter().enumerate() {
+            let deck_label = ["a", "b"][index];
+            (sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))(
+                serde_json::json!({
+                    "event": "model_loading",
+                    "deck": deck_label,
+                    "model": &models[index],
+                })
+                .to_string(),
+            );
+        }
+
+        let exit = self.stop_and_reclaim()?;
+        // Stop-and-reap is intentional for shared CUDA. Launch-first remains the
+        // per-deck policy above, but would temporarily require two resident model
+        // generations here and can OOM a minimum-VRAM host.
+        let (listener, child) = match bind_and_launch_shared(&models) {
+            Ok(launch) => launch,
+            Err(error) => {
+                self.parked = Some(exit);
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "shared CUDA replacement failed after the old worker was stopped; reselect a model to retry: {error}"
+                    ),
+                ));
+            }
+        };
+
+        let on_pcm: DeckPcmSinks = [
+            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 0)),
+            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 1)),
+        ];
+        let parts = start_shared_reader(
+            listener,
+            child,
+            exit.handles,
+            self.on_status.clone(),
+            on_pcm,
+        );
+        self.models = models;
+        self.control = parts.control;
+        self.child = parts.child;
+        self.stop = parts.stop;
+        self.reader = Some(parts.reader);
+        Ok(())
+    }
+
+    fn stop_and_reclaim(&mut self) -> io::Result<SharedReaderExit> {
+        if let Some(exit) = self.parked.take() {
+            return Ok(exit);
+        }
 
         self.stop.store(true, Ordering::Release);
         if let Some(writer) = self
@@ -691,11 +765,20 @@ impl SharedSidecar {
         {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
+        let mut shutdown_error = None;
         if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            crate::child_process::log_shutdown(
-                "shared sidecar restart",
-                old.shutdown(Duration::from_millis(500)),
-            );
+            match old.shutdown(Duration::from_millis(500)) {
+                Ok(report) => {
+                    crate::child_process::log_shutdown("shared sidecar restart", Ok(report))
+                }
+                Err(error) => {
+                    if let Err(force_error) = old.force_kill() {
+                        shutdown_error = Some(io::Error::other(format!(
+                            "cannot reap old shared CUDA worker ({error}); forced teardown also failed ({force_error})"
+                        )));
+                    }
+                }
+            }
         }
         let exit = self
             .reader
@@ -703,31 +786,11 @@ impl SharedSidecar {
             .ok_or_else(|| io::Error::other("shared sidecar has no reader to reclaim"))?
             .join()
             .map_err(|_| io::Error::other("shared sidecar reader thread panicked"))?;
-
-        let mut on_status = exit.on_status;
-        for (index, sink) in on_status.iter_mut().enumerate() {
-            let deck = ["a", "b"][index];
-            let model = &models[index];
-            sink(
-                serde_json::json!({
-                    "event": "model_loading",
-                    "deck": deck,
-                    "model": model,
-                })
-                .to_string(),
-            );
+        if let Some(error) = shutdown_error {
+            self.parked = Some(exit);
+            return Err(error);
         }
-        let on_pcm: DeckPcmSinks = [
-            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 0)),
-            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 1)),
-        ];
-        let parts = start_shared_reader(listener, child, exit.handles, on_status, on_pcm);
-        self.models = models;
-        self.control = parts.control;
-        self.child = parts.child;
-        self.stop = parts.stop;
-        self.reader = Some(parts.reader);
-        Ok(())
+        Ok(exit)
     }
 }
 
@@ -1060,6 +1123,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
+    static SIDECAR_ENV_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn native_platform_selects_one_explicit_mrt2_runtime() {
         let runtime = mrt2_runtime_for_platform().expect("supported build target");
@@ -1240,6 +1306,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn restart_switches_model_without_a_worker_died() {
+        let _env_guard = SIDECAR_ENV_LOCK.lock().unwrap();
         // A stand-in sidecar: connect to --port, announce ready with --model, then
         // deliberately ignore socket EOF. Teardown must kill it as the wrapper's
         // process-group child; killing only the wrapper leaves this process and
@@ -1385,6 +1452,207 @@ while True:
             );
         }
         std::env::remove_var("LSDJ_SIDECAR_CMD");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A shared CUDA model switch cannot use the per-deck launch-first policy:
+    /// two generations resident at once can OOM the minimum supported card.
+    /// This model-free process test proves stop/reap-before-spawn, both-deck
+    /// loading state, a failed replacement parked for retry, and recovery.
+    #[cfg(unix)]
+    #[test]
+    fn shared_restart_serializes_cuda_generations_and_recovers_after_launch_failure() {
+        let _env_guard = SIDECAR_ENV_LOCK.lock().unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("lsdj-shared-sidecar-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let python = tmp.join("shared-sidecar.py");
+        let wrapper = tmp.join("shared-sidecar-wrapper.sh");
+        let pidfile = tmp.join("python-pids");
+        let overlap = tmp.join("overlap-detected");
+        std::fs::write(
+            &python,
+            r#"import argparse, json, os, pathlib, socket, struct, sys, time
+p = argparse.ArgumentParser()
+p.add_argument('--port', type=int)
+p.add_argument('--model-a')
+p.add_argument('--model-b')
+p.add_argument('--shared', action='store_true')
+a, _ = p.parse_known_args()
+pidfile = pathlib.Path(os.environ['LSDJ_TEST_PIDFILE'])
+overlap = pathlib.Path(os.environ['LSDJ_TEST_OVERLAP'])
+for line in pidfile.read_text().splitlines():
+    pid = int(line)
+    if pid == os.getpid():
+        continue
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        continue
+    overlap.write_text(f'{pid} still alive when {os.getpid()} started')
+s = socket.create_connection(('127.0.0.1', a.port))
+if 'load_fail' in (a.model_a, a.model_b):
+    for deck, model in enumerate((a.model_a, a.model_b)):
+        body = bytes([deck]) + json.dumps({'event': 'startup_failed', 'model': model}).encode()
+        s.sendall(struct.pack('<BI', 2, len(body)) + body)
+    s.close()
+    sys.exit(3)
+for deck, model in enumerate((a.model_a, a.model_b)):
+    body = bytes([deck]) + json.dumps({'event': 'ready', 'model': model}).encode()
+    s.sendall(struct.pack('<BI', 2, len(body)) + body)
+while True:
+    time.sleep(60)
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\npython3 \"{}\" \"$@\" &\nchild=$!\necho \"$child\" >> \"{}\"\nwait \"$child\"\n",
+                python.display(),
+                pidfile.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&wrapper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&wrapper, permissions).unwrap();
+        std::env::set_var("LSDJ_SIDECAR_CMD", wrapper.as_os_str());
+        std::env::set_var("LSDJ_MRT2_RUNTIME", "pytorch-cuda");
+        std::env::set_var("LSDJ_TEST_PIDFILE", pidfile.as_os_str());
+        std::env::set_var("LSDJ_TEST_OVERLAP", overlap.as_os_str());
+
+        let mut engine = Engine::new();
+        let handles = [engine.create_deck(0), engine.create_deck(1)];
+        let statuses = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sinks: DeckStatusSinks = std::array::from_fn(|_| {
+            let statuses = statuses.clone();
+            Box::new(move |message| statuses.lock().unwrap().push(message)) as StatusSink
+        });
+        let taps = PcmTaps::new(2);
+        let feed = AnalysisFeed::disconnected(2);
+        let mut shared = SharedSidecar::spawn(
+            ["model_a".into(), "model_b".into()],
+            handles,
+            sinks,
+            taps,
+            feed,
+        )
+        .map_err(|(error, _)| error)
+        .expect("spawn shared stand-in");
+
+        let saw_ready = |model: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if statuses
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|status| status.contains("ready") && status.contains(model))
+                {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            false
+        };
+        assert!(saw_ready("model_a"));
+        assert!(saw_ready("model_b"));
+
+        shared.restart(0, "model_c").expect("serialized switch");
+        assert!(saw_ready("model_c"));
+        assert!(!overlap.exists(), "old and replacement workers overlapped");
+
+        std::env::set_var("LSDJ_SIDECAR_CMD", tmp.join("missing-sidecar"));
+        let error = shared.restart(1, "model_x").unwrap_err();
+        assert!(error.to_string().contains("reselect a model to retry"));
+        std::env::set_var("LSDJ_SIDECAR_CMD", wrapper.as_os_str());
+        shared
+            .restart(0, "model_d")
+            .expect("retry from parked handles");
+        assert!(saw_ready("model_d"));
+        assert!(!overlap.exists(), "recovery overlapped CUDA generations");
+
+        assert!(
+            !statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|status| status.contains("worker_died")),
+            "deliberate switches and launch failure must suppress worker_died"
+        );
+        shared
+            .restart(1, "load_fail")
+            .expect("replacement process launched before model-load failure");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline
+            && !statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|status| status.contains("startup_failed"))
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|status| status.contains("startup_failed"))
+        );
+        shared
+            .restart(1, "model_e")
+            .expect("recover after replacement model-load failure");
+        assert!(saw_ready("model_e"));
+        assert!(!overlap.exists(), "load recovery overlapped CUDA generations");
+
+        let log = statuses.lock().unwrap();
+        for model in [
+            "model_c",
+            "model_b",
+            "model_x",
+            "model_d",
+            "load_fail",
+            "model_e",
+        ] {
+            assert!(
+                log.iter()
+                    .any(|status| status.contains("model_loading") && status.contains(model)),
+                "missing both-deck loading state for {model}"
+            );
+        }
+        assert!(log.iter().any(|status| status.contains("worker_died")));
+        drop(log);
+
+        drop(shared);
+        let pids: Vec<libc::pid_t> = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 5, "failed launch must not create a child");
+        for pid in pids {
+            let mut gone = false;
+            for _ in 0..1000 {
+                if unsafe { libc::kill(pid, 0) } == -1 {
+                    gone = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(gone, "shared worker {pid} survived serialized transition");
+        }
+
+        for name in [
+            "LSDJ_SIDECAR_CMD",
+            "LSDJ_MRT2_RUNTIME",
+            "LSDJ_TEST_PIDFILE",
+            "LSDJ_TEST_OVERLAP",
+        ] {
+            std::env::remove_var(name);
+        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

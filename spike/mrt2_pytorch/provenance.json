@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "audited_at": "2026-08-08",
+  "code": {
+    "repository": "https://github.com/multimodalart/magenta-realtime-torch.git",
+    "revision": "6d076baa3df3b10448876c400521a015a5137c59",
+    "revision_date": "2026-06-23T23:34:02Z",
+    "license_file": "https://github.com/multimodalart/magenta-realtime-torch/blob/6d076baa3df3b10448876c400521a015a5137c59/LICENSE",
+    "license_spdx": "Apache-2.0",
+    "release_status": "No PyTorch-specific tag or package extra at the audited revision; pin the commit/model snapshot."
+  },
+  "models": {
+    "mrt2_base": {
+      "repository": "magenta-community/magenta-realtime-2",
+      "revision": "92087988d05d0fe38b11f021f0b0d00a75afb86b",
+      "reported_parameters": 2459164696,
+      "card_license": "Apache-2.0"
+    },
+    "mrt2_small": {
+      "repository": "magenta-community/magenta-realtime-2-small",
+      "revision": "7037d99551c84ac5c6afb7f1a5e58c65e7233dbb",
+      "reported_parameters": 282195480,
+      "card_license": "Apache-2.0"
+    },
+    "musiccoca_processor": {
+      "repository": "magenta-community/magenta-rt-musiccoca-torch",
+      "revision": "236c488e38aa98643805514996934d705668298b",
+      "card_license": "CC-BY-4.0"
+    },
+    "original_google_weights": {
+      "repository": "google/magenta-realtime-2",
+      "revision": "010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc",
+      "card_license": "CC-BY-4.0"
+    }
+  },
+  "runtime_candidate": {
+    "python": "3.12",
+    "torch": "2.12.1",
+    "transformers": "5.8.0",
+    "cuda_wheel_candidate": "cu130",
+    "status": "Registry-verified direct pins; not yet qualified on target hardware."
+  },
+  "known_mutable_defaults_avoided_by_harness": [
+    "AutoModel.from_pretrained without revision",
+    "model.load_processor() default repository without revision",
+    "hf_hub_download without revision"
+  ],
+  "license_review_required": "The derived Transformers cards say Apache-2.0 while the declared base Google weights and MusicCoCa artifacts say CC-BY-4.0. Issue #108 must determine redistribution and attribution obligations."
+}
