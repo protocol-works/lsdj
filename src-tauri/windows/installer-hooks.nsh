@@ -40,12 +40,16 @@ Var LsdjTreeSafe
 ; error flag so diagnostics cannot change installer decisions.
 !ifdef LSDJ_CI_ADVERSARIAL_TESTS
   Var LsdjCiTraceHadErrors
+  Var LsdjCiTraceMessage
   !macro LSDJ_CI_TRACE MESSAGE
     ${If} ${Errors}
       StrCpy $LsdjCiTraceHadErrors 1
     ${Else}
       StrCpy $LsdjCiTraceHadErrors 0
     ${EndIf}
+    ; Capture interpolated register values before using R5 for the trace file
+    ; handle, otherwise messages containing $R5 log that temporary handle.
+    StrCpy $LsdjCiTraceMessage "${MESSAGE}"
     Push $R5
     ClearErrors
     FileOpen $R5 "$TEMP\lsdj-ci-installer.trace" a
@@ -54,7 +58,7 @@ Var LsdjTreeSafe
       ; file pointer at byte zero. Seek explicitly so checkpoints cannot
       ; overwrite one another.
       FileSeek $R5 0 END
-      FileWrite $R5 "${MESSAGE}$\r$\n"
+      FileWrite $R5 "$LsdjCiTraceMessage$\r$\n"
       FileClose $R5
     ${EndIf}
     Pop $R5
@@ -498,6 +502,16 @@ FunctionEnd
 ; SetOutPath and immediately revalidates before establishing ownership.
 Section -LsdjProbeDataRootBeforeTauri
   StrCpy $LsdjInstallRootState 0
+  ; Tauri's silent reinstall page has already stored the version comparison in
+  ; R0. Its later downgrade Abort intentionally leaves exit code 0, which is
+  ; indistinguishable from success to unattended automation. Fail earlier with
+  ; an observable nonzero result before touching the install/data root.
+  ${If} ${Silent}
+  ${AndIf} $R0 = -1
+    !insertmacro LSDJ_CI_TRACE "abort: silent downgrade"
+    SetErrorLevel 2
+    Abort "Refusing to downgrade LSDJ from a newer installed version."
+  ${EndIf}
   !insertmacro LSDJ_CI_TRACE "probe: begin root=${LSDJ_DATA_ROOT}"
   Call LsdjCanonicalDataRootIsValid
   !insertmacro LSDJ_CI_TRACE "probe: canonical=$LsdjCanonicalRootSafe"

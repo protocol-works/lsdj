@@ -93,12 +93,19 @@ class WindowsPackagingContractTest(unittest.TestCase):
 
         probe_start = hooks.index("Section -LsdjProbeDataRootBeforeTauri")
         probe_end = hooks.index("SectionEnd", probe_start)
+        probe = hooks[probe_start:probe_end]
         preinstall_start = hooks.index("!macro NSIS_HOOK_PREINSTALL")
         create_start = hooks.index('CreateDirectory "${LSDJ_DATA_ROOT}"')
         self.assertLess(probe_start, probe_end)
         self.assertLess(probe_end, preinstall_start)
         self.assertLess(preinstall_start, create_start)
-        self.assertNotIn("CreateDirectory", hooks[probe_start:probe_end])
+        self.assertNotIn("CreateDirectory", probe)
+        self.assertIn("${If} ${Silent}", probe)
+        self.assertIn("${AndIf} $R0 = -1", probe)
+        self.assertIn("SetErrorLevel 2", probe)
+        self.assertLess(
+            probe.index("SetErrorLevel 2"), probe.index("GetFileAttributesW")
+        )
 
         language = (TAURI_ROOT / "windows/English.nsh").read_text()
         self.assertIn("path and size will be confirmed", language)
@@ -143,6 +150,8 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn('FileOpen $R5 "$TEMP\\lsdj-ci-installer.trace" a', hooks)
         self.assertIn("FileSeek $R5 0 END", hooks)
         self.assertIn("Var LsdjCiTraceHadErrors", hooks)
+        self.assertIn("Var LsdjCiTraceMessage", hooks)
+        self.assertIn('StrCpy $LsdjCiTraceMessage "${MESSAGE}"', hooks)
         trace_else = hooks.index("!else", hooks.index("!macro LSDJ_CI_TRACE MESSAGE"))
         trace_end = hooks.index("!endif", trace_else)
         self.assertEqual(
