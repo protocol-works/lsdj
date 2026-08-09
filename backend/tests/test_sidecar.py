@@ -9,15 +9,21 @@ import struct
 import threading
 import time
 
+import pytest
+
 from lsdj.sidecar import (
     FRAME_CONTROL,
+    FRAME_AUTH,
     FRAME_EMBED,
     FRAME_PCM,
     FRAME_STATUS,
+    SharedSocketCmdQueues,
     SocketCmdQueue,
     SocketOutQueue,
+    authenticate_to_host,
     read_frame,
     run_sidecar,
+    run_shared_sidecar,
     write_frame,
 )
 
@@ -74,6 +80,27 @@ def test_read_frame_returns_none_on_truncated_payload():
     head = struct.pack("<BI", FRAME_PCM, 16)
     reader = io.BytesIO(head + b"\x00\x00\x00\x00")
     assert read_frame(reader) is None
+
+
+def test_frames_are_bounded_in_both_directions(monkeypatch):
+    import lsdj.sidecar as sidecar_mod
+
+    monkeypatch.setattr(sidecar_mod, "MAX_FRAME_BYTES", 4)
+    with pytest.raises(ValueError, match="exceeds the cap"):
+        sidecar_mod.write_frame(RecordingSock(), FRAME_PCM, b"12345")
+    with pytest.raises(ValueError, match="exceeds the cap"):
+        sidecar_mod.read_frame(io.BytesIO(struct.pack("<BI", FRAME_PCM, 5)))
+    with pytest.raises(ValueError, match="unknown sidecar frame type"):
+        sidecar_mod.write_frame(RecordingSock(), 255, b"")
+
+
+def test_authentication_frame_comes_from_the_launch_environment():
+    sock = RecordingSock()
+    token = "a" * 64
+    authenticate_to_host(sock, {"LSDJ_WORKER_LAUNCH_TOKEN": token})
+    assert read_frame(io.BytesIO(bytes(sock.buffer))) == (FRAME_AUTH, token.encode())
+    with pytest.raises(RuntimeError, match="launch token is missing"):
+        authenticate_to_host(RecordingSock(), {})
 
 
 def test_out_queue_maps_audio_and_status_to_frames():
@@ -172,6 +199,9 @@ def test_sidecar_streams_pcm_and_status_over_a_socketpair():
 
         ftype, payload = _read_frames_until(shell_reader, lambda t, p: t == FRAME_PCM)
         assert payload == FAKE_PCM
+        write_frame(shell, FRAME_CONTROL, b'{"type":"shutdown"}')
+        thread.join(timeout=2)
+        assert not thread.is_alive()
     finally:
         # Closing the shell end → the sidecar's reader hits EOF → shutdown.
         shell.close()
@@ -187,9 +217,10 @@ def test_sidecar_main_argument_parsing(monkeypatch):
         captured["addr"] = addr
         return RecordingSock()
 
-    def fake_run(sock, deck, model, engine_factory=None):
+    def fake_run(sock, deck, model, *, runtime="auto", engine_factory=None):
         captured["deck"] = deck
         captured["model"] = model
+        captured["runtime"] = runtime
 
     import lsdj.sidecar as sidecar_mod
 
@@ -199,11 +230,25 @@ def test_sidecar_main_argument_parsing(monkeypatch):
         RecordingSock, "setsockopt", lambda *a, **k: None, raising=False
     )
     monkeypatch.setattr(sidecar_mod, "run_sidecar", fake_run)
+    monkeypatch.setenv("LSDJ_WORKER_LAUNCH_TOKEN", "a" * 64)
 
-    sidecar_mod.main(["--deck", "b", "--model", "mrt2_small", "--port", "5050"])
+    sidecar_mod.main(
+        [
+            "--deck",
+            "b",
+            "--model",
+            "mrt2_small",
+            "--runtime",
+            "mlx",
+            "--port",
+            "5050",
+        ]
+    )
     assert captured["addr"] == ("127.0.0.1", 5050)
     assert captured["deck"] == "b"
     assert captured["model"] == "mrt2_small"
+    assert captured["runtime"] == "mlx"
+    assert "LSDJ_WORKER_LAUNCH_TOKEN" not in sidecar_mod.os.environ
 
 
 def test_cmd_queue_decodes_embed_frame_to_embed_sample():
@@ -221,3 +266,68 @@ def test_cmd_queue_decodes_embed_frame_to_embed_sample():
         "id": "sample:a:1",
         "pcm": pcm,
     }
+
+
+def test_cmd_queue_rejects_malformed_embed_ids_without_desynchronizing():
+    rec = RecordingSock()
+    # Declared ID extends past the payload, then an invalid UTF-8 ID. Both must
+    # be ignored while the following valid control frame remains readable.
+    write_frame(rec, FRAME_EMBED, (99).to_bytes(4, "little") + b"tiny")
+    write_frame(rec, FRAME_EMBED, (1).to_bytes(4, "little") + b"\xff" + FAKE_PCM)
+    write_frame(rec, FRAME_CONTROL, b'{"type":"play"}')
+
+    cmd = SocketCmdQueue(io.BytesIO(bytes(rec.buffer)))
+    assert cmd.get(timeout=1.0) == {"type": "play"}
+    assert cmd.get(timeout=1.0) == {"type": "shutdown"}
+
+
+def test_shared_command_stream_demultiplexes_by_deck():
+    rec = RecordingSock()
+    write_frame(rec, FRAME_CONTROL, b'\x01{"type":"play"}')
+    write_frame(rec, FRAME_CONTROL, b'\x00{"type":"stop"}')
+
+    commands = SharedSocketCmdQueues(io.BytesIO(bytes(rec.buffer)))
+    assert commands.queues[1].get(timeout=1.0) == {"type": "play"}
+    assert commands.queues[0].get(timeout=1.0) == {"type": "stop"}
+    assert commands.queues[0].get(timeout=1.0) == {"type": "shutdown"}
+    assert commands.queues[1].get(timeout=1.0) == {"type": "shutdown"}
+
+
+def test_shared_sidecar_multiplexes_two_decks_over_one_socket():
+    shell, side = socket.socketpair()
+    try:
+        thread = threading.Thread(
+            target=run_shared_sidecar,
+            args=(side, ("same", "same")),
+            kwargs={
+                "runtime": "fake",
+                "engine_factory": lambda model: FakeEngine(model),
+            },
+            daemon=True,
+        )
+        thread.start()
+        reader = shell.makefile("rb")
+        ready_decks = set()
+        warming_decks = set()
+        while ready_decks != {0, 1}:
+            frame_type, payload = read_frame(reader)
+            if frame_type == FRAME_STATUS and b'"warming"' in payload:
+                warming_decks.add(payload[0])
+            if frame_type == FRAME_STATUS and b'"ready"' in payload:
+                ready_decks.add(payload[0])
+        assert warming_decks == {0, 1}
+
+        write_frame(shell, FRAME_CONTROL, b'\x01{"type":"play"}')
+        while True:
+            frame_type, payload = read_frame(reader)
+            if frame_type == FRAME_PCM:
+                assert payload[0] == 1
+                assert payload[1:] == FAKE_PCM
+                break
+        write_frame(shell, FRAME_CONTROL, b'\x00{"type":"shutdown"}')
+        write_frame(shell, FRAME_CONTROL, b'\x01{"type":"shutdown"}')
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    finally:
+        shell.close()
+        side.close()

@@ -58,3 +58,5 @@ scaffolds the file from the template.
 | [0031](0031-native-midi-in-the-rust-core-superseding-web-midi.md) | Native MIDI in the Rust core, superseding Web MIDI | Accepted |
 | [0032](0032-standalone-midi-keyboard-window.md) | Standalone MIDI keyboard window, routing decoupled from steering | Accepted |
 | [0035](0035-dual-envelope-beat-detection-with-fast-change-invalidation.md) | Dual-envelope beat detection with fast change invalidation | Accepted |
+| [0037](0037-platform-mrt2-runtime-contract.md) | Platform MRT2 runtimes behind one worker contract | Accepted for implementation |
+| [0038](0038-windows-sa3-cuda-qualification-gate.md) | Windows SA3 CUDA is a gated shared-runtime backend | Proposed |

@@ -19,7 +19,7 @@ import { createLoudnessTracker, trimDbFor } from '../audio/master'
 import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 import { useAudioEngine } from '../audio/engineContext'
 import {
-  getApiBaseUrl,
+  fetchGenerationApi,
   setDeckCue,
   setDeckCuePoint,
   setDeckEq,
@@ -663,7 +663,11 @@ export function useDeck(deckId: DeckId): DeckControls {
     // switch state.
     dispatch({ type: 'socket_open' })
     const unsubscribeStatus = subscribeSidecarStatus(deckId, (status) => {
-      if (status.event === 'model_loading' || status.event === 'worker_died') {
+      if (
+        status.event === 'model_loading' ||
+        status.event === 'worker_died' ||
+        status.event === 'startup_failed'
+      ) {
         channelRef.current?.reset()
         resetStreamMeasurements()
       }
@@ -683,8 +687,7 @@ export function useDeck(deckId: DeckId): DeckControls {
     // manager installs or removes a Magenta model (`models://changed`, issue #43).
     let cancelled = false
     const fetchModels = () => {
-      void getApiBaseUrl()
-        .then((base) => fetch(`${base}/api/models`))
+      void fetchGenerationApi('/api/models')
         .then((response) => (response.ok ? response.json() : null))
         .then((info) => {
           if (cancelled || !info) return
@@ -1467,11 +1470,10 @@ export function useDeck(deckId: DeckId): DeckControls {
         try {
           // The channel is created on demand: pads can fill before the
           // deck has ever played (prepping weapons before the set).
-          const apiBase = await getApiBaseUrl()
           const [channel, response] = await Promise.all([
             ensureChannel(),
-            fetch(
-              `${apiBase}${engine === 'magenta' ? '/api/render' : '/api/generate'}`,
+            fetchGenerationApi(
+              engine === 'magenta' ? '/api/render' : '/api/generate',
               {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },

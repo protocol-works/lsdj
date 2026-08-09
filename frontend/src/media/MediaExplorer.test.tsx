@@ -302,9 +302,13 @@ describe('MediaExplorer', () => {
   it('mints and sends a fresh random seed for every Advanced take', async () => {
     let seed = 10
     vi.stubGlobal('crypto', {
-      getRandomValues: (target: Uint32Array) => {
-        target[0] = seed
-        seed += 1
+      getRandomValues: (target: Uint8Array | Uint32Array) => {
+        if (target instanceof Uint32Array) {
+          target[0] = seed
+          seed += 1
+        } else {
+          target.fill(7)
+        }
         return target
       },
     })
@@ -317,9 +321,9 @@ describe('MediaExplorer', () => {
     await composeTrack('take two')
 
     const calls = fetchMock.mock.calls as unknown as [string, RequestInit][]
-    const bodies = calls.map(([, init]) =>
-      JSON.parse(init.body as string),
-    )
+    const bodies = calls
+      .filter(([path]) => path === '/api/generate')
+      .map(([, init]) => JSON.parse(init.body as string))
     expect(bodies.map((body) => body.seed)).toEqual([10, 11])
   })
 
@@ -557,9 +561,11 @@ describe('MediaExplorer', () => {
     scrollIntoView.mockClear()
     scrolledRows = []
 
-    act(() => bus.publish({ kind: 'browse_scroll', steps: 9 }))
+    await act(async () => bus.publish({ kind: 'browse_scroll', steps: 9 }))
 
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+    await vi.waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' }),
+    )
     expect(scrolledRows.at(-1)).toHaveTextContent('Track 3')
   })
 
@@ -596,6 +602,9 @@ describe('MediaExplorer', () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_samples') return []
       if (cmd === 'save_generated_sample') {
         return { file: 'riff.wav', title: 'riff', prompt: 'riff', model: 'sfx', oneShot: true }
@@ -692,6 +701,56 @@ describe('MediaExplorer', () => {
     expect(screen.getByText('#2')).toBeInTheDocument()
   })
 
+  it('keeps the newer sample scan when overlapping refreshes finish out of order', async () => {
+    type ResolveSamples = (rows: {
+      file: string
+      title: string
+      prompt: string
+      model: string
+      oneShot: boolean
+    }[]) => void
+    const scans: ResolveSamples[] = []
+    let onChange: ((e: { payload: unknown }) => void) | null = null
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd === 'list_generated_samples') {
+        return new Promise((resolve: ResolveSamples) => scans.push(resolve))
+      }
+      return Promise.resolve([])
+    })
+    const listen = vi.fn(
+      async (event: string, handler: (e: { payload: unknown }) => void) => {
+        if (event === 'library://changed') onChange = handler
+        return () => {}
+      },
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke }, event: { listen } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+    expect(scans).toHaveLength(1)
+
+    // A watcher scan starts while startup's scan is still pending. Finish the newer
+    // scan first, then the stale startup scan in the same batch: the old implementation
+    // would replace the two current rows with `one #3` because both completions read
+    // the same stale passive-effect ref and minted fresh ids.
+    act(() => onChange?.({ payload: { library: 'samples' } }))
+    expect(scans).toHaveLength(2)
+    await act(async () => {
+      scans[1]([
+        { file: 'one.wav', title: 'one', prompt: 'one', model: 'sfx', oneShot: false },
+        { file: 'two.wav', title: 'two', prompt: 'two', model: 'music', oneShot: false },
+      ])
+      scans[0]([
+        { file: 'one.wav', title: 'one', prompt: 'one', model: 'sfx', oneShot: false },
+      ])
+      await Promise.resolve()
+    })
+
+    expect(screen.getByText('one', { selector: '.media__name-text' })).toBeInTheDocument()
+    expect(screen.getByText('two', { selector: '.media__name-text' })).toBeInTheDocument()
+    expect(screen.getByText('#1')).toBeInTheDocument()
+    expect(screen.getByText('#2')).toBeInTheDocument()
+  })
+
   it('restores samples, tagging a freeze and a hand-added file', async () => {
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_samples') {
@@ -754,6 +813,9 @@ describe('MediaExplorer', () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') return []
       if (cmd === 'save_generated_song') {
         return { file: 'keeper #1.wav', title: 'keeper #1', prompt: 'keeper', model: 'track' }
@@ -795,6 +857,9 @@ describe('MediaExplorer', () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') return []
       if (cmd === 'save_generated_song') {
         return { file: 'guided.wav', title: 'guided', prompt: 'guided', model: 'track' }
@@ -865,6 +930,9 @@ describe('MediaExplorer', () => {
 
   it('filters songs across title, prompt, model, and filename metadata', async () => {
     const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') {
         return [
           {
@@ -957,6 +1025,9 @@ describe('MediaExplorer', () => {
   it('promotes saved Basic settings to Advanced with the used seed fixed', async () => {
     const fetchMock = stubFetch()
     const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') {
         return [
           {
@@ -1022,6 +1093,9 @@ describe('MediaExplorer', () => {
     ])
     const fetchMock = stubFetch()
     const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') {
         return [
           {
@@ -1264,6 +1338,9 @@ describe('MediaExplorer', () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') return []
       if (cmd === 'save_generated_song') {
         return { file: 'Porcelain Halo.wav', title: 'Porcelain Halo', prompt: '{"a":1}', model: 'track' }
@@ -1309,6 +1386,9 @@ describe('MediaExplorer', () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
+      if (cmd === 'app_info') {
+        return { generationPort: null, generationCapability: 'a'.repeat(64) }
+      }
       if (cmd === 'list_generated_songs') return []
       if (cmd === 'save_generated_song') {
         return { file: 'x.wav', title: 'x', prompt: 'x', model: 'track' }

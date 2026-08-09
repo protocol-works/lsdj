@@ -1,0 +1,14 @@
+# Official optimized/tflite/requirements.txt dependency surface at
+# Stability-AI/stable-audio-3@a0b57f5483c4588f827f3552b7d5c6ca2a9687be.
+# The generated lock is consumed by issue #107's standalone runtime installer.
+ai-edge-litert>=1.0
+numpy>=1.24
+sentencepiece>=0.2
+soundfile>=0.12
+huggingface-hub>=0.20
+# LSDJ's generation-only loopback service runs in this same verified portable
+# environment.  Keep its minimal server closure explicit; no `uvicorn[standard]`
+# extras (watchers, dotenv, alternate event loops) are needed in a packaged app.
+fastapi==0.136.3
+python-multipart==0.0.32
+uvicorn==0.49.0

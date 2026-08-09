@@ -335,6 +335,18 @@ describe('DeckColumn', () => {
     expect(stat).toHaveClass('ui-stat--danger')
   })
 
+  it('surfaces the upstream MRT2 negative-prompt limitation', () => {
+    renderPanel({
+      connection: 'open',
+      runtimeDiagnostics: {
+        runtime: 'pytorch-cuda',
+        capabilities: { negative_prompt: false },
+      },
+    })
+    const stat = screen.getByText('Negative prompt').parentElement!
+    expect(stat).toHaveTextContent('Unavailable upstream')
+  })
+
   it('disables transport while the worker is dead', () => {
     renderPanel({ connection: 'open', workerDied: true })
     expect(screen.getByRole('button', { name: 'Play' })).toBeDisabled()

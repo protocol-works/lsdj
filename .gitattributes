@@ -1,1 +1,13 @@
 backend/spike_corpus/*.wav filter=lfs diff=lfs merge=lfs -text
+
+# Managed runtimes hash these exact UTF-8 bytes. Checkout conversion would
+# otherwise make a release built on Windows disagree with the signed/pinned
+# manifest digests while preserving semantically identical text.
+backend/runtime-locks/*.txt text eol=lf
+scripts/sa3-requirements.lock text eol=lf
+scripts/sa3-tflite-requirements.lock text eol=lf
+mrt2-pytorch-pin.json text eol=lf
+mrt2-pytorch-wheels.json text eol=lf
+sa3-pin.json text eol=lf
+sa3-tflite-pin.json text eol=lf
+sa3-tflite-wheels.json text eol=lf

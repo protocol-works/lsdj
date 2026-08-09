@@ -121,6 +121,8 @@
       "imported": "Imported",
       "inspect": "Show the full prompt for {{name}}",
       "pending": "{{title}} — composing…",
+      "cancel": "Cancel",
+      "cancelling": "cancelling…",
       "failed": "Track generation failed: {{message}}",
       "saveFailed": "Couldn't save {{title}} to the songs folder: {{message}}",
       "openFolderFailed": "Couldn't open the songs folder: {{message}}",
@@ -177,6 +179,12 @@
     "cueSameAsMain": "Phones on main (ch 3/4)",
     "cueSameAsMainNoCh": "Phones on main — needs a 4-ch main",
     "outputError": "Couldn't switch output: {{message}}",
+    "outputChecking": "Checking audio outputs…",
+    "outputHealthy": "Main and cue outputs are healthy.",
+    "outputMainUnavailable": "The main audio output is unavailable.",
+    "outputCueUnavailable": "The cue audio output is unavailable.",
+    "outputReconnect": "Reconnect audio",
+    "outputReconnecting": "Reconnecting…",
     "record": "Record",
     "recordLabel": "REC",
     "stopRecording": "Stop recording",
@@ -331,6 +339,8 @@
       "underruns": "Underruns",
       "generationSpeed": "Gen speed",
       "generationSpeedValue": "{{rtf}}×",
+      "negativePrompt": "Negative prompt",
+      "negativePromptUnavailable": "Unavailable upstream",
       "noData": "—",
       "position": "Position"
     },
@@ -400,6 +410,7 @@
     "sa3": "Stable Audio 3",
     "none": "No models installed",
     "notInstalled": "Not installed",
+    "downloadSize": "{{size}} download",
     "needsResources": "Needs shared resources — repair to enable loading",
     "install": "Install",
     "repair": "Repair",
@@ -413,7 +424,8 @@
       "missing": "Not installed",
       "venv_missing": "Needs setup",
       "not_warmed": "Weights not downloaded",
-      "ready": "Ready"
+      "ready": "Ready",
+      "failed": "Verification failed — repair required"
     },
     "stage": {
       "init": "Fetching shared resources…",

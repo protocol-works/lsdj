@@ -50,6 +50,12 @@ def sample_pcm(seconds: float) -> bytes:
     return np.zeros(frames * 2, dtype="<f4").tobytes()
 
 
+def test_mlx_diagnostics_explicitly_advertise_upstream_negative_prompt_limit():
+    engine, _ = make_engine({})
+    engine._model = "mrt2_small"
+    assert engine.diagnostics()["capabilities"]["negative_prompt"] is False
+
+
 def test_constructor_uses_reference_sampling_defaults(monkeypatch):
     # The tuning knobs are set once on the system (not per generate) — adopting
     # the magenta-realtime app defaults, not the raw library floor. Lock them so

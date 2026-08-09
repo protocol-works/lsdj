@@ -1,0 +1,10 @@
+# Issue #109 benchmark candidate, registry-verified 2026-08-08.
+# Direct requirements are exact; produce target-specific hash locks only after
+# the Linux/Windows CUDA candidate is selected from real-hardware results.
+torch==2.12.1
+transformers==5.8.0
+huggingface-hub==1.1.5
+numpy==2.3.5
+safetensors==0.7.0
+sentencepiece==0.2.1
+resampy==0.4.3

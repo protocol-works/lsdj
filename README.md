@@ -36,6 +36,12 @@ pads and finished tracks come from Stable Audio 3. See
 
 All common tasks live in the [`justfile`](justfile) — run `just` to list them.
 
+Linux x86_64 AppImage support is under active qualification. Packaging and
+hosted CI are available, but a public Linux release remains gated on the
+portable MRT2/Stable Audio backends, licensing, and real NVIDIA/audio/FLX4
+evidence. See [the Linux support status](docs/linux.md); do not infer hardware
+support from a green hosted build.
+
 ## Setup
 
 ```sh
@@ -50,7 +56,9 @@ combined selection looks tight for your RAM) and Stable Audio 3 (generated pads
 and tracks) land in the app-owned `~/Library/Application Support/LSDJ`
 (`MAGENTA_HOME` / `SA3_MLX_HOME` override the locations). `just migrate-models`
 relocates an existing install—including one under the previous app name—into
-that folder without re-downloading.
+that folder without re-downloading. The Rust host owns the cross-platform
+config/data/cache/assets/staging mapping and passes it explicitly to Python; see
+[the platform path contract](docs/platform-paths.md).
 
 ## Run
 

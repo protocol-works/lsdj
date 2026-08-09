@@ -6,7 +6,7 @@
 //! models (no central index file):
 //!
 //! ```text
-//! ~/Library/Application Support/LSDJ/sa3-loras/<base>/<slug>/
+//! <host-resolved assets>/sa3-loras/<base>/<slug>/
 //!     adapter_model.safetensors      (the adapter — any single *.safetensors)
 //!     adapter_config.json            (PEFT convention only)
 //!     lora.json                      (import manifest: source / type / rank)
@@ -25,11 +25,14 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::models::{cancelled, dir_size, stream_child, InstallShared, Progress};
+use crate::models::{cancelled, dir_size, is_cancelled, InstallShared, Progress};
+use crate::runtime_installer::download::{
+    client as installer_client, download_verified, fetch_bytes_bounded, PinnedArtifact,
+};
 
 /// The two DiT families an adapter can ride (`loras.BASES` in Python).
 pub const BASES: &[&str] = &["small", "medium"];
@@ -47,18 +50,16 @@ const PICKLE_EXTS: &[&str] = &["ckpt", "pt", "pth", "bin"];
 // A safetensors JSON header beyond this is not a plausible adapter — bail
 // before allocating attacker-controlled sizes.
 const MAX_HEADER_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_HF_INFO_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ADAPTER_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 const MANIFEST: &str = "lora.json";
 
-/// The registry root. `$SA3_LORAS_HOME` wins (dev/test override); otherwise the
-/// app-owned data dir, beside the SA3 checkout. Mirrors `loras.loras_dir`.
+/// The registry root resolved by the Rust host. An explicit dev/user override is
+/// captured into this contract during startup; callers never guess an OS path.
 pub fn loras_dir() -> PathBuf {
-    if let Some(override_home) = std::env::var_os("SA3_LORAS_HOME") {
-        if !override_home.is_empty() {
-            return PathBuf::from(override_home);
-        }
-    }
-    crate::models::app_support_base().join("sa3-loras")
+    crate::platform_paths::get().loras_home().to_path_buf()
 }
 
 // --- Registry discovery ----------------------------------------------------
@@ -83,20 +84,43 @@ pub struct LoraInfo {
 #[serde(rename_all = "camelCase")]
 struct LoraManifest {
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
     convention: String,
     adapter_type: String,
     rank: Option<u32>,
+    #[serde(default)]
+    files: Vec<LoraArtifactRecord>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LoraArtifactRecord {
+    filename: String,
+    size: u64,
+    sha256: String,
 }
 
 /// A well-formed adapter directory: exactly one `*.safetensors` inside (the
 /// same rule as `loras._adapter_file` in Python and the runtime's resolver).
 fn adapter_file(dir: &Path) -> Option<PathBuf> {
+    let directory = std::fs::symlink_metadata(dir).ok()?;
+    if directory.file_type().is_symlink() || !directory.is_dir() {
+        return None;
+    }
+    let canonical_dir = std::fs::canonicalize(dir).ok()?;
     let entries = std::fs::read_dir(dir).ok()?;
     let mut hits: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
-            path.is_file() && path.extension().is_some_and(|ext| ext == "safetensors")
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+                !metadata.file_type().is_symlink()
+                    && metadata.is_file()
+                    && path.extension().is_some_and(|ext| ext == "safetensors")
+                    && std::fs::canonicalize(path)
+                        .is_ok_and(|canonical| canonical.starts_with(&canonical_dir))
+            })
         })
         .collect();
     if hits.len() == 1 {
@@ -131,19 +155,49 @@ fn parse_name(name: &str) -> Result<(&str, &str), String> {
 /// model discovery: unreadable entries and malformed directories are skipped.
 pub fn discover(root: &Path) -> Vec<LoraInfo> {
     let mut adapters = Vec::new();
+    let Ok(root_metadata) = std::fs::symlink_metadata(root) else {
+        return adapters;
+    };
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return adapters;
+    }
+    let Ok(canonical_root) = std::fs::canonicalize(root) else {
+        return adapters;
+    };
     for base in BASES {
-        let Ok(entries) = std::fs::read_dir(root.join(base)) else {
+        let base_dir = root.join(base);
+        let Ok(base_metadata) = std::fs::symlink_metadata(&base_dir) else {
+            continue;
+        };
+        if base_metadata.file_type().is_symlink()
+            || !base_metadata.is_dir()
+            || !std::fs::canonicalize(&base_dir).is_ok_and(|path| path.starts_with(&canonical_root))
+        {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&base_dir) else {
             continue;
         };
         for entry in entries.flatten() {
             let dir = entry.path();
             let slug = entry.file_name().to_string_lossy().into_owned();
-            if !dir.is_dir() || !valid_slug(&slug) || adapter_file(&dir).is_none() {
+            let trusted_dir = std::fs::symlink_metadata(&dir).is_ok_and(|metadata| {
+                !metadata.file_type().is_symlink()
+                    && metadata.is_dir()
+                    && std::fs::canonicalize(&dir)
+                        .is_ok_and(|path| path.starts_with(&canonical_root))
+            });
+            if !trusted_dir || !valid_slug(&slug) || adapter_file(&dir).is_none() {
                 continue;
             }
             let manifest: Option<LoraManifest> = std::fs::read_to_string(dir.join(MANIFEST))
                 .ok()
                 .and_then(|data| serde_json::from_str(&data).ok());
+            if manifest.as_ref().is_some_and(|item| {
+                !item.files.is_empty() && validate_registry_generation(&dir).is_err()
+            }) {
+                continue;
+            }
             adapters.push(LoraInfo {
                 name: format!("{base}/{slug}"),
                 base: (*base).to_string(),
@@ -220,8 +274,8 @@ fn read_safetensors_header(path: &Path) -> Result<SafetensorsHeader, String> {
     if path.extension().is_none_or(|ext| ext != "safetensors") {
         return Err(format!("'{file_name}' is not a .safetensors adapter"));
     }
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("cannot open '{file_name}': {e}"))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("cannot open '{file_name}': {e}"))?;
     let mut len_bytes = [0u8; 8];
     file.read_exact(&mut len_bytes)
         .map_err(|_| format!("'{file_name}' is not a safetensors file"))?;
@@ -319,9 +373,8 @@ fn base_from_model_name(model_name: &str) -> Option<&'static str> {
 /// `rank × fan_in`, `M_xs` is `rank × rank`.
 fn rank_from_tensors(tensors: &BTreeMap<String, Vec<u64>>) -> Option<u32> {
     for (key, shape) in tensors {
-        let is_rank_first = key.ends_with(".lora_A.weight")
-            || key.ends_with(".lora_A")
-            || key.ends_with(".M_xs");
+        let is_rank_first =
+            key.ends_with(".lora_A.weight") || key.ends_with(".lora_A") || key.ends_with(".M_xs");
         if is_rank_first {
             if let Some(&rank) = shape.first() {
                 return u32::try_from(rank).ok();
@@ -360,9 +413,7 @@ pub fn validate_adapter(path: &Path) -> Result<AdapterFacts, String> {
     if tensors.keys().any(|key| key.ends_with(".lora_A.weight")) {
         let config_path = path.with_file_name("adapter_config.json");
         if !config_path.is_file() {
-            return Err(
-                "the PEFT adapter is missing its adapter_config.json sibling".into(),
-            );
+            return Err("the PEFT adapter is missing its adapter_config.json sibling".into());
         }
         let config: PeftConfig = std::fs::read_to_string(&config_path)
             .ok()
@@ -508,9 +559,9 @@ fn choose_hf_files(filenames: &[String]) -> Result<Vec<String>, String> {
         match safetensors.as_slice() {
             [single] => (*single).clone(),
             [] => {
-                let has_pickle = filenames.iter().any(|name| {
-                    is_pickle(Path::new(name.as_str()))
-                });
+                let has_pickle = filenames
+                    .iter()
+                    .any(|name| is_pickle(Path::new(name.as_str())));
                 return Err(if has_pickle {
                     "the repo only ships pickle-format weights (.ckpt/.pt/.bin), \
                      which are refused — only .safetensors adapters are accepted"
@@ -519,7 +570,11 @@ fn choose_hf_files(filenames: &[String]) -> Result<Vec<String>, String> {
                     "no .safetensors adapter in the repo".into()
                 });
             }
-            _ => return Err("the repo holds more than one .safetensors — not a single adapter".into()),
+            _ => {
+                return Err(
+                    "the repo holds more than one .safetensors — not a single adapter".into(),
+                )
+            }
         }
     };
     let mut files = vec![adapter];
@@ -532,12 +587,23 @@ fn choose_hf_files(filenames: &[String]) -> Result<Vec<String>, String> {
 /// The HF model-info response — only the file list is read.
 #[derive(Deserialize)]
 struct HfModelInfo {
+    sha: String,
     siblings: Vec<HfSibling>,
 }
 
 #[derive(Deserialize)]
 struct HfSibling {
     rfilename: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    lfs: Option<HfLfs>,
+}
+
+#[derive(Deserialize)]
+struct HfLfs {
+    sha256: String,
+    size: u64,
 }
 
 /// Run one adapter import to completion (on the install thread): fetch or copy
@@ -568,7 +634,7 @@ pub(crate) fn install(
     // The HF staging dir is cleaned up on every exit; a local import's source
     // files are the user's and stay put.
     if let Some(temp) = &staged.temp {
-        let _ = std::fs::remove_dir_all(temp);
+        drop(StagingCleanup(Some(temp.clone())));
     }
     result
 }
@@ -580,6 +646,9 @@ struct StagedAdapter {
     adapter: PathBuf,
     config: Option<PathBuf>,
     slug_seed: String,
+    source: String,
+    revision: Option<String>,
+    files: Vec<LoraArtifactRecord>,
     /// The temp dir to clean up after placing (None for a local import, whose
     /// source files are the user's and must stay put).
     temp: Option<PathBuf>,
@@ -588,10 +657,7 @@ struct StagedAdapter {
 /// Reconcile the inferred base with an explicit choice. An explicit base wins
 /// only when the shapes are silent; a contradiction is refused with the
 /// reasoning (the issue's "incompatible adapters refused with clear reasoning").
-fn resolve_base(
-    facts: &AdapterFacts,
-    explicit: Option<&str>,
-) -> Result<&'static str, String> {
+fn resolve_base(facts: &AdapterFacts, explicit: Option<&str>) -> Result<&'static str, String> {
     match (facts.inferred_base, explicit) {
         (Some(inferred), Some(chosen)) if inferred != chosen => Err(format!(
             "the adapter's layer widths identify the {inferred} DiT — it cannot ride \
@@ -611,9 +677,81 @@ fn resolve_base(
     }
 }
 
-/// Fetch an adapter from HuggingFace into a temp dir: the model-info file list
-/// first, then each chosen file via the resolve endpoint. Uses `curl` like the
-/// SA3 checkout fetch (no HTTP stack in the shell).
+fn create_private_staging(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("cannot create adapter staging root: {error}"))?;
+    for _ in 0..32 {
+        let directory = parent.join(format!("{prefix}-{:032x}", rand::random::<u128>()));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                        .map_err(|error| format!("cannot protect adapter staging: {error}"))?;
+                }
+                return Ok(directory);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create adapter staging: {error}")),
+        }
+    }
+    Err("cannot allocate a unique adapter staging directory".into())
+}
+
+struct StagingCleanup(Option<PathBuf>);
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        let Some(path) = self.0.take() else { return };
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let _ = std::fs::remove_file(path);
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                let _ = std::fs::remove_dir_all(path);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn hash_record(path: &Path) -> Result<LoraArtifactRecord, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect staged adapter artifact: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("staged adapter artifact is not a regular file".into());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| valid_slug(name))
+        .ok_or("staged adapter filename is unsafe")?
+        .to_string();
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("cannot hash staged adapter artifact: {error}"))?;
+    Ok(LoraArtifactRecord {
+        filename,
+        size: metadata.len(),
+        sha256: hex::encode(Sha256::digest(bytes)),
+    })
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("cannot create staged adapter artifact: {error}"))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("cannot sync staged adapter artifact: {error}"))
+}
+
+/// Fetch an adapter from an immutable Hugging Face commit. Metadata and files
+/// use the app's bounded/cancellable HTTPS client; LFS artifacts are verified
+/// against the repository-reported SHA-256 before they become import inputs.
 fn fetch_hf_adapter(
     progress: &Progress,
     shared: &InstallShared,
@@ -622,54 +760,103 @@ fn fetch_hf_adapter(
     if !valid_hf_repo(repo) {
         return Err(format!("'{repo}' is not a HuggingFace repo id"));
     }
-    let temp = std::env::temp_dir().join(format!("lsdj-lora-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&temp);
-    std::fs::create_dir_all(&temp).map_err(|e| format!("cannot create temp dir: {e}"))?;
+    let temp = create_private_staging(
+        &crate::platform_paths::get().staging().join("loras"),
+        "download",
+    )?;
+    let mut cleanup = StagingCleanup(Some(temp.clone()));
 
     progress("fetch", None, None);
-    let info_path = temp.join("model-info.json");
-    let mut curl = Command::new("curl");
-    curl.args(["-fLsS", "-o"])
-        .arg(&info_path)
-        .arg(format!("https://huggingface.co/api/models/{repo}"));
-    stream_child(shared, "hf-info", curl, |_| {})
-        .map_err(|e| format!("cannot reach the HuggingFace repo '{repo}': {e}"))?;
-    cancelled(shared)?;
-    let info: HfModelInfo = std::fs::read_to_string(&info_path)
+    let client = installer_client()?;
+    let token = std::env::var("HF_TOKEN")
         .ok()
-        .and_then(|data| serde_json::from_str(&data).ok())
-        .ok_or_else(|| format!("unexpected HuggingFace response for '{repo}'"))?;
+        .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok());
+    let info_bytes = fetch_bytes_bounded(
+        &client,
+        &format!("https://huggingface.co/api/models/{repo}?blobs=true"),
+        token.as_deref(),
+        MAX_HF_INFO_BYTES,
+        || is_cancelled(shared),
+    )
+    .map_err(|error| format!("cannot reach the HuggingFace repo '{repo}': {error}"))?;
+    cancelled(shared)?;
+    let info: HfModelInfo = serde_json::from_slice(&info_bytes)
+        .map_err(|_| format!("unexpected HuggingFace response for '{repo}'"))?;
+    if info.sha.len() != 40 || !info.sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("HuggingFace did not return a full immutable repository revision".into());
+    }
     let filenames: Vec<String> = info
         .siblings
-        .into_iter()
-        .map(|sibling| sibling.rfilename)
+        .iter()
+        .map(|sibling| sibling.rfilename.clone())
         .collect();
     let files = choose_hf_files(&filenames)?;
 
     let mut adapter = None;
     let mut config = None;
+    let mut records = Vec::new();
     for file in &files {
         cancelled(shared)?;
         progress("download", None, Some(file.clone()));
         let dest = temp.join(file);
-        let mut curl = Command::new("curl");
-        curl.args(["-fLsS", "-o"])
-            .arg(&dest)
-            .arg(format!("https://huggingface.co/{repo}/resolve/main/{file}"));
-        stream_child(shared, "hf-download", curl, |_| {})
-            .map_err(|e| format!("download of '{file}' failed: {e}"))?;
+        let sibling = info
+            .siblings
+            .iter()
+            .find(|sibling| sibling.rfilename == *file)
+            .ok_or("chosen adapter file disappeared from repository metadata")?;
+        let url = format!(
+            "https://huggingface.co/{repo}/resolve/{}/{file}?download=true",
+            info.sha
+        );
+        if let Some(lfs) = &sibling.lfs {
+            let bound = if file.ends_with(".safetensors") {
+                MAX_ADAPTER_BYTES
+            } else {
+                MAX_CONFIG_BYTES
+            };
+            if lfs.size == 0
+                || lfs.size > bound
+                || sibling.size.is_some_and(|size| size != lfs.size)
+            {
+                return Err(format!(
+                    "repository metadata has an invalid size for '{file}'"
+                ));
+            }
+            let artifact = PinnedArtifact {
+                url,
+                sha256: lfs.sha256.clone(),
+                size: lfs.size,
+            };
+            download_verified(&client, &artifact, &dest, token.as_deref(), || {
+                is_cancelled(shared)
+            })?;
+        } else {
+            if file.ends_with(".safetensors") {
+                return Err("HuggingFace adapter weights lack SHA-256 LFS provenance".into());
+            }
+            let bytes =
+                fetch_bytes_bounded(&client, &url, token.as_deref(), MAX_CONFIG_BYTES, || {
+                    is_cancelled(shared)
+                })?;
+            write_private_file(&dest, &bytes)?;
+        }
+        records.push(hash_record(&dest)?);
         if file.ends_with(".safetensors") {
             adapter = Some(dest);
         } else {
             config = Some(dest);
         }
     }
+    let retained_temp = cleanup.0.take().ok_or("adapter staging disappeared")?;
     Ok(StagedAdapter {
         adapter: adapter.ok_or("the repo download produced no adapter")?,
         config,
         // The repo's own name seeds the slug (`owner/name` → `name`).
         slug_seed: repo.split('/').next_back().unwrap_or(repo).to_string(),
-        temp: Some(temp),
+        source: format!("https://huggingface.co/{repo}"),
+        revision: Some(info.sha),
+        files: records,
+        temp: Some(retained_temp),
     })
 }
 
@@ -684,13 +871,33 @@ fn stage_local_adapter(path: &Path) -> Result<StagedAdapter, String> {
              execute arbitrary code)"
         ));
     }
-    let adapter = if path.is_dir() {
-        adapter_file(path).ok_or_else(|| {
-            format!("expected one .safetensors adapter in '{file_name}'")
-        })?
-    } else {
+    let source_metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect local adapter source: {error}"))?;
+    if source_metadata.file_type().is_symlink() {
+        return Err("local adapter source must not be a symbolic link or reparse point".into());
+    }
+    let adapter = if source_metadata.is_dir() {
+        adapter_file(path)
+            .ok_or_else(|| format!("expected one .safetensors adapter in '{file_name}'"))?
+    } else if source_metadata.is_file() {
         path.to_path_buf()
+    } else {
+        return Err("local adapter source is not a regular file or directory".into());
     };
+    let source_root = if source_metadata.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .ok_or("local adapter file has no parent directory")?
+            .to_path_buf()
+    };
+    let canonical_root = std::fs::canonicalize(&source_root)
+        .map_err(|error| format!("cannot canonicalize local adapter root: {error}"))?;
+    let canonical_adapter = std::fs::canonicalize(&adapter)
+        .map_err(|error| format!("cannot canonicalize local adapter: {error}"))?;
+    if !canonical_adapter.starts_with(&canonical_root) {
+        return Err("local adapter escapes its selected source directory".into());
+    }
     let config_path = adapter.with_file_name("adapter_config.json");
     let slug_seed = adapter
         .file_stem()
@@ -708,10 +915,30 @@ fn stage_local_adapter(path: &Path) -> Result<StagedAdapter, String> {
     } else {
         slug_seed
     };
+    let config = match std::fs::symlink_metadata(&config_path) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => {
+            let canonical = std::fs::canonicalize(&config_path)
+                .map_err(|error| format!("cannot canonicalize adapter config: {error}"))?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err("adapter config escapes its selected source directory".into());
+            }
+            Some(config_path)
+        }
+        Ok(_) => return Err("adapter config must not be a symbolic link or reparse point".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("cannot inspect adapter config: {error}")),
+    };
+    let mut files = vec![hash_record(&adapter)?];
+    if let Some(config) = &config {
+        files.push(hash_record(config)?);
+    }
     Ok(StagedAdapter {
         adapter,
-        config: config_path.is_file().then_some(config_path),
+        config,
         slug_seed,
+        source: canonical_root.to_string_lossy().into_owned(),
+        revision: None,
+        files,
         temp: None,
     })
 }
@@ -727,17 +954,36 @@ fn place_adapter(
     facts: &AdapterFacts,
 ) -> Result<(), String> {
     let dest = root.join(base).join(slug);
-    if dest.exists() {
-        return Err(format!(
-            "an adapter named '{base}/{slug}' is already installed — delete it first"
-        ));
+    match std::fs::symlink_metadata(&dest) {
+        Ok(_) => {
+            return Err(format!(
+                "an adapter named '{base}/{slug}' is already installed — delete it first"
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot inspect adapter destination: {error}")),
     }
     std::fs::create_dir_all(root.join(base))
         .map_err(|e| format!("cannot create the adapter registry: {e}"))?;
-    let staging = root.join(base).join(format!(".{slug}.importing"));
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)
-        .map_err(|e| format!("cannot stage the adapter: {e}"))?;
+    let base_dir = root.join(base);
+    let root_metadata = std::fs::symlink_metadata(root)
+        .map_err(|error| format!("cannot inspect adapter registry: {error}"))?;
+    let base_metadata = std::fs::symlink_metadata(&base_dir)
+        .map_err(|error| format!("cannot inspect adapter base directory: {error}"))?;
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|error| format!("cannot canonicalize adapter registry: {error}"))?;
+    let canonical_base = std::fs::canonicalize(&base_dir)
+        .map_err(|error| format!("cannot canonicalize adapter base directory: {error}"))?;
+    if root_metadata.file_type().is_symlink()
+        || base_metadata.file_type().is_symlink()
+        || !root_metadata.is_dir()
+        || !base_metadata.is_dir()
+        || !canonical_base.starts_with(&canonical_root)
+    {
+        return Err("adapter registry path is not a trusted contained directory".into());
+    }
+    recover_import_staging(&base_dir)?;
+    let staging = create_private_staging(&base_dir, ".lsdj-import")?;
 
     let place = (|| -> Result<(), String> {
         let adapter_name = staged
@@ -751,22 +997,92 @@ fn place_adapter(
                 .map_err(|e| format!("cannot copy adapter_config.json: {e}"))?;
         }
         let manifest = LoraManifest {
-            source: staged.slug_seed.clone(),
+            source: staged.source.clone(),
+            revision: staged.revision.clone(),
             convention: facts.convention.as_str().to_string(),
             adapter_type: facts.adapter_type.clone(),
             rank: facts.rank,
+            files: staged.files.clone(),
         };
         let json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| format!("cannot write the manifest: {e}"))?;
-        std::fs::write(staging.join(MANIFEST), json)
-            .map_err(|e| format!("cannot write the manifest: {e}"))?;
-        std::fs::rename(&staging, &dest)
-            .map_err(|e| format!("cannot place the adapter: {e}"))
+        write_private_file(&staging.join(MANIFEST), json.as_bytes())?;
+        validate_registry_generation(&staging)?;
+        std::fs::rename(&staging, &dest).map_err(|e| format!("cannot place the adapter: {e}"))
     })();
     if place.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
     place
+}
+
+fn recover_import_staging(base_dir: &Path) -> Result<(), String> {
+    let entries = match std::fs::read_dir(base_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("cannot inspect adapter staging: {error}")),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot inspect adapter staging: {error}"))?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(".lsdj-import-") {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("cannot inspect interrupted adapter staging: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("interrupted adapter staging is not a trusted directory".into());
+        }
+        std::fs::remove_dir_all(entry.path())
+            .map_err(|error| format!("cannot recover interrupted adapter staging: {error}"))?;
+    }
+    Ok(())
+}
+
+fn validate_registry_generation(directory: &Path) -> Result<(), String> {
+    let adapter =
+        adapter_file(directory).ok_or("adapter generation has no unique regular weights")?;
+    let manifest_path = directory.join(MANIFEST);
+    let metadata = std::fs::symlink_metadata(&manifest_path)
+        .map_err(|error| format!("cannot inspect adapter provenance: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("adapter provenance is not a regular file".into());
+    }
+    let manifest: LoraManifest = serde_json::from_slice(
+        &std::fs::read(&manifest_path)
+            .map_err(|error| format!("cannot read adapter provenance: {error}"))?,
+    )
+    .map_err(|error| format!("adapter provenance is invalid: {error}"))?;
+    if manifest.files.is_empty() {
+        return Err("adapter provenance has no artifact inventory".into());
+    }
+    let expected = manifest
+        .files
+        .iter()
+        .map(|record| (record.filename.clone(), record))
+        .collect::<BTreeMap<_, _>>();
+    let adapter_name = adapter
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("adapter filename is unsafe")?;
+    if !expected.contains_key(adapter_name) {
+        return Err("adapter provenance does not inventory its weights".into());
+    }
+    for (filename, record) in expected {
+        if !valid_slug(&filename)
+            || record.size == 0
+            || hex::decode(&record.sha256).map_or(true, |digest| digest.len() != 32)
+        {
+            return Err("adapter provenance contains an invalid artifact".into());
+        }
+        let actual = hash_record(&directory.join(&filename))?;
+        if actual.size != record.size || actual.sha256 != record.sha256.to_ascii_lowercase() {
+            return Err(format!(
+                "adapter artifact '{filename}' failed provenance validation"
+            ));
+        }
+    }
+    Ok(())
 }
 
 // --- Tauri commands --------------------------------------------------------
@@ -791,8 +1107,21 @@ pub fn install_lora(
 pub fn delete_lora(app: tauri::AppHandle, name: String) -> Result<(), String> {
     use tauri::Emitter;
     let (base, slug) = parse_name(&name)?;
-    let dir = loras_dir().join(base).join(slug);
-    if adapter_file(&dir).is_none() {
+    let root = loras_dir();
+    let dir = root.join(base).join(slug);
+    let root_metadata = std::fs::symlink_metadata(&root)
+        .map_err(|error| format!("cannot inspect adapter registry: {error}"))?;
+    let dir_metadata =
+        std::fs::symlink_metadata(&dir).map_err(|_| format!("unknown adapter '{name}'"))?;
+    let contained = !root_metadata.file_type().is_symlink()
+        && root_metadata.is_dir()
+        && !dir_metadata.file_type().is_symlink()
+        && dir_metadata.is_dir()
+        && std::fs::canonicalize(&root).is_ok_and(|canonical_root| {
+            std::fs::canonicalize(&dir)
+                .is_ok_and(|canonical_dir| canonical_dir.starts_with(canonical_root))
+        });
+    if !contained || adapter_file(&dir).is_none() {
         return Err(format!("unknown adapter '{name}'"));
     }
     std::fs::remove_dir_all(&dir).map_err(|e| format!("cannot delete '{name}': {e}"))?;
@@ -891,11 +1220,17 @@ mod tests {
         let path = tmp.join("adapter_model.safetensors");
         write_safetensors(
             &path,
-            &[("x.lora_A.weight", &[8, 1024]), ("x.lora_B.weight", &[1024, 8])],
+            &[
+                ("x.lora_A.weight", &[8, 1024]),
+                ("x.lora_B.weight", &[1024, 8]),
+            ],
             &[],
         );
         let error = validate_adapter(&path).unwrap_err();
-        assert!(error.contains("adapter_config.json"), "unexpected error: {error}");
+        assert!(
+            error.contains("adapter_config.json"),
+            "unexpected error: {error}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -915,7 +1250,10 @@ mod tests {
                     &[3072, 16],
                 ),
             ],
-            &[("lora_config", r#"{"adapter_type": "dora", "rank": 16, "alpha": 32}"#)],
+            &[(
+                "lora_config",
+                r#"{"adapter_type": "dora", "rank": 16, "alpha": 32}"#,
+            )],
         );
         let facts = validate_adapter(&path).unwrap();
         assert_eq!(facts.convention, Convention::Native);
@@ -960,7 +1298,10 @@ mod tests {
         let path = tmp.join("weights.safetensors");
         write_safetensors(&path, &[("model.embed.weight", &[512, 1024])], &[]);
         let error = validate_adapter(&path).unwrap_err();
-        assert!(error.contains("not a recognised"), "unexpected error: {error}");
+        assert!(
+            error.contains("not a recognised"),
+            "unexpected error: {error}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1072,12 +1413,7 @@ mod tests {
         );
 
         let registry = root.join("registry");
-        let staged = StagedAdapter {
-            adapter: source.clone(),
-            config: None,
-            slug_seed: "maqam".into(),
-            temp: None,
-        };
+        let staged = stage_local_adapter(&source).unwrap();
         let facts = validate_adapter(&source).unwrap();
         let base = resolve_base(&facts, None).unwrap();
         place_adapter(&registry, base, "maqam", &staged, &facts).unwrap();
@@ -1092,7 +1428,10 @@ mod tests {
 
         // A second import under the same name is refused, not overwritten.
         let error = place_adapter(&registry, base, "maqam", &staged, &facts).unwrap_err();
-        assert!(error.contains("already installed"), "unexpected error: {error}");
+        assert!(
+            error.contains("already installed"),
+            "unexpected error: {error}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1102,7 +1441,11 @@ mod tests {
         // Well-formed.
         let good = root.join("small").join("crackle");
         std::fs::create_dir_all(&good).unwrap();
-        write_safetensors(&good.join("crackle.safetensors"), &[("x.lora_A", &[4, 1024])], &[]);
+        write_safetensors(
+            &good.join("crackle.safetensors"),
+            &[("x.lora_A", &[4, 1024])],
+            &[],
+        );
         // No safetensors.
         std::fs::create_dir_all(root.join("small").join("empty")).unwrap();
         // Two safetensors — ambiguous, skipped (matches the Python resolver).
@@ -1113,16 +1456,66 @@ mod tests {
         // A dot-dir never becomes a name.
         let hidden = root.join("medium").join(".importing");
         std::fs::create_dir_all(&hidden).unwrap();
-        write_safetensors(&hidden.join("x.safetensors"), &[("x.lora_A", &[4, 1536])], &[]);
+        write_safetensors(
+            &hidden.join("x.safetensors"),
+            &[("x.lora_A", &[4, 1536])],
+            &[],
+        );
 
         let names: Vec<String> = discover(&root).into_iter().map(|info| info.name).collect();
         assert_eq!(names, vec!["small/crackle".to_string()]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn discovery_and_local_import_reject_symlink_escape_paths() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("symlink-escape");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let weights = outside.join("escape.safetensors");
+        write_safetensors(&weights, &[("x.lora_A", &[4, 1024])], &[]);
+
+        let registry = root.join("registry");
+        std::fs::create_dir_all(registry.join("small")).unwrap();
+        symlink(&outside, registry.join("small").join("escaped-dir")).unwrap();
+        assert!(discover(&registry).is_empty());
+
+        let linked_file = root.join("linked.safetensors");
+        symlink(&weights, &linked_file).unwrap();
+        let error = match stage_local_adapter(&linked_file) {
+            Ok(_) => panic!("symlink import unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.contains("symbolic link"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn interrupted_random_staging_is_recovered_without_touching_other_entries() {
+        let root = temp_root("recover-staging");
+        let base = root.join("small");
+        std::fs::create_dir_all(&base).unwrap();
+        let interrupted = base.join(".lsdj-import-0123456789abcdef");
+        std::fs::create_dir_all(&interrupted).unwrap();
+        std::fs::write(interrupted.join("partial"), b"partial").unwrap();
+        let unrelated = base.join("leave-me");
+        std::fs::create_dir_all(&unrelated).unwrap();
+
+        recover_import_staging(&base).unwrap();
+        assert!(!interrupted.exists());
+        assert!(unrelated.is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn slugs_are_derived_and_sanitised() {
-        assert_eq!(slugify("stable-audio-3-maqam-lora").unwrap(), "stable-audio-3-maqam-lora");
+        assert_eq!(
+            slugify("stable-audio-3-maqam-lora").unwrap(),
+            "stable-audio-3-maqam-lora"
+        );
         assert_eq!(slugify("My Adapter (v2)").unwrap(), "My-Adapter--v2-");
         assert_eq!(slugify("..sneaky").unwrap(), "sneaky");
         assert!(slugify("...").is_err());

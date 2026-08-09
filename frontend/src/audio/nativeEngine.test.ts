@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SAMPLE_RATE } from './types'
 import {
   createNativeEngine,
+  fetchGenerationApi,
+  getAudioOutputHealth,
+  reconnectAudioOutputs,
   styleAddTarget,
   styleMoveTarget,
   styleSetCursor,
@@ -86,6 +89,147 @@ const SNAP = {
 }
 
 describe('createNativeEngine — control contract', () => {
+  it('authenticates generation requests with the in-memory launch capability', async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({
+            generationPort: 4321,
+            generationCapability: 'b'.repeat(64),
+          })
+        : Promise.resolve(undefined),
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/models')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:4321/api/models')
+    expect((init.headers as Headers).get('x-lsdj-capability')).toBe('b'.repeat(64))
+  })
+
+  it('routes Magenta requests to the distinct native gateway', async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({
+            generationPort: 4321,
+            generationCapability: 's'.repeat(64),
+            magentaPort: 9876,
+            magentaCapability: 'm'.repeat(64),
+          })
+        : Promise.resolve(undefined),
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/render', { method: 'POST' })
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+
+    const [renderUrl, renderInit] = fetchMock.mock.calls[0]
+    expect(renderUrl).toBe('http://127.0.0.1:9876/api/render')
+    expect((renderInit.headers as Headers).get('x-lsdj-capability')).toBe('m'.repeat(64))
+    const [generateUrl, generateInit] = fetchMock.mock.calls[1]
+    expect(generateUrl).toBe('http://127.0.0.1:4321/api/generate')
+    expect((generateInit.headers as Headers).get('x-lsdj-capability')).toBe('s'.repeat(64))
+  })
+
+  it('fails closed when a managed Magenta gateway could not bind', async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({
+            generationPort: 4321,
+            generationCapability: 's'.repeat(64),
+            magentaPort: null,
+            magentaCapability: null,
+          })
+        : Promise.resolve(undefined),
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchGenerationApi('/api/render', { method: 'POST' })).rejects.toThrow(
+      'authentication is unavailable',
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refreshes app_info when a first SA3 install starts the service', async () => {
+    let appInfoCalls = 0
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd !== 'app_info') return Promise.resolve(undefined)
+      appInfoCalls += 1
+      return Promise.resolve(
+        appInfoCalls === 1
+          ? { generationPort: null, generationCapability: null }
+          : { generationPort: 2468, generationCapability: 'n'.repeat(64) },
+      )
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+
+    expect(appInfoCalls).toBe(2)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:2468/api/generate')
+    expect((init.headers as Headers).get('x-lsdj-capability')).toBe('n'.repeat(64))
+  })
+
+  it('uses the promoted SA3 connection on the next request without retrying either POST', async () => {
+    let appInfoCalls = 0
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd !== 'app_info') return Promise.resolve(undefined)
+      appInfoCalls += 1
+      return Promise.resolve(
+        appInfoCalls === 1
+          ? { generationPort: 1111, generationCapability: 'o'.repeat(64) }
+          : { generationPort: 2222, generationCapability: 'n'.repeat(64) },
+      )
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+
+    expect(appInfoCalls).toBe(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:1111/api/generate')
+    expect((fetchMock.mock.calls[0][1]?.headers as Headers).get('x-lsdj-capability')).toBe(
+      'o'.repeat(64),
+    )
+    expect(fetchMock.mock.calls[1][0]).toBe('http://127.0.0.1:2222/api/generate')
+    expect((fetchMock.mock.calls[1][1]?.headers as Headers).get('x-lsdj-capability')).toBe(
+      'n'.repeat(64),
+    )
+  })
+
   it('createDeckChannel replays NO mixer config — the shell hydrates (phase C)', async () => {
     const engine = createNativeEngine()
     await engine.createDeckChannel(
@@ -381,6 +525,29 @@ describe('createNativeEngine — output device', () => {
 
     const engine = createNativeEngine()
     await expect(engine.setMainDevice('FLX4')).rejects.toThrow('device busy')
+  })
+
+  it('wires live output health and explicit reconnect commands', async () => {
+    const health = {
+      mainHealthy: false,
+      cueHealthy: false,
+      mainError: 'no output',
+      cueError: 'no output',
+      canReconnect: true,
+    }
+    const invoke = vi.fn((cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'audio_output_health' || cmd === 'reconnect_audio_outputs') {
+        return Promise.resolve(health)
+      }
+      return Promise.resolve(undefined)
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+
+    await expect(getAudioOutputHealth()).resolves.toEqual(health)
+    await expect(reconnectAudioOutputs()).resolves.toEqual(health)
+    expect(calls).toContainEqual({ cmd: 'audio_output_health', args: undefined })
+    expect(calls).toContainEqual({ cmd: 'reconnect_audio_outputs', args: undefined })
   })
 })
 

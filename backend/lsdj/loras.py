@@ -1,9 +1,9 @@
 """Stable Audio 3 LoRA adapter registry — the read side (issue #66, ADR-0028).
 
-Adapters live on disk under the app-owned data dir, one directory per
-adapter, organised by the DiT family they ride:
+Adapters live under the host-resolved asset root, one directory per adapter,
+organised by the DiT family they ride:
 
-    ~/Library/Application Support/LSDJ/sa3-loras/<base>/<slug>/
+    $SA3_LORAS_HOME/<base>/<slug>/
 
 ``base`` is ``small`` (the 1024-wide sm-sfx / sm-music DiTs) or ``medium``
 (the 1536-wide track DiT). An adapter directory holds its ``.safetensors``
@@ -17,6 +17,11 @@ adapter name to the directory handed to ``sa3_mlx.py`` as ``--lora``.
 import os
 import pathlib
 import re
+import hashlib
+import json
+import stat
+
+from . import runtime_paths
 
 # The two DiT families an adapter can ride, and which generation kind uses
 # which. sm-sfx and sm-music share one architecture, so a "small" adapter
@@ -47,29 +52,81 @@ class UnknownAdapter(Exception):
 def loras_dir(
     env: dict | None = None, home: pathlib.Path | None = None
 ) -> pathlib.Path:
-    """The registry root. $SA3_LORAS_HOME wins (tests, dev overrides);
-    otherwise the app-owned data dir, beside the SA3 checkout. Mirrors the
-    Rust `loras::loras_dir`."""
+    """The registry root explicitly supplied by the Rust host."""
     env = os.environ if env is None else env
-    home = pathlib.Path.home() if home is None else home
-    override = env.get("SA3_LORAS_HOME", "")
-    if override:
-        return pathlib.Path(override).expanduser()
-    return home / "Library" / "Application Support" / "LSDJ" / "sa3-loras"
+    del home  # retained for API compatibility; platform paths come from Rust.
+    root = runtime_paths.loras_home(env)
+    if root is None:
+        raise RuntimeError("LSDJ asset roots were not supplied by the desktop host")
+    return root
 
 
-def _adapter_file(adapter_dir: pathlib.Path) -> pathlib.Path | None:
+def _is_linklike(path: pathlib.Path) -> bool:
+    try:
+        return path.is_symlink() or (
+            hasattr(os.path, "isjunction") and os.path.isjunction(path)
+        )
+    except OSError:
+        return True
+
+
+def _contained(path: pathlib.Path, root: pathlib.Path, *, directory: bool) -> bool:
+    try:
+        if _is_linklike(path):
+            return False
+        mode = path.lstat().st_mode
+        if directory and not stat.S_ISDIR(mode):
+            return False
+        if not directory and not stat.S_ISREG(mode):
+            return False
+        path.resolve(strict=True).relative_to(root.resolve(strict=True))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _verified_manifest(adapter_dir: pathlib.Path, root: pathlib.Path) -> bool:
+    manifest_path = adapter_dir / "lora.json"
+    if not manifest_path.exists():
+        return True  # Preserve explicitly supported hand-placed adapters.
+    if not _contained(manifest_path, root, directory=False):
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = manifest.get("files", [])
+        if not files:
+            return True  # Legacy imports predate the artifact inventory.
+        for record in files:
+            filename = record["filename"]
+            if not _SLUG.fullmatch(filename):
+                return False
+            artifact = adapter_dir / filename
+            if not _contained(artifact, root, directory=False):
+                return False
+            data = artifact.read_bytes()
+            if len(data) != record["size"]:
+                return False
+            if hashlib.sha256(data).hexdigest() != record["sha256"].lower():
+                return False
+        return True
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _adapter_file(adapter_dir: pathlib.Path, root: pathlib.Path) -> pathlib.Path | None:
     """The adapter's .safetensors inside its directory, or None. The importer
     writes exactly one; tolerate a hand-placed dir the same way the runtime's
     `_resolve_path` does (one .safetensors, any name)."""
-    if not adapter_dir.is_dir():
+    if not _contained(adapter_dir, root, directory=True):
         return None
     hits = sorted(
         entry
         for entry in adapter_dir.iterdir()
-        if entry.is_file() and entry.suffix == ".safetensors"
+        if _contained(entry, root, directory=False) and entry.suffix == ".safetensors"
     )
-    return hits[0] if len(hits) == 1 else None
+    if len(hits) != 1 or not _verified_manifest(adapter_dir, root):
+        return None
+    return hits[0]
 
 
 def resolve(
@@ -82,7 +139,14 @@ def resolve(
     base, _, slug = name.partition("/")
     if base not in BASES or not _SLUG.match(slug):
         raise UnknownAdapter(f"unknown adapter {name!r}")
-    adapter_dir = loras_dir(env, home) / base / slug
-    if _adapter_file(adapter_dir) is None:
+    root = loras_dir(env, home)
+    if not _contained(root, root, directory=True):
+        raise UnknownAdapter(f"unknown adapter {name!r}")
+    base_dir = root / base
+    adapter_dir = base_dir / slug
+    if (
+        not _contained(base_dir, root, directory=True)
+        or _adapter_file(adapter_dir, root) is None
+    ):
         raise UnknownAdapter(f"unknown adapter {name!r}")
     return adapter_dir, base

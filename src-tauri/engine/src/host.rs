@@ -389,6 +389,13 @@ enum Command {
     SwapMasterRing(Producer<f32>),
     /// Switch the CUE output device: the cue counterpart of [`SwapMasterRing`].
     SwapCueRing(Producer<f32>),
+    /// Switch the MASTER and CUE producers as one queue operation. Combined
+    /// output streams consume both rings, so accepting only one half would leave
+    /// the other bus connected to a stream that is about to be dropped.
+    SwapOutputRings {
+        master: Producer<f32>,
+        cue: Producer<f32>,
+    },
 }
 
 /// A point-in-time copy of the per-deck state the IPC thread reads back: track
@@ -505,9 +512,9 @@ impl OutputConsumer {
 /// A freshly-built output ring producer (master OR cue) for an output-device
 /// switch. Built off the render thread ([`Host::new_output_ring`]) and handed
 /// back to it via [`Host::install_master_ring`]
-/// / [`Host::install_cue_ring`] once the new device stream is open on the matching
-/// consumer. Opaque: the producer only travels from the host into the render
-/// thread.
+/// / [`Host::install_cue_ring`] (or paired by [`Host::install_output_rings`])
+/// once the new device stream is open on the matching consumer. Opaque: the
+/// producer only travels from the host into the render thread.
 pub struct OutputRing(Producer<f32>);
 
 /// Owns the [`Engine`] on a dedicated render thread and exposes thread-safe
@@ -530,6 +537,23 @@ pub struct Host {
     recorder: Arc<Recorder>,
     /// The render thread; joined on `Drop`.
     render_thread: Option<JoinHandle<()>>,
+}
+
+/// Push one complete control operation onto the single-writer command ring.
+/// Kept separate from `Host` so saturation behavior can be exercised without a
+/// render thread racing the test's queue setup.
+fn enqueue_command(commands: &Mutex<Producer<Command>>, command: Command) -> bool {
+    let mut producer = match commands.lock() {
+        Ok(producer) => producer,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match producer.push(command) {
+        Ok(()) => true,
+        Err(_) => {
+            eprintln!("lsdj-host: command queue full — dropping a control command");
+            false
+        }
+    }
 }
 
 impl Host {
@@ -607,7 +631,9 @@ impl Host {
     /// (carried in [`OutputRing`]) and its device-side [`OutputConsumer`] for the
     /// new cpal stream. The ring is symmetric — master vs cue is decided by which
     /// of [`install_master_ring`](Self::install_master_ring) /
-    /// [`install_cue_ring`](Self::install_cue_ring) the caller installs it with.
+    /// [`install_cue_ring`](Self::install_cue_ring) the caller installs it with,
+    /// or by pairing both rings in
+    /// [`install_output_rings`](Self::install_output_rings).
     /// The render thread keeps filling the CURRENT ring until that install swaps
     /// it, so the caller opens the new stream on this consumer FIRST and only
     /// installs on success, leaving audio undisturbed if the device fails to open.
@@ -638,23 +664,23 @@ impl Host {
         self.send(Command::SwapCueRing(ring.0))
     }
 
+    /// Hand a combined stream's MASTER and CUE rings to the render thread in one
+    /// command. The queue accepts both producers or neither; callers may only
+    /// retire the previous split cue after this returns true.
+    pub fn install_output_rings(&self, master: OutputRing, cue: OutputRing) -> bool {
+        self.send(Command::SwapOutputRings {
+            master: master.0,
+            cue: cue.0,
+        })
+    }
+
     /// Enqueue a command for the render thread. Drops the command (logged) if the
     /// queue is momentarily full — a non-blocking control surface never stalls the
     /// caller (the UI/IPC thread). Returns whether the command was enqueued.
     fn send(&self, command: Command) -> bool {
         // The Mutex only serialises IPC callers against each other (the producer
         // half is single-writer); it is never touched by the cpal callback.
-        let mut producer = match self.commands.lock() {
-            Ok(p) => p,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        match producer.push(command) {
-            Ok(()) => true,
-            Err(_) => {
-                eprintln!("lsdj-host: command queue full — dropping a control command");
-                false
-            }
-        }
+        enqueue_command(&self.commands, command)
     }
 
     // --- Control surface (one method per Engine control op) ---
@@ -1076,6 +1102,13 @@ impl RenderLoop {
             Command::SwapCueRing(cue) => {
                 // As above, for the cue ring — swapped independently of the master
                 // so a cue-device change never disturbs the master stream.
+                self.cue_output = cue;
+            }
+            Command::SwapOutputRings { master, cue } => {
+                // A combined device drains both rings. Apply the pair from one
+                // command so queue pressure can never expose a half-swapped
+                // topology to the render loop or its device stream.
+                self.output = master;
                 self.cue_output = cue;
             }
         }
@@ -1658,5 +1691,68 @@ mod tests {
             cue_rx.slots() > 0,
             "after the swap the render loop fills the new cue ring"
         );
+    }
+
+    #[test]
+    fn swap_output_rings_repoints_master_and_cue_together() {
+        let mut host = TestHost::new();
+        let (master_tx, master_rx) =
+            RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
+        let (cue_tx, cue_rx) = RingBuffer::<f32>::new(OUTPUT_RING_FRAMES * CHANNELS as usize);
+
+        host.send(Command::SwapOutputRings {
+            master: master_tx,
+            cue: cue_tx,
+        });
+        host.loop_state.step();
+
+        assert!(master_rx.slots() > 0, "the new master ring is filled");
+        assert!(cue_rx.slots() > 0, "the new cue ring is filled");
+    }
+
+    #[test]
+    fn combined_ring_install_uses_one_queue_slot() {
+        let (mut command_tx, mut command_rx) =
+            RingBuffer::<Command>::new(COMMAND_QUEUE_DEPTH);
+        for _ in 0..COMMAND_QUEUE_DEPTH - 1 {
+            assert!(command_tx.push(Command::SetCrossfade(0.5)).is_ok());
+        }
+        let (master, _master_rx) = RingBuffer::<f32>::new(1);
+        let (cue, _cue_rx) = RingBuffer::<f32>::new(1);
+        let commands = Mutex::new(command_tx);
+
+        assert!(enqueue_command(
+            &commands,
+            Command::SwapOutputRings { master, cue }
+        ));
+        for _ in 0..COMMAND_QUEUE_DEPTH - 1 {
+            assert!(matches!(command_rx.pop(), Ok(Command::SetCrossfade(_))));
+        }
+        assert!(matches!(
+            command_rx.pop(),
+            Ok(Command::SwapOutputRings { .. })
+        ));
+        assert!(command_rx.pop().is_err());
+    }
+
+    #[test]
+    fn full_queue_rejects_the_combined_ring_pair_without_partial_commands() {
+        let (mut command_tx, mut command_rx) =
+            RingBuffer::<Command>::new(COMMAND_QUEUE_DEPTH);
+        for _ in 0..COMMAND_QUEUE_DEPTH {
+            assert!(command_tx.push(Command::SetCrossfade(0.5)).is_ok());
+        }
+        let (master, _master_rx) = RingBuffer::<f32>::new(1);
+        let (cue, _cue_rx) = RingBuffer::<f32>::new(1);
+        let commands = Mutex::new(command_tx);
+
+        assert!(!enqueue_command(
+            &commands,
+            Command::SwapOutputRings { master, cue }
+        ));
+        for _ in 0..COMMAND_QUEUE_DEPTH {
+            assert!(matches!(command_rx.pop(), Ok(Command::SetCrossfade(_))));
+        }
+        assert!(command_rx.pop().is_err());
     }
 }

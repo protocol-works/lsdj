@@ -1,6 +1,6 @@
 //! The cpal device wrapper: a thin host around the device-free [`Engine`] core.
 //!
-//! Opens a stereo / f32 output stream with `BufferSize::Fixed(256)` and, in its
+//! Opens an output stream with `BufferSize::Fixed(256)` and, in its
 //! callback, sets FTZ/DAZ once and drains the engine's output ring(s) wrapped in
 //! `assert_no_alloc`. The callback is the ONLY real-time path; it allocates
 //! nothing, takes no lock, makes no syscall, and logs nothing. Ported from the
@@ -8,13 +8,14 @@
 //! now built on the library so the device path stays exercisable.
 //!
 //! The engine renders at exactly [`SAMPLE_RATE`] (48000). A device that offers a
-//! 48000/f32 config is opened there and drained bit-exact (the fast path). A
-//! device with NO 48000/f32 config — e.g. a 44100 Bluetooth speaker — is opened
-//! at its own f32 rate and the 48 kHz stream is resampled to it on the callback
-//! via [`OutputResampler`] (ADR-0029). All device-rate knowledge lives here; the
-//! host's output ring stays a clean 48 kHz interleaved-stereo contract.
+//! 48000 config in a supported sample format (`f32`, `i16`, or `u16`) is opened
+//! there. A device with no 48000 config — e.g. a 44100 Bluetooth speaker — is
+//! opened at its own rate and the 48 kHz stream is resampled to it on the callback
+//! via [`OutputResampler`] (ADR-0029). Format conversion, clipping, and device
+//! channel mapping happen only at the final callback boundary; the host's output
+//! ring stays a clean 48 kHz interleaved-stereo `f32` contract.
 //!
-//! Graceful no-device exit: if no output device or no usable f32 config is
+//! Graceful no-device exit: if no output device or no usable config is
 //! available (likely in a sandbox / headless CI), [`run_stream`] returns
 //! [`DeviceError::Unavailable`] rather than hanging or panicking.
 
@@ -22,6 +23,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, StreamConfig};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::host::OutputConsumer;
 use crate::{Engine, CHANNELS, SAMPLE_RATE};
@@ -34,7 +37,7 @@ const REQUESTED_BUFFER: u32 = 256;
 /// case — callers treat it as "no device, exit cleanly", not a failure.
 #[derive(Debug)]
 pub enum DeviceError {
-    /// No output device, or no usable f32 config at all (e.g. a sandbox). A
+    /// No output device, or no usable config at all (e.g. a sandbox). A
     /// non-48000 device is NOT this case anymore — it is opened and resampled
     /// (ADR-0029). Not a bug — exit cleanly.
     Unavailable(String),
@@ -59,7 +62,27 @@ pub struct StreamInfo {
     pub device_name: String,
     pub device_channels: u16,
     pub sample_rate: u32,
+    pub sample_format: cpal::SampleFormat,
     pub buffer_frames: BufferSize,
+}
+
+/// A cloneable, allocation-free health signal shared with CPAL's error callback.
+/// The signal is deliberately one-way: a failed stream is replaced, never reset.
+#[derive(Clone)]
+struct StreamHealth(Arc<AtomicBool>);
+
+impl StreamHealth {
+    fn healthy() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn mark_failed(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
 /// A running output stream driving an [`Engine`]. The cpal stream stops when this
@@ -67,19 +90,31 @@ pub struct StreamInfo {
 pub struct AudioStream {
     _stream: cpal::Stream,
     info: StreamInfo,
+    /// CPAL invokes its error callback on a backend-owned thread. Keep that path
+    /// bounded and non-blocking: it flips this preallocated atomic and does no
+    /// logging, allocation, locking, or application IPC. The shell polls the
+    /// value off the real-time path and owns user-facing diagnostics/recovery.
+    healthy: StreamHealth,
 }
 
 impl AudioStream {
     pub fn info(&self) -> &StreamInfo {
         &self.info
     }
+
+    /// Whether CPAL has reported an asynchronous error since this stream was
+    /// started. A newly opened stream is healthy; recovery replaces the stream
+    /// (and therefore this signal) rather than trying to reset it in place.
+    pub fn is_healthy(&self) -> bool {
+        self.healthy.is_healthy()
+    }
 }
 
 /// One output device the engine can open, for the picker UI.
 pub struct OutputDeviceInfo {
     pub name: String,
-    /// Channels of its chosen usable (f32, ≥ stereo) config — the widest 48000/f32
-    /// config, or the fallback config when the device cannot do 48000.
+    /// Channels of its chosen usable (`f32`, `i16`, or `u16`) config — the widest
+    /// preferred 48000 config, or the fallback when the device cannot do 48000.
     pub channels: u16,
     /// Whether it can carry the headphone cue: a ≥4-channel device lands master
     /// on 1/2 and the cue on 3/4 (the FLX4 phones jack).
@@ -94,15 +129,28 @@ fn device_name(device: &cpal::Device) -> String {
         .unwrap_or_else(|_| "<unknown>".into())
 }
 
+/// The device-boundary sample formats the engine supports. The engine and output
+/// rings remain `f32`; integer support is deliberately confined to the final,
+/// allocation-free callback conversion.
+fn sample_format_rank(format: cpal::SampleFormat) -> Option<u8> {
+    match format {
+        cpal::SampleFormat::F32 => Some(0),
+        cpal::SampleFormat::I16 => Some(1),
+        cpal::SampleFormat::U16 => Some(2),
+        _ => None,
+    }
+}
+
 /// Choose a device's output config for the engine. Preference order:
 ///
-/// 1. An exact 48000/f32 config (≥ stereo), WIDEST channel count — the bit-exact
-///    fast path. A ≥4-channel device (the FLX4) lands master on 1/2, cue on 3/4.
-/// 2. Otherwise the device's own default config, if it is f32 / ≥ stereo — its
-///    nominal rate (e.g. 44100 for a Bluetooth speaker), which the OS will not
-///    itself resample, so we resample 48000 → it directly (ADR-0029).
-/// 3. Otherwise any f32 / ≥ stereo config, at the supported rate NEAREST 48000
-///    (widest channels as a tie-break).
+/// 1. An exact 48000 config, preferring the widest channel layout and then `f32`,
+///    `i16`, and `u16` within that layout. A ≥4-channel device (the FLX4) lands
+///    master on 1/2 and cue on 3/4; a mono device receives a balanced downmix.
+/// 2. Otherwise the device's own default config, when its sample format is
+///    supported — its nominal rate (e.g. 44100 for a Bluetooth speaker), which
+///    the OS will not itself resample, so we resample 48000 → it directly.
+/// 3. Otherwise any supported config, at the supported rate NEAREST 48000
+///    (widest channels, then `f32`/`i16`/`u16`, as tie-breaks).
 ///
 /// The returned config's `sample_rate()` is the rate the stream opens at; the
 /// caller resamples when it is not [`SAMPLE_RATE`].
@@ -110,37 +158,43 @@ fn pick_config(device: &cpal::Device) -> Option<cpal::SupportedStreamConfig> {
     let exact = device.supported_output_configs().ok().and_then(|configs| {
         configs
             .filter(|cfg| {
-                cfg.channels() >= CHANNELS
-                    && cfg.sample_format() == cpal::SampleFormat::F32
+                cfg.channels() > 0
+                    && sample_format_rank(cfg.sample_format()).is_some()
                     && cfg.min_sample_rate() <= SAMPLE_RATE
                     && cfg.max_sample_rate() >= SAMPLE_RATE
             })
-            .max_by_key(|cfg| cfg.channels())
+            .min_by_key(|cfg| {
+                (
+                    u16::MAX - cfg.channels(),
+                    sample_format_rank(cfg.sample_format()).unwrap_or(u8::MAX),
+                )
+            })
             .map(|cfg| cfg.with_sample_rate(SAMPLE_RATE))
     });
     if exact.is_some() {
         return exact;
     }
 
-    // No 48000/f32 config: fall back to a resampled rate. Prefer the device's own
+    // No exact 48000 config: fall back to a resampled rate. Prefer the device's own
     // default (its nominal rate, so the OS does not double-resample under us).
     if let Ok(default) = device.default_output_config() {
-        if default.sample_format() == cpal::SampleFormat::F32 && default.channels() >= CHANNELS {
+        if default.channels() > 0 && sample_format_rank(default.sample_format()).is_some() {
             return Some(default);
         }
     }
 
-    // Last resort: the f32 / ≥ stereo config whose supported range lands a rate
-    // closest to 48000 (widest channels breaks ties). `clamp` gives the nearest
-    // in-range rate — for a 44100-only device that is 44100.
+    // Last resort: the supported config whose range lands nearest 48000. `clamp`
+    // gives the nearest in-range rate — for a 44100-only device that is 44100.
     device.supported_output_configs().ok().and_then(|configs| {
         configs
-            .filter(|cfg| {
-                cfg.channels() >= CHANNELS && cfg.sample_format() == cpal::SampleFormat::F32
-            })
+            .filter(|cfg| cfg.channels() > 0 && sample_format_rank(cfg.sample_format()).is_some())
             .min_by_key(|cfg| {
                 let rate = SAMPLE_RATE.clamp(cfg.min_sample_rate(), cfg.max_sample_rate());
-                (rate.abs_diff(SAMPLE_RATE), u16::MAX - cfg.channels())
+                (
+                    rate.abs_diff(SAMPLE_RATE),
+                    u16::MAX - cfg.channels(),
+                    sample_format_rank(cfg.sample_format()).unwrap_or(u8::MAX),
+                )
             })
             .map(|cfg| {
                 let rate = SAMPLE_RATE.clamp(cfg.min_sample_rate(), cfg.max_sample_rate());
@@ -149,10 +203,10 @@ fn pick_config(device: &cpal::Device) -> Option<cpal::SupportedStreamConfig> {
     })
 }
 
-/// Enumerate the output devices the engine can open (any f32, ≥ stereo config —
-/// exact 48000 or a resampled fallback) with their chosen channel count, for the
-/// picker. Off the RT path — called from a command when the picker opens. Empty
-/// on a headless host.
+/// Enumerate the output devices the engine can open (any `f32`, `i16`, or `u16`
+/// config — exact 48000 or a resampled fallback) with their chosen channel count,
+/// for the picker. Off the RT path — called from a command when the picker opens.
+/// Empty on a headless host.
 pub fn list_output_devices() -> Vec<OutputDeviceInfo> {
     let host = cpal::default_host();
     let Ok(devices) = host.output_devices() else {
@@ -185,9 +239,9 @@ fn find_output_device(host: &cpal::Host, name: &str) -> Result<cpal::Device, Dev
 }
 
 /// Open `device_name` (or the default when `None`) at the config [`pick_config`]
-/// chooses — a 48000/f32 widest config (so the cue reaches channels 3/4 on a
-/// ≥4-channel device), or a resampled fallback rate. `info.sample_rate` is the
-/// rate the stream actually opens at; the caller resamples when it ≠ 48000.
+/// chooses — a preferred 48000 config (so the cue reaches channels 3/4 on a
+/// ≥4-channel device), or a resampled fallback rate. `info.sample_rate` and
+/// `info.sample_format` describe what the stream actually opens.
 fn open_output(
     selected: Option<&str>,
 ) -> Result<(cpal::Device, StreamConfig, StreamInfo), DeviceError> {
@@ -203,13 +257,14 @@ fn open_output(
 
     let supported = pick_config(&device).ok_or_else(|| {
         DeviceError::Unavailable(format!(
-            "device '{device_name}' has no usable f32 output config \
-             (no f32 ≥ stereo config at any sample rate)"
+            "device '{device_name}' has no usable output config \
+             (supported sample formats: f32, i16, u16)"
         ))
     })?;
 
     let device_channels = supported.channels();
     let device_rate = supported.sample_rate();
+    let sample_format = supported.sample_format();
     let buffer_size = match supported.buffer_size() {
         cpal::SupportedBufferSize::Range { min, max } => {
             BufferSize::Fixed(REQUESTED_BUFFER.clamp(*min, *max))
@@ -227,30 +282,98 @@ fn open_output(
         device_name,
         device_channels,
         sample_rate: device_rate,
+        sample_format,
         buffer_frames: buffer_size,
     };
 
     Ok((device, config, info))
 }
 
-/// Zero a wider interleaved device buffer, then lay each `(channel_offset, src)`
-/// interleaved-stereo block onto channels `[offset, offset+1]`. One primitive for
-/// every routing: master on 1/2 is `&[(0, master)]`; the FLX4 combined path is
-/// `&[(0, master), (2, cue)]`; a split cue on the FLX4 phones is `&[(2, cue)]`.
-/// A frame past a block's length (or an offset past the device) is left silent.
-/// `placements` is a small fixed stack slice, so this stays pure and alloc-free —
-/// RT-safe.
-fn spread(data: &mut [f32], dev_ch: usize, placements: &[(usize, &[f32])]) {
+/// A sample type accepted at the cpal device boundary. Conversions explicitly
+/// clamp before quantization: `dasp_sample`'s raw `f32 → i16` conversion wraps at
+/// exactly `1.0`, which is not acceptable when a limiter or resampler reaches the
+/// positive endpoint. Implementations are branch/arithmetic only and RT-safe.
+trait DeviceSample: cpal::SizedSample + Copy + Send + 'static {
+    fn from_f32_clipped(sample: f32) -> Self;
+}
+
+/// Clamp finite and infinite values to the cpal PCM domain. A NaN is silence:
+/// propagating it to a float device can poison downstream host processing, while
+/// integer casts happen to turn it into zero and would otherwise disagree.
+#[inline]
+fn clip_sample(sample: f32) -> f32 {
+    if sample.is_nan() {
+        0.0
+    } else {
+        sample.clamp(-1.0, 1.0)
+    }
+}
+
+impl DeviceSample for f32 {
+    #[inline]
+    fn from_f32_clipped(sample: f32) -> Self {
+        clip_sample(sample)
+    }
+}
+
+impl DeviceSample for i16 {
+    #[inline]
+    fn from_f32_clipped(sample: f32) -> Self {
+        let sample = clip_sample(sample);
+        if sample <= -1.0 {
+            i16::MIN
+        } else if sample >= 1.0 {
+            i16::MAX
+        } else {
+            (sample * 32_768.0).round() as i16
+        }
+    }
+}
+
+impl DeviceSample for u16 {
+    #[inline]
+    fn from_f32_clipped(sample: f32) -> Self {
+        let sample = clip_sample(sample);
+        if sample <= -1.0 {
+            u16::MIN
+        } else if sample >= 1.0 {
+            u16::MAX
+        } else {
+            ((sample + 1.0) * 32_767.5).round() as u16
+        }
+    }
+}
+
+/// Silence an interleaved device buffer, then map each `(channel_offset, src)`
+/// interleaved-stereo `f32` block into it while clipping and converting to the
+/// device sample type. Master on 1/2 is `&[(0, master)]`; the FLX4 combined path
+/// is `&[(0, master), (2, cue)]`; a split FLX4 cue is `&[(2, cue)]`.
+///
+/// A mono device gets `(left + right) / 2`, which preserves headroom and avoids
+/// selecting one side of stereo content. A frame past a source's length (or an
+/// offset past the device) stays silent. `placements` is a fixed stack slice, so
+/// this is allocation/lock/syscall/log free and safe in the realtime callback.
+fn write_mapped<T: DeviceSample>(data: &mut [T], dev_ch: usize, placements: &[(usize, &[f32])]) {
+    let silence = T::from_f32_clipped(0.0);
+    data.fill(silence);
+    if dev_ch == 0 {
+        return;
+    }
+
     let frames = data.len() / dev_ch;
     for f in 0..frames {
-        let base = f * dev_ch;
-        for c in 0..dev_ch {
-            data[base + c] = 0.0;
-        }
         for &(offset, src) in placements {
-            if offset + 1 < dev_ch && 2 * f + 1 < src.len() {
-                data[base + offset] = src[2 * f];
-                data[base + offset + 1] = src[2 * f + 1];
+            let src_base = 2 * f;
+            if src_base + 1 >= src.len() {
+                continue;
+            }
+            if dev_ch == 1 && offset == 0 {
+                let mono = (src[src_base] + src[src_base + 1]) * 0.5;
+                data[f] = T::from_f32_clipped(mono);
+            } else if offset + 1 < dev_ch {
+                let dst_base = f * dev_ch + offset;
+                data[dst_base] = T::from_f32_clipped(src[src_base]);
+                data[dst_base + 1] = T::from_f32_clipped(src[src_base + 1]);
             }
         }
     }
@@ -262,7 +385,7 @@ fn spread(data: &mut [f32], dev_ch: usize, placements: &[(usize, &[f32])]) {
 const RESAMPLER_BLOCKS: usize = 2;
 
 /// Resamples the engine's 48 kHz interleaved-stereo feed to a device with no
-/// 48000/f32 config (e.g. a 44100 Bluetooth speaker), via rubato's synchronous
+/// usable 48000 config (e.g. a 44100 Bluetooth speaker), via rubato's synchronous
 /// FFT resampler at the fixed [`SAMPLE_RATE`] → device-rate ratio (ADR-0029).
 ///
 /// rubato works in fixed `chunk_frames` blocks; the cpal callback's block size is
@@ -313,7 +436,14 @@ impl OutputResampler {
         let input = vec![0.0; resampler.input_frames_max() * CHANNELS as usize];
         let chunk = vec![0.0; chunk_frames * CHANNELS as usize];
         let carry = vec![0.0; chunk_frames * CHANNELS as usize];
-        Some(OutputResampler { resampler, input, chunk, carry, carry_len: 0, chunk_frames })
+        Some(OutputResampler {
+            resampler,
+            input,
+            chunk,
+            carry,
+            carry_len: 0,
+            chunk_frames,
+        })
     }
 
     /// **RT path.** Fill `out` (interleaved-stereo at the device rate) entirely,
@@ -382,7 +512,123 @@ impl OutputResampler {
     }
 }
 
-/// Open `selected` (a 48000/f32 config, or a resampled fallback rate), build a
+/// The complete mutable state captured by a production cpal output callback.
+/// Constructed before stream start; its vectors never resize after capture.
+struct OutputWriter {
+    device_channels: usize,
+    primary_offset: usize,
+    primary: OutputConsumer,
+    secondary: Option<OutputConsumer>,
+    primary_resampler: Option<OutputResampler>,
+    secondary_resampler: Option<OutputResampler>,
+    scratch: Vec<f32>,
+    secondary_scratch: Vec<f32>,
+}
+
+impl OutputWriter {
+    /// **RT path.** Drain/resample and convert an entire cpal callback in bounded,
+    /// frame-aligned tiles. The scratch buffers are reusable working space, not a
+    /// limit on callback length: hosts may deliver a block larger than the granted
+    /// size, and every frame still consumes its matching ring input. Iteration is
+    /// arithmetic over preallocated slices only.
+    fn write<T: DeviceSample>(&mut self, data: &mut [T]) {
+        let silence = T::from_f32_clipped(0.0);
+        let dev_ch = self.device_channels;
+        if dev_ch == 0 {
+            data.fill(silence);
+            return;
+        }
+
+        let primary_scratch_frames = self.scratch.len() / CHANNELS as usize;
+        let tile_frames = if self.secondary.is_some() {
+            primary_scratch_frames.min(self.secondary_scratch.len() / CHANNELS as usize)
+        } else {
+            primary_scratch_frames
+        };
+        if tile_frames == 0 {
+            data.fill(silence);
+            return;
+        }
+
+        let total_frames = data.len() / dev_ch;
+        let mut frame_start = 0;
+        while frame_start < total_frames {
+            let frames = (total_frames - frame_start).min(tile_frames);
+            let device_start = frame_start * dev_ch;
+            let device_end = device_start + frames * dev_ch;
+            let stereo_samples = frames * CHANNELS as usize;
+            let primary_tile = &mut self.scratch[..stereo_samples];
+
+            if let Some(resampler) = self.primary_resampler.as_mut() {
+                resampler.fill(&mut self.primary, primary_tile);
+            } else {
+                self.primary.drain_into(primary_tile);
+            }
+
+            if let Some(secondary) = self.secondary.as_mut() {
+                let secondary_tile = &mut self.secondary_scratch[..stereo_samples];
+                if let Some(resampler) = self.secondary_resampler.as_mut() {
+                    resampler.fill(secondary, secondary_tile);
+                } else {
+                    secondary.drain_into(secondary_tile);
+                }
+                write_mapped(
+                    &mut data[device_start..device_end],
+                    dev_ch,
+                    &[(0, primary_tile), (2, secondary_tile)],
+                );
+            } else {
+                write_mapped(
+                    &mut data[device_start..device_end],
+                    dev_ch,
+                    &[(self.primary_offset, primary_tile)],
+                );
+            }
+            frame_start += frames;
+        }
+
+        // cpal supplies whole frames, but make a malformed trailing partial frame
+        // deterministic and silent without reading another engine frame.
+        data[total_frames * dev_ch..].fill(silence);
+    }
+}
+
+/// **RT path.** The legacy engine-in-callback exerciser uses the same bounded
+/// tiling rule as [`OutputWriter::write`], rendering every callback frame even
+/// when cpal hands it a block larger than the preallocated scratch.
+fn render_engine_chunks<T: DeviceSample>(
+    data: &mut [T],
+    dev_ch: usize,
+    engine: &mut Engine,
+    scratch: &mut [f32],
+) {
+    let silence = T::from_f32_clipped(0.0);
+    if dev_ch == 0 {
+        data.fill(silence);
+        return;
+    }
+    let tile_frames = scratch.len() / CHANNELS as usize;
+    if tile_frames == 0 {
+        data.fill(silence);
+        return;
+    }
+
+    let total_frames = data.len() / dev_ch;
+    let mut frame_start = 0;
+    while frame_start < total_frames {
+        let frames = (total_frames - frame_start).min(tile_frames);
+        let device_start = frame_start * dev_ch;
+        let device_end = device_start + frames * dev_ch;
+        let stereo_samples = frames * CHANNELS as usize;
+        let tile = &mut scratch[..stereo_samples];
+        engine.render(tile, frames);
+        write_mapped(&mut data[device_start..device_end], dev_ch, &[(0, tile)]);
+        frame_start += frames;
+    }
+    data[total_frames * dev_ch..].fill(silence);
+}
+
+/// Open `selected` (a supported 48000 config, or a resampled fallback rate), build a
 /// stream that drains `primary` onto channels 1/2 — and, when `secondary` is
 /// `Some` AND the device has ≥4 channels,
 /// also drains it onto channels 3/4 (the FLX4 combined master+cue path). On a
@@ -408,28 +654,63 @@ impl OutputResampler {
 /// the rings; with no device nothing drains them, which is fine).
 fn open_spread_stream(
     selected: Option<&str>,
-    mut primary: OutputConsumer,
+    primary: OutputConsumer,
     secondary: Option<OutputConsumer>,
     primary_on_phones: bool,
 ) -> Result<AudioStream, DeviceError> {
     let (device, config, info) = open_output(selected)?;
+    match info.sample_format {
+        cpal::SampleFormat::F32 => {
+            build_spread_stream::<f32>(device, config, info, primary, secondary, primary_on_phones)
+        }
+        cpal::SampleFormat::I16 => {
+            build_spread_stream::<i16>(device, config, info, primary, secondary, primary_on_phones)
+        }
+        cpal::SampleFormat::U16 => {
+            build_spread_stream::<u16>(device, config, info, primary, secondary, primary_on_phones)
+        }
+        format => Err(DeviceError::Unavailable(format!(
+            "selected unsupported output sample format {format}"
+        ))),
+    }
+}
+
+/// Typed half of [`open_spread_stream`]. The sample-format dispatch happens once,
+/// before cpal starts the stream; every callback then drains/resamples into fixed
+/// `f32` scratch and performs only channel mapping plus scalar conversion.
+fn build_spread_stream<T: DeviceSample>(
+    device: cpal::Device,
+    config: StreamConfig,
+    info: StreamInfo,
+    primary: OutputConsumer,
+    secondary: Option<OutputConsumer>,
+    primary_on_phones: bool,
+) -> Result<AudioStream, DeviceError> {
     let device_channels = info.device_channels as usize;
 
     // The secondary (cue) feed needs channels 3/4 — only a ≥4-channel device (the
     // FLX4) can carry it alongside the primary. Drop it on a narrower device.
-    let mut secondary = if device_channels >= 4 { secondary } else { None };
+    let secondary = if device_channels >= 4 {
+        secondary
+    } else {
+        None
+    };
     let secondary_routed = secondary.is_some();
     // Where the primary lands: a standalone cue stream on a ≥4-channel device (the
     // FLX4 chosen as a SEPARATE cue device) belongs on the phones channels 3/4
     // (offset 2), not 1/2 (its MASTER RCA). Master, and a cue on a stereo device
     // (laptop jack, Bluetooth), land on 1/2 (offset 0).
-    let primary_offset = if primary_on_phones && device_channels >= 4 { 2 } else { 0 };
+    let primary_offset = if primary_on_phones && device_channels >= 4 {
+        2
+    } else {
+        0
+    };
 
     // When the device opened at a rate other than the engine's 48 kHz, build a
     // resampler per feed (off the RT path; the callback only `fill`s them). A
     // failure here is fatal — playing 48 kHz audio straight into a 44.1 kHz buffer
     // would be pitched wrong — so it surfaces as a stream error. The resampler's
-    // chunk granularity is the requested buffer; its FIFO decouples that from the
+    // chunk granularity is the granted buffer; its FIFO decouples that from the
     // actual callback block size, so a varying block is served exactly.
     let device_rate = info.sample_rate;
     let chunk_frames = match info.buffer_frames {
@@ -443,101 +724,56 @@ fn open_spread_stream(
             ))
         })
     };
-    let mut primary_resampler = if device_rate != SAMPLE_RATE {
+    let primary_resampler = if device_rate != SAMPLE_RATE {
         Some(build_resampler("master")?)
     } else {
         None
     };
-    let mut secondary_resampler = if device_rate != SAMPLE_RATE && secondary_routed {
+    let secondary_resampler = if device_rate != SAMPLE_RATE && secondary_routed {
         Some(build_resampler("cue")?)
     } else {
         None
     };
 
     let mut first_call = true;
-    // Per-callback scratch for wide (>2ch) devices: the rings (and the resamplers)
-    // produce interleaved stereo, so on a wider device we gather stereo into these
-    // scratches and spread into the device buffer — same path whether the stereo
-    // came from a straight ring drain or a resample. Sized ONCE here, off the RT
-    // path, for a generous worst-case block; the callback never resizes them.
+    // Per-callback f32 scratch: rings and resamplers remain interleaved stereo,
+    // regardless of the device's sample format or channel layout. Sized ONCE here,
+    // off the RT path, for a generous worst-case block; the callback never resizes.
     let mut scratch: Vec<f32> = Vec::new();
     let mut secondary_scratch: Vec<f32> = Vec::new();
-    if device_channels != CHANNELS as usize {
-        scratch_reserve(&mut scratch, REQUESTED_BUFFER as usize * 4);
-        if secondary_routed {
-            scratch_reserve(&mut secondary_scratch, REQUESTED_BUFFER as usize * 4);
-        }
+    scratch_reserve(&mut scratch, chunk_frames.saturating_mul(4));
+    if secondary_routed {
+        scratch_reserve(&mut secondary_scratch, chunk_frames.saturating_mul(4));
     }
+    let mut output = OutputWriter {
+        device_channels,
+        primary_offset,
+        primary,
+        secondary,
+        primary_resampler,
+        secondary_resampler,
+        scratch,
+        secondary_scratch,
+    };
 
-    let err_fn = |e| eprintln!("lsdj-engine: stream error: {e}");
+    let healthy = StreamHealth::healthy();
+    let error_health = healthy.clone();
+    let err_fn = move |_error| {
+        // This may run on an audio-backend thread. Never format/log/lock/send
+        // from here: one atomic store is sufficient for the shell's live poll.
+        error_health.mark_failed();
+    };
 
     let stream = device
         .build_output_stream(
             config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+            move |data: &mut [T], _info: &cpal::OutputCallbackInfo| {
                 no_alloc(|| {
                     if first_call {
                         set_ftz_daz();
                         first_call = false;
                     }
-                    let dev_ch = device_channels;
-                    match primary_resampler.as_mut() {
-                        // Bit-exact: device runs at 48 kHz, drain straight through.
-                        None => {
-                            if dev_ch == CHANNELS as usize {
-                                // Stereo fast path: drain into the device buffer.
-                                primary.drain_into(data);
-                            } else {
-                                // Wider device: drain stereo into scratch, spread.
-                                let want = (data.len() / dev_ch) * CHANNELS as usize;
-                                let usable = scratch.len().min(want);
-                                primary.drain_into(&mut scratch[..usable]);
-                                if let Some(secondary) = secondary.as_mut() {
-                                    // Combined: primary on 1/2, secondary (cue) 3/4.
-                                    let su = secondary_scratch.len().min(want);
-                                    secondary.drain_into(&mut secondary_scratch[..su]);
-                                    spread(
-                                        data,
-                                        dev_ch,
-                                        &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
-                                    );
-                                } else {
-                                    // Lone feed (master, or a split cue).
-                                    spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
-                                }
-                            }
-                        }
-                        // Device runs at another rate: resample 48 kHz → device rate.
-                        // `fill` serves exactly the bytes asked for (its FIFO absorbs
-                        // the chunk-vs-block-size difference).
-                        Some(pr) => {
-                            if dev_ch == CHANNELS as usize {
-                                // Stereo device: resample into the device buffer.
-                                pr.fill(&mut primary, data);
-                            } else {
-                                // Wider device: resample into scratch, then spread.
-                                let want = (data.len() / dev_ch) * CHANNELS as usize;
-                                let usable = scratch.len().min(want);
-                                if let (Some(sr), Some(secondary)) =
-                                    (secondary_resampler.as_mut(), secondary.as_mut())
-                                {
-                                    // Combined: both feeds resampled, master 1/2, cue 3/4.
-                                    let su = secondary_scratch.len().min(want);
-                                    pr.fill(&mut primary, &mut scratch[..usable]);
-                                    sr.fill(secondary, &mut secondary_scratch[..su]);
-                                    spread(
-                                        data,
-                                        dev_ch,
-                                        &[(0, &scratch[..usable]), (2, &secondary_scratch[..su])],
-                                    );
-                                } else {
-                                    // Lone feed (master, or a split cue).
-                                    pr.fill(&mut primary, &mut scratch[..usable]);
-                                    spread(data, dev_ch, &[(primary_offset, &scratch[..usable])]);
-                                }
-                            }
-                        }
-                    }
+                    output.write(data);
                 });
             },
             err_fn,
@@ -552,6 +788,7 @@ fn open_spread_stream(
     Ok(AudioStream {
         _stream: stream,
         info,
+        healthy,
     })
 }
 
@@ -583,9 +820,9 @@ pub fn open_cue_stream(
     open_spread_stream(cue_dev, cue, None, true)
 }
 
-/// Open the default output device at exactly 48000/stereo/f32, build the stream
-/// that renders `engine` in its callback, start it, and return the running
-/// stream. The `engine` is MOVED into the audio callback.
+/// Open the default output device at exactly 48000 in a supported sample format,
+/// build the stream that renders `engine` in its callback, start it, and return
+/// the running stream. The `engine` is MOVED into the audio callback.
 ///
 /// This is the original engine-in-callback path (Phase 1 / `device_run`). The
 /// Tauri app now drives audio through [`open_main_stream`] / [`open_cue_stream`] +
@@ -597,7 +834,7 @@ pub fn open_cue_stream(
 /// On any sandbox/headless condition (no device, no 48000 config) this returns
 /// [`DeviceError::Unavailable`] without hanging — the caller decides whether that
 /// is fatal.
-pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
+pub fn run_stream(engine: Engine) -> Result<AudioStream, DeviceError> {
     let (device, config, info) = open_output(None)?;
     if info.sample_rate != SAMPLE_RATE {
         return Err(DeviceError::Unavailable(format!(
@@ -605,26 +842,49 @@ pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
             info.sample_rate
         )));
     }
-    let device_channels = info.device_channels;
+    match info.sample_format {
+        cpal::SampleFormat::F32 => build_engine_stream::<f32>(device, config, info, engine),
+        cpal::SampleFormat::I16 => build_engine_stream::<i16>(device, config, info, engine),
+        cpal::SampleFormat::U16 => build_engine_stream::<u16>(device, config, info, engine),
+        format => Err(DeviceError::Unavailable(format!(
+            "selected unsupported output sample format {format}"
+        ))),
+    }
+}
 
-    // Per-callback scratch for wide (>2ch) devices: the engine renders exactly
-    // stereo, so on a wider device we render into this stereo scratch and spread
-    // it into the device buffer (extra channels zeroed). On the common stereo
-    // device the scratch stays empty and the fast path renders straight into
-    // `data`. Sized ONCE here, off the RT path, for a generous worst-case block
-    // (4× the requested buffer); the callback never resizes it.
+/// Typed implementation of the legacy engine-in-callback hardware spike. The
+/// production app uses [`build_spread_stream`], but keeping this path typed makes
+/// the standalone device exerciser work on integer-only hosts too.
+fn build_engine_stream<T: DeviceSample>(
+    device: cpal::Device,
+    config: StreamConfig,
+    info: StreamInfo,
+    mut engine: Engine,
+) -> Result<AudioStream, DeviceError> {
+    let device_channels = info.device_channels as usize;
+
+    // The engine renders internal stereo f32 into a pre-sized buffer; typed PCM
+    // conversion and channel mapping happen in the same final-boundary primitive
+    // as the production ring-drain path. Sized ONCE here, off the RT path.
     let mut first_call = true;
     let mut scratch: Vec<f32> = Vec::new();
-    if device_channels as usize != CHANNELS as usize {
-        scratch_reserve(&mut scratch, REQUESTED_BUFFER as usize * 4);
-    }
+    let granted_frames = match info.buffer_frames {
+        BufferSize::Fixed(n) => n as usize,
+        BufferSize::Default => REQUESTED_BUFFER as usize,
+    };
+    scratch_reserve(&mut scratch, granted_frames.saturating_mul(4));
 
-    let err_fn = |e| eprintln!("lsdj-engine: stream error: {e}");
+    let healthy = StreamHealth::healthy();
+    let error_health = healthy.clone();
+    let err_fn = move |_error| {
+        // Same non-blocking contract as the production spread-stream path.
+        error_health.mark_failed();
+    };
 
     let stream = device
         .build_output_stream(
             config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+            move |data: &mut [T], _info: &cpal::OutputCallbackInfo| {
                 // Everything below MUST be alloc/lock/syscall/log free. The guard
                 // proves it (warns in release if violated).
                 crate::device::no_alloc(|| {
@@ -632,35 +892,7 @@ pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
                         crate::device::set_ftz_daz();
                         first_call = false;
                     }
-                    let dev_ch = device_channels as usize;
-                    let frames = data.len() / dev_ch;
-
-                    if dev_ch == CHANNELS as usize {
-                        // Stereo fast path: render straight into the device buffer.
-                        engine.render(data, frames);
-                    } else {
-                        // Wider device: render stereo into scratch, then spread.
-                        // `scratch` was pre-sized below on the first wide call;
-                        // if cpal ever hands a bigger block than expected we skip
-                        // the overflow rather than alloc on the RT thread.
-                        let want = frames * CHANNELS as usize;
-                        let usable = scratch.len().min(want);
-                        let frames_usable = usable / CHANNELS as usize;
-                        engine.render(&mut scratch[..usable], frames_usable);
-                        for f in 0..frames {
-                            let base = f * dev_ch;
-                            if f < frames_usable {
-                                data[base] = scratch[2 * f];
-                                data[base + 1] = scratch[2 * f + 1];
-                            } else {
-                                data[base] = 0.0;
-                                data[base + 1] = 0.0;
-                            }
-                            for c in 2..dev_ch {
-                                data[base + c] = 0.0;
-                            }
-                        }
-                    }
+                    render_engine_chunks(data, device_channels, &mut engine, &mut scratch);
                 });
             },
             err_fn,
@@ -675,6 +907,7 @@ pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
     Ok(AudioStream {
         _stream: stream,
         info,
+        healthy,
     })
 }
 
@@ -682,7 +915,7 @@ pub fn run_stream(mut engine: Engine) -> Result<AudioStream, DeviceError> {
 /// callback. Pulled out so the intent — allocate the worst-case block ONCE,
 /// never on the RT thread — is explicit.
 fn scratch_reserve(scratch: &mut Vec<f32>, frames: usize) {
-    scratch.resize(frames * CHANNELS as usize, 0.0);
+    scratch.resize(frames.saturating_mul(CHANNELS as usize), 0.0);
 }
 
 /// `assert_no_alloc` wrapper, isolated here so `lib.rs`/tests don't depend on the
@@ -694,21 +927,20 @@ pub(crate) fn no_alloc<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// Enable flush-to-zero / denormals-are-zero on the calling (audio) thread so a
-/// decaying denormal tail never trips the CPU's slow denormal path. Ported
-/// verbatim from the spike.
+/// decaying denormal tail never trips the CPU's slow denormal path. Derived from
+/// the spike, with direct MXCSR access for cross-toolchain compatibility.
 #[inline]
 pub(crate) fn set_ftz_daz() {
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
+    #[cfg(target_arch = "x86_64")]
     unsafe {
-        use std::arch::x86_64::{
-            _MM_FLUSH_ZERO_ON, _MM_GET_FLUSH_ZERO_MODE, _MM_SET_FLUSH_ZERO_MODE,
-        };
-        let _ = _MM_GET_FLUSH_ZERO_MODE();
-        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-        // DAZ via the MXCSR DAZ bit (bit 6).
-        let mut mxcsr: u32;
+        // x86_64 guarantees SSE2. Manipulate MXCSR directly instead of the
+        // deprecated `_MM_*FLUSH_ZERO*` intrinsics so this also compiles cleanly
+        // under MSVC. Initialized storage is required because the inline assembly
+        // writes through a pointer, which Rust's definite-initialization analysis
+        // deliberately does not infer.
+        let mut mxcsr = 0u32;
         std::arch::asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack));
-        mxcsr |= 1 << 6;
+        mxcsr |= (1 << 15) | (1 << 6); // FTZ | DAZ
         std::arch::asm!("ldmxcsr [{}]", in(reg) &mxcsr, options(nostack, readonly));
     }
     #[cfg(target_arch = "aarch64")]
@@ -723,8 +955,202 @@ pub(crate) fn set_ftz_daz() {
 
 #[cfg(test)]
 mod tests {
-    use super::{spread, OutputConsumer, OutputResampler, CHANNELS, SAMPLE_RATE};
+    use super::{
+        write_mapped, DeviceSample, OutputConsumer, OutputResampler, OutputWriter, StreamHealth,
+        CHANNELS, SAMPLE_RATE,
+    };
     use rubato::Resampler;
+
+    #[test]
+    fn stream_health_is_one_way_and_shared_with_the_error_callback() {
+        let health = StreamHealth::healthy();
+        let callback_view = health.clone();
+        assert!(health.is_healthy());
+
+        callback_view.mark_failed();
+
+        assert!(!health.is_healthy());
+        assert!(!callback_view.is_healthy());
+    }
+
+    /// The three supported output types agree at silence and both PCM endpoints;
+    /// out-of-domain values clip instead of wrapping, and NaN becomes silence.
+    #[test]
+    fn device_sample_conversion_clips_extrema() {
+        let source = [
+            f32::NEG_INFINITY,
+            -1.5,
+            -1.0,
+            -0.5,
+            0.0,
+            0.5,
+            1.0,
+            1.5,
+            f32::INFINITY,
+            f32::NAN,
+        ];
+        let f32_out = source.map(<f32 as DeviceSample>::from_f32_clipped);
+        assert_eq!(
+            f32_out,
+            [-1.0, -1.0, -1.0, -0.5, 0.0, 0.5, 1.0, 1.0, 1.0, 0.0]
+        );
+
+        let i16_out = source.map(<i16 as DeviceSample>::from_f32_clipped);
+        assert_eq!(
+            i16_out,
+            [
+                i16::MIN,
+                i16::MIN,
+                i16::MIN,
+                -16_384,
+                0,
+                16_384,
+                i16::MAX,
+                i16::MAX,
+                i16::MAX,
+                0,
+            ]
+        );
+
+        let u16_out = source.map(<u16 as DeviceSample>::from_f32_clipped);
+        assert_eq!(
+            u16_out,
+            [
+                0,
+                0,
+                0,
+                16_384,
+                32_768,
+                49_151,
+                u16::MAX,
+                u16::MAX,
+                u16::MAX,
+                32_768
+            ]
+        );
+    }
+
+    /// A mono host receives a headroom-preserving arithmetic downmix rather than
+    /// silently losing either side; the final result is clipped to the PCM range.
+    #[test]
+    fn write_mapped_downmixes_stereo_to_mono() {
+        let src = [1.0, -1.0, 0.8, 0.4, 2.0, 2.0];
+        let mut data = [9.0f32; 3];
+        write_mapped(&mut data, 1, &[(0, &src)]);
+        assert_eq!(data, [0.0, 0.6, 1.0]);
+    }
+
+    /// Stereo is the identity layout apart from the required final-boundary clip.
+    #[test]
+    fn write_mapped_preserves_stereo_and_clips() {
+        let src = [-2.0, 0.25, 0.5, 2.0];
+        let mut data = [9.0f32; 4];
+        write_mapped(&mut data, 2, &[(0, &src)]);
+        assert_eq!(data, [-1.0, 0.25, 0.5, 1.0]);
+    }
+
+    /// Integer callbacks use the same layout primitive, including unsigned PCM's
+    /// non-zero equilibrium value.
+    #[test]
+    fn write_mapped_converts_stereo_to_integer_pcm() {
+        let src = [-1.0, 0.0, 0.5, 1.0];
+        let mut i16_data = [9i16; 4];
+        write_mapped(&mut i16_data, 2, &[(0, &src)]);
+        assert_eq!(i16_data, [i16::MIN, 0, 16_384, i16::MAX]);
+
+        let mut u16_data = [9u16; 4];
+        write_mapped(&mut u16_data, 2, &[(0, &src)]);
+        assert_eq!(u16_data, [u16::MIN, 32_768, 49_151, u16::MAX]);
+    }
+
+    /// A callback larger than the fixed scratch is processed tile-by-tile. Every
+    /// output frame consumes its matching ring frame; no tail is zeroed or left
+    /// poisoned after the first tile.
+    #[test]
+    fn long_callback_drains_primary_past_scratch_capacity() {
+        const FRAMES: usize = 19;
+        let source: Vec<f32> = (0..FRAMES)
+            .flat_map(|frame| {
+                let sample = frame as f32 / FRAMES as f32;
+                [sample, -sample]
+            })
+            .collect();
+        let (mut producer, primary) = OutputConsumer::new_test_pair(FRAMES + 1);
+        for &sample in &source {
+            assert!(producer.push(sample).is_ok());
+        }
+
+        let mut output = OutputWriter {
+            device_channels: CHANNELS as usize,
+            primary_offset: 0,
+            primary,
+            secondary: None,
+            primary_resampler: None,
+            secondary_resampler: None,
+            scratch: vec![0.0; 3 * CHANNELS as usize],
+            secondary_scratch: Vec::new(),
+        };
+        let mut data = vec![9.0f32; FRAMES * CHANNELS as usize];
+        output.write(&mut data);
+
+        assert_eq!(data, source, "all 19 frames survive a 3-frame scratch tile");
+    }
+
+    /// Combined master/cue routing remains aligned across many scratch boundaries,
+    /// including when the secondary scratch is the smaller tiling constraint.
+    #[test]
+    fn long_callback_drains_primary_and_secondary_in_lockstep() {
+        const FRAMES: usize = 17;
+        const DEVICE_CHANNELS: usize = 6;
+        let master: Vec<f32> = (0..FRAMES)
+            .flat_map(|frame| {
+                let sample = frame as f32 * 0.01;
+                [sample, -sample]
+            })
+            .collect();
+        let cue: Vec<f32> = (0..FRAMES)
+            .flat_map(|frame| {
+                let sample = 0.2 + frame as f32 * 0.01;
+                [sample, -sample]
+            })
+            .collect();
+        let (mut master_producer, primary) = OutputConsumer::new_test_pair(FRAMES + 1);
+        let (mut cue_producer, cue_consumer) = OutputConsumer::new_test_pair(FRAMES + 1);
+        for &sample in &master {
+            assert!(master_producer.push(sample).is_ok());
+        }
+        for &sample in &cue {
+            assert!(cue_producer.push(sample).is_ok());
+        }
+
+        let mut output = OutputWriter {
+            device_channels: DEVICE_CHANNELS,
+            primary_offset: 0,
+            primary,
+            secondary: Some(cue_consumer),
+            primary_resampler: None,
+            secondary_resampler: None,
+            scratch: vec![0.0; 4 * CHANNELS as usize],
+            secondary_scratch: vec![0.0; 2 * CHANNELS as usize],
+        };
+        let mut data = vec![9.0f32; FRAMES * DEVICE_CHANNELS];
+        output.write(&mut data);
+
+        for (frame, output) in data.chunks_exact(DEVICE_CHANNELS).enumerate() {
+            assert_eq!(
+                output,
+                &[
+                    master[2 * frame],
+                    master[2 * frame + 1],
+                    cue[2 * frame],
+                    cue[2 * frame + 1],
+                    0.0,
+                    0.0,
+                ],
+                "frame {frame} stays aligned after repeated two-frame tiles",
+            );
+        }
+    }
 
     /// A lone block at offset 0 lands on channels 1/2 and zeroes the rest of each
     /// frame (master, or a split cue on a stereo/wide non-FLX4 device).
@@ -733,7 +1159,7 @@ mod tests {
         let src = [0.1, 0.2, 0.3, 0.4]; // two stereo frames
         let dev_ch = 4;
         let mut data = vec![9.0f32; 2 * dev_ch]; // pre-fill to prove zeroing
-        spread(&mut data, dev_ch, &[(0, &src)]);
+        write_mapped(&mut data, dev_ch, &[(0, &src)]);
         assert_eq!(data, vec![0.1, 0.2, 0.0, 0.0, 0.3, 0.4, 0.0, 0.0]);
     }
 
@@ -744,7 +1170,7 @@ mod tests {
         let cue = [0.7, 0.8]; // one stereo frame
         let dev_ch = 4;
         let mut data = vec![9.0f32; dev_ch];
-        spread(&mut data, dev_ch, &[(2, &cue)]);
+        write_mapped(&mut data, dev_ch, &[(2, &cue)]);
         assert_eq!(data, vec![0.0, 0.0, 0.7, 0.8]);
     }
 
@@ -755,7 +1181,7 @@ mod tests {
         let src = [0.5, 0.6]; // one stereo frame only
         let dev_ch = 2;
         let mut data = vec![9.0f32; 2 * dev_ch]; // two frames
-        spread(&mut data, dev_ch, &[(0, &src)]);
+        write_mapped(&mut data, dev_ch, &[(0, &src)]);
         assert_eq!(data, vec![0.5, 0.6, 0.0, 0.0]);
     }
 
@@ -767,7 +1193,7 @@ mod tests {
         let cue = [0.7, 0.8];
         let dev_ch = 6;
         let mut data = vec![9.0f32; dev_ch];
-        spread(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
+        write_mapped(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
         assert_eq!(data, vec![0.1, 0.2, 0.7, 0.8, 0.0, 0.0]);
     }
 
@@ -779,7 +1205,7 @@ mod tests {
         let cue = [0.7, 0.8]; // one frame — second frame's cue runs dry
         let dev_ch = 4;
         let mut data = vec![9.0f32; 2 * dev_ch];
-        spread(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
+        write_mapped(&mut data, dev_ch, &[(0, &master), (2, &cue)]);
         assert_eq!(
             data,
             vec![0.1, 0.2, 0.7, 0.8, 0.3, 0.4, 0.0, 0.0],
@@ -800,6 +1226,48 @@ mod tests {
     const DEVICE_RATE: u32 = 44_100;
     /// Resampler chunk size (frames) used throughout.
     const CHUNK_FRAMES: usize = 256;
+
+    /// Oversized callbacks also tile correctly after the non-48k resampler. Once
+    /// startup latency clears, a DC signal must fill the entire long callback,
+    /// including its final frame beyond many scratch boundaries.
+    #[test]
+    fn long_resampled_callback_has_no_silent_tail() {
+        const LEFT: f32 = 0.3;
+        const RIGHT: f32 = -0.3;
+        const TILE_FRAMES: usize = 3;
+        const CALLBACK_FRAMES: usize = 29;
+        let (mut producer, primary) = OutputConsumer::new_test_pair(1 << 16);
+        while producer.slots() >= CHANNELS as usize {
+            assert!(producer.push(LEFT).is_ok());
+            assert!(producer.push(RIGHT).is_ok());
+        }
+
+        let mut output = OutputWriter {
+            device_channels: CHANNELS as usize,
+            primary_offset: 0,
+            primary,
+            secondary: None,
+            primary_resampler: Some(
+                OutputResampler::new(DEVICE_RATE, 8).expect("small 44.1k resampler builds"),
+            ),
+            secondary_resampler: None,
+            scratch: vec![0.0; TILE_FRAMES * CHANNELS as usize],
+            secondary_scratch: Vec::new(),
+        };
+        let mut warmup = vec![0.0f32; 8 * CHANNELS as usize];
+        for _ in 0..32 {
+            output.write(&mut warmup);
+        }
+
+        let mut data = vec![-9.0f32; CALLBACK_FRAMES * CHANNELS as usize];
+        output.write(&mut data);
+        assert!(
+            data.chunks_exact(CHANNELS as usize)
+                .all(|frame| { (frame[0] - LEFT).abs() < 0.02 && (frame[1] - RIGHT).abs() < 0.02 }),
+            "all {CALLBACK_FRAMES} frames are resampled through {TILE_FRAMES}-frame tiles: {:?}",
+            &data[data.len() - 8..],
+        );
+    }
 
     /// Fill `n_in` interleaved-stereo frames of `input` with a 48 kHz-domain sine at
     /// `freq`, continuing from `phase0`; returns the phase to resume from so
@@ -824,7 +1292,10 @@ mod tests {
             OutputResampler::new(DEVICE_RATE, CHUNK_FRAMES).expect("44.1k resampler builds");
         assert_eq!(r.chunk.len(), CHUNK_FRAMES * CHANNELS as usize);
         let n_in = r.resampler.input_frames_next();
-        assert!(n_in >= CHUNK_FRAMES, "downsample pulls ≥ output frames, got {n_in}");
+        assert!(
+            n_in >= CHUNK_FRAMES,
+            "downsample pulls ≥ output frames, got {n_in}"
+        );
         assert!(
             r.input.len() >= n_in * CHANNELS as usize,
             "input scratch ({}) fits the demand ({n_in})",
@@ -832,7 +1303,10 @@ mod tests {
         );
         fill_sine(&mut r.input, n_in, 1_000.0, 0.0);
         assert!(r.resample_chunk(n_in), "resample succeeds");
-        assert!(r.chunk.iter().all(|s| s.is_finite()), "output is finite (no NaN/inf)");
+        assert!(
+            r.chunk.iter().all(|s| s.is_finite()),
+            "output is finite (no NaN/inf)"
+        );
     }
 
     /// Over many blocks the resampler consumes input at exactly the 48000/44100
@@ -885,7 +1359,10 @@ mod tests {
         let out_rms = (sum_sq / n as f64).sqrt();
         let in_rms = 0.5 / std::f64::consts::SQRT_2; // amplitude-0.5 sine
         let db = 20.0 * (out_rms / in_rms).log10();
-        assert!(db.abs() < 1.0, "sine energy preserved within 1 dB, got {db:.2} dB (rms {out_rms:.4})");
+        assert!(
+            db.abs() < 1.0,
+            "sine energy preserved within 1 dB, got {db:.2} dB (rms {out_rms:.4})"
+        );
     }
 
     /// `fill` serves any block size — including ones that differ from the resampler
@@ -929,9 +1406,9 @@ mod tests {
             out[..len].fill(-9.0);
             r.fill(&mut consumer, &mut out[..len]);
             top_up(&mut producer);
-            let ok = out[..len].chunks_exact(CHANNELS as usize).all(|frame| {
-                (frame[0] - LEFT).abs() < 0.02 && (frame[1] - RIGHT).abs() < 0.02
-            });
+            let ok = out[..len]
+                .chunks_exact(CHANNELS as usize)
+                .all(|frame| (frame[0] - LEFT).abs() < 0.02 && (frame[1] - RIGHT).abs() < 0.02);
             assert!(
                 ok,
                 "every {bf}-frame block keeps left≈{LEFT}/right≈{RIGHT} (continuous, \

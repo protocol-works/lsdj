@@ -44,10 +44,18 @@ mod commands;
 mod decode;
 mod generation;
 mod library;
+mod local_auth;
 mod loras;
+#[cfg(feature = "managed-runtime")]
+mod magenta_gateway;
+#[cfg_attr(not(feature = "managed-runtime"), allow(dead_code))]
+mod managed_runtime;
 mod mcp;
 mod midi;
 mod models;
+mod platform_diagnostics;
+mod platform_paths;
+mod runtime_installer;
 mod samples;
 mod settings;
 mod sidecar;
@@ -56,6 +64,9 @@ mod store;
 mod style;
 mod style_send;
 mod watcher;
+
+#[cfg(all(feature = "bundled-backend", feature = "managed-runtime"))]
+compile_error!("bundled-backend and managed-runtime are mutually exclusive");
 
 /// The default per-deck model the sidecars load (mirrors `controller.py`
 /// `DEFAULT_MODEL`).
@@ -86,14 +97,25 @@ fn configure_bundled_backend(app: &tauri::App) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[cfg(not(feature = "bundled-backend"))]
+#[cfg(all(not(feature = "bundled-backend"), feature = "managed-runtime"))]
+fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    // Managed releases resolve MRT2 and SA3 independently from verified
+    // manifests. Clear all developer launch seams before either service starts;
+    // the managed command builders are compile-time isolated from PATH fallback.
+    std::env::remove_var("LSDJ_BACKEND_BIN");
+    std::env::remove_var("LSDJ_SIDECAR_CMD");
+    std::env::remove_var("LSDJ_GENERATION_CMD");
+    Ok(())
+}
+
+#[cfg(not(any(feature = "bundled-backend", feature = "managed-runtime")))]
 fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
 /// Tauri-managed audio state held ALONGSIDE the [`Host`]: the running output
-/// streams (kept alive so their Drop does not stop audio), the current device
-/// choices, and whether the main device actually started.
+/// streams (kept alive so their Drop does not stop audio), their live health,
+/// and the current device choices.
 ///
 /// The `Host` is managed separately so the commands can take it as
 /// `tauri::State<'_, Host>` directly. This struct holds the things the commands
@@ -107,6 +129,10 @@ fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error
 /// - **split** (a different `cue_name`): a separate `cue_stream` drains the cue
 ///   ring onto its own device's 1/2, so the cue reaches any second output.
 struct AudioState {
+    /// Serializes all device topology transitions. Device opens and output-ring
+    /// installs must land as one ordered operation when frontend calls overlap.
+    /// Never touched by CPAL's data or error callbacks.
+    transition: Mutex<()>,
     /// The MAIN output stream — master → ch 1/2, and cue → ch 3/4 in combined
     /// mode. Kept alive; replaced when the main device (or the combined/split
     /// mode) changes. `None` in the sandbox/headless case.
@@ -114,13 +140,157 @@ struct AudioState {
     /// The CUE output stream in SPLIT mode (a separate device); `None` in combined
     /// mode (the cue rides the main stream's 3/4).
     cue_stream: Mutex<Option<AudioStream>>,
-    /// Whether the main device came up at startup (the `app_info` flag).
-    device_started: bool,
+    /// Most recent synchronous open failure for each route. Asynchronous CPAL
+    /// failures live in each [`AudioStream`]'s atomic signal and are summarized
+    /// dynamically; these strings only preserve useful startup/reconnect detail.
+    main_error: Mutex<Option<String>>,
+    cue_error: Mutex<Option<String>>,
     /// The current main device name (empty = system default), so a cue-only switch
     /// can recompute the combined/split topology.
     main_name: Mutex<String>,
     /// The current cue device name (empty = "same as main" → combined).
     cue_name: Mutex<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StreamHealthSnapshot {
+    healthy: bool,
+    channels: u16,
+}
+
+/// Live output health projected to `app_info`, diagnostics, and the Settings UI.
+/// `cueHealthy` follows the applicable route: the main stream in combined mode,
+/// or the dedicated cue stream in split mode.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AudioOutputHealth {
+    main_healthy: bool,
+    cue_healthy: bool,
+    main_error: Option<String>,
+    cue_error: Option<String>,
+    /// False for a healthy topology and for a healthy stereo main whose only cue
+    /// issue is that it lacks channels 3/4; choosing another route is required.
+    can_reconnect: bool,
+}
+
+fn summarize_audio_health(
+    main: Option<StreamHealthSnapshot>,
+    cue: Option<StreamHealthSnapshot>,
+    combined: bool,
+    main_open_error: Option<String>,
+    cue_open_error: Option<String>,
+) -> AudioOutputHealth {
+    // A synchronous failure to open the selected route is authoritative even
+    // when startup kept a healthy default/fallback stream alive. The fallback
+    // preserves sound, but it is not the persisted route the UI displays and
+    // the reconnect command must keep targeting that selection.
+    let main_healthy = main_open_error.is_none() && main.is_some_and(|stream| stream.healthy);
+    let main_error = if main_healthy {
+        None
+    } else {
+        main_open_error.or_else(|| {
+            Some(if main.is_some() {
+                "The main audio stream stopped after it started.".into()
+            } else {
+                "No main audio output is running.".into()
+            })
+        })
+    };
+
+    let (cue_healthy, cue_error, cue_can_reconnect) = if combined && !main_healthy {
+        (
+            false,
+            Some("The cue is unavailable until the selected main output reconnects.".into()),
+            true,
+        )
+    } else if combined {
+        match main {
+            Some(stream) if stream.channels < 4 => (
+                false,
+                Some("Phones on main require an output with channels 3/4.".into()),
+                false,
+            ),
+            Some(_) => (true, None, false),
+            None => unreachable!("a combined cue cannot be healthy without a main stream"),
+        }
+    } else {
+        let healthy = cue.is_some_and(|stream| stream.healthy);
+        let error = if healthy {
+            None
+        } else if cue.is_some() {
+            Some("The cue audio stream stopped after it started.".into())
+        } else {
+            cue_open_error.or_else(|| Some("No cue audio output is running.".into()))
+        };
+        (healthy, error, !healthy)
+    };
+
+    AudioOutputHealth {
+        main_healthy,
+        cue_healthy,
+        main_error,
+        cue_error,
+        can_reconnect: !main_healthy || cue_can_reconnect,
+    }
+}
+
+impl AudioState {
+    fn retain_requested_routes(&self, main_name: String, cue_name: String) {
+        *self.main_name.lock().unwrap_or_else(|p| p.into_inner()) = main_name;
+        *self.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = cue_name;
+    }
+
+    fn output_health(&self) -> AudioOutputHealth {
+        let main = self
+            .main_stream
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|stream| StreamHealthSnapshot {
+                healthy: stream.is_healthy(),
+                channels: stream.info().device_channels,
+            });
+        let cue = self
+            .cue_stream
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|stream| StreamHealthSnapshot {
+                healthy: stream.is_healthy(),
+                channels: stream.info().device_channels,
+            });
+        let main_name = self
+            .main_name
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let cue_name = self
+            .cue_name
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        summarize_audio_health(
+            main,
+            cue,
+            is_combined(&main_name, &cue_name),
+            self.main_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
+            self.cue_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
+        )
+    }
+
+    fn set_main_error(&self, error: Option<String>) {
+        *self.main_error.lock().unwrap_or_else(|p| p.into_inner()) = error;
+    }
+
+    fn set_cue_error(&self, error: Option<String>) {
+        *self.cue_error.lock().unwrap_or_else(|p| p.into_inner()) = error;
+    }
 }
 
 /// Deck producer handles NOT owned by a sidecar (sidecars disabled, or a spawn
@@ -141,7 +311,7 @@ struct SidecarStatus {
 /// drains the host's output ring, and return the [`Host`], the [`AudioState`]
 /// holding the stream, and the two deck producer handles (for the sidecar feed).
 /// The device-start path is graceful: a missing device leaves the host running
-/// headlessly with `device_started = false`.
+/// headlessly with a live, reconnectable unhealthy status.
 fn start_audio() -> (Host, AudioState, [DeckHandle; lsdj_engine::DECK_COUNT]) {
     let (host, master, cue, deck_handles) = Host::new();
 
@@ -149,7 +319,7 @@ fn start_audio() -> (Host, AudioState, [DeckHandle; lsdj_engine::DECK_COUNT]) {
     // device is ≥4-channel (the FLX4), exactly as before. A separate cue device is
     // opted into later via `set_cue_device`. These are the ORIGINAL ring consumers
     // matching the render thread's producers, so no ring install is needed yet.
-    let (main_stream, device_started) =
+    let (main_stream, main_error) =
         match engine_device::open_main_stream(None, master, Some(cue)) {
             Ok(stream) => {
                 let info = stream.info();
@@ -158,36 +328,77 @@ fn start_audio() -> (Host, AudioState, [DeckHandle; lsdj_engine::DECK_COUNT]) {
                     "lsdj-app: audio device started — device='{}' channels={} rate={} buffer={:?}",
                     info.device_name, info.device_channels, info.sample_rate, info.buffer_frames
                 );
-                (Some(stream), true)
+                (Some(stream), None)
             }
             Err(DeviceError::Unavailable(msg)) => {
                 // Expected in a sandbox / headless CI: no exact-48000/f32 device.
                 // Log and continue with no stream — the host renders into the ring,
                 // the window opens, control/read-back work.
                 eprintln!("lsdj-app: audio device unavailable ({msg}) — continuing without audio");
-                (None, false)
+                (None, Some(DeviceError::Unavailable(msg).to_string()))
             }
             Err(DeviceError::Stream(msg)) => {
                 eprintln!("lsdj-app: audio stream error ({msg}) — continuing without audio");
-                (None, false)
+                (None, Some(DeviceError::Stream(msg).to_string()))
             }
         };
 
     let state = AudioState {
+        transition: Mutex::new(()),
         main_stream: Mutex::new(main_stream),
         cue_stream: Mutex::new(None),
-        device_started,
+        main_error: Mutex::new(main_error),
+        cue_error: Mutex::new(None),
         main_name: Mutex::new(String::new()),
         cue_name: Mutex::new(String::new()),
     };
     (host, state, deck_handles)
 }
 
-/// Spawn one inference sidecar per deck, each fed by its [`DeckHandle`] and
-/// reporting status as a `sidecar://status` Tauri event. Started with the app (the
-/// native cutover default — no flag): a deck whose sidecar fails to spawn closes its
-/// ring and stays silent, like the no-audio-device path, without failing the app. The
-/// returned idle-handle vec is now always empty (kept for the call signature).
+fn sidecar_status_sink(
+    app: tauri::AppHandle,
+    idx: usize,
+    status_feed: analysis::live::AnalysisFeed,
+) -> Box<dyn FnMut(String) + Send> {
+    Box::new(move |json| {
+        use tauri::{Emitter, Manager};
+        if let Some(event) = sidecar::status_event(&json) {
+            if let Some(store) = app.try_state::<store::InterfaceStore>() {
+                match event.as_str() {
+                    "worker_died" | "startup_failed" => store.set_worker_health(idx, true, false),
+                    "model_loading" | "warming" => store.set_worker_health(idx, false, true),
+                    "ready" => store.set_worker_health(idx, false, false),
+                    _ => {}
+                }
+            }
+            if event == "ready" {
+                if let Some(sender) = app.try_state::<style_send::StyleSender>() {
+                    sender.resend(idx);
+                }
+                if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                    notes.reassert_generation(idx);
+                }
+            }
+        }
+        if sidecar::transport_ended(&json) {
+            if let Some(store) = app.try_state::<store::InterfaceStore>() {
+                store.set_playing(idx, false);
+            }
+            let origin = app
+                .try_state::<Host>()
+                .map_or(0.0, |host| host.health().context_frames as f64);
+            status_feed.reset(idx, origin);
+            if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
+                notes.reset(idx);
+            }
+        }
+        let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
+    })
+}
+
+/// Spawn two MLX processes on macOS, or the #109 one-process/two-state PyTorch
+/// worker on Linux and Windows. A failed launch leaves the corresponding rings
+/// silent without failing the rest of the app.
 fn start_sidecars(
     app: &tauri::AppHandle,
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
@@ -195,86 +406,50 @@ fn start_sidecars(
     feed: &analysis::live::AnalysisFeed,
 ) -> (sidecar::Sidecars, Vec<DeckHandle>) {
     const DECK_IDS: [&str; lsdj_engine::DECK_COUNT] = ["a", "b"];
+    if matches!(
+        sidecar::mrt2_runtime_for_platform().as_deref(),
+        Ok("pytorch-cuda")
+    ) {
+        let models = std::array::from_fn(|_| DEFAULT_MODEL.to_string());
+        let sinks = [
+            sidecar_status_sink(app.clone(), 0, feed.clone()),
+            sidecar_status_sink(app.clone(), 1, feed.clone()),
+        ];
+        let mut shared = sidecar::SharedSidecar::parked(
+            models,
+            handles,
+            sinks,
+            taps.clone(),
+            feed.clone(),
+        );
+        if let Err(error) = shared.activate() {
+            // A fresh managed install has no runtime yet. Keep both permanent
+            // DeckHandles parked inside the supervisor; the first MRT2 install
+            // activates this same topology without restarting the app.
+            eprintln!("lsdj-app: shared MRT2 sidecar unavailable: {error}");
+        }
+        return (sidecar::Sidecars::new_shared(shared), Vec::new());
+    }
+
     let mut decks = Vec::new();
     for (idx, handle) in handles.into_iter().enumerate() {
-        let app = app.clone();
         let deck_id = DECK_IDS[idx];
-        let status_feed = feed.clone();
         match sidecar::Sidecar::spawn(
             deck_id,
             idx,
             DEFAULT_MODEL,
             handle,
-            move |json| {
-                use tauri::{Emitter, Manager};
-                // Worker health lives in the store too (ADR-0020 phase A): the
-                // same events the webview reducer derives its operability from
-                // write the shell-side truth, so an agent sees a dead or
-                // switching worker without a webview round-trip.
-                if let Some(event) = sidecar::status_event(&json) {
-                    if let Some(store) = app.try_state::<store::InterfaceStore>() {
-                        match event.as_str() {
-                            "worker_died" => store.set_worker_health(idx, true, false),
-                            "model_loading" => store.set_worker_health(idx, false, true),
-                            "ready" => store.set_worker_health(idx, false, false),
-                            _ => {}
-                        }
-                    }
-                    // A fresh worker has no conditioning: push the deck's
-                    // current style blend again (ADR-0020 phase B — the
-                    // shell sender owns the resend the webview used to do), and
-                    // re-send the authored generation params (issue #84) — the
-                    // worker starts at the reference baseline, so this is the
-                    // moment the deck's persisted tuning (re)takes effect, for a
-                    // render on a stopped deck as much as the live stream.
-                    if event == "ready" {
-                        if let Some(sender) = app.try_state::<style_send::StyleSender>() {
-                            sender.resend(idx);
-                        }
-                        if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
-                            notes.reassert_generation(idx);
-                        }
-                    }
-                }
-                // The transport derivation lives in Rust (ADR-0020: the store owns
-                // `playing`): a dying or model-switching worker stops generating, so
-                // the store drops the deck's transport before the event is relayed.
-                // `try_state`: the reader threads start before `setup` manages the
-                // store, and pre-boot status can't concern a playing deck anyway.
-                if sidecar::transport_ended(&json) {
-                    if let Some(store) = app.try_state::<store::InterfaceStore>() {
-                        store.set_playing(idx, false);
-                    }
-                    // The stream is discontinuous: reset the deck's beat analysis
-                    // shell-side (ADR-0025 — estimates never span streams), with
-                    // the engine-frame origin captured now. No webview round-trip.
-                    let origin = app
-                        .try_state::<Host>()
-                        .map_or(0.0, |host| host.health().context_frames as f64);
-                    status_feed.reset(idx, origin);
-                    // Held note steering dies with the stream too (ADR-0023):
-                    // the worker dropped its conditioning, so the shell service
-                    // must drop the matching held state.
-                    if let Some(notes) = app.try_state::<midi::notes::NoteSteering>() {
-                        notes.reset(idx);
-                    }
-                }
-                let _ = app.emit("sidecar://status", SidecarStatus { deck: idx, json });
-            },
+            sidecar_status_sink(app.clone(), idx, feed.clone()),
             taps.clone(),
             feed.clone(),
         ) {
             Ok(sidecar) => decks.push(Some(sidecar)),
-            Err(e) => {
-                // A failed spawn drops that deck's handle (ring closes); the deck
-                // stays silent, like the no-audio-device path.
-                eprintln!("lsdj-app: deck {deck_id} sidecar spawn failed: {e}");
+            Err(error) => {
+                eprintln!("lsdj-app: deck {deck_id} sidecar spawn failed: {error}");
                 decks.push(None);
             }
         }
     }
-    // Every handle was moved into a sidecar (or dropped on a failed spawn), so no
-    // idle handles remain.
     (sidecar::Sidecars::new(decks), Vec::new())
 }
 
@@ -285,10 +460,21 @@ fn start_sidecars(
 #[serde(rename_all = "camelCase")]
 struct AppInfo {
     version: String,
+    /// Backward-compatible main-output flag, now computed from the live stream
+    /// signal rather than frozen at startup.
     audio_device_started: bool,
+    audio_output: AudioOutputHealth,
     /// The loopback port the generation server bound (`None` if disabled / not
     /// running). The webview builds the `/api/*` base URL from it (gap 2).
     generation_port: Option<u16>,
+    /// Per-launch bearer capability for the generation service. It exists only in
+    /// Rust state/the webview process and is never written to settings or logs.
+    generation_capability: Option<String>,
+    /// Managed Linux/Windows route Magenta through a separate Rust-owned
+    /// gateway. On bundled macOS these mirror the combined generation service,
+    /// preserving its established behavior.
+    magenta_port: Option<u16>,
+    magenta_capability: Option<String>,
     /// The loopback port the MCP server bound (`None` only if the loopback bind
     /// failed — the server is otherwise always on), and the bearer token a client must
     /// present (ADR-0020 Phase 2). Surfaced so the client config can point at
@@ -299,17 +485,42 @@ struct AppInfo {
 
 #[tauri::command]
 fn app_info(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AudioState>,
     generation: tauri::State<'_, generation::GenerationServer>,
     mcp: tauri::State<'_, mcp::McpServer>,
 ) -> AppInfo {
+    let audio_output = state.output_health();
+    let generation_connection = generation.connection();
+    #[cfg(feature = "managed-runtime")]
+    let (magenta_port, magenta_capability) = {
+        let gateway = app.state::<magenta_gateway::MagentaGateway>();
+        (gateway.port(), gateway.capability())
+    };
+    #[cfg(not(feature = "managed-runtime"))]
+    let (magenta_port, magenta_capability) = generation_connection
+        .clone()
+        .map_or((None, None), |(port, capability)| (Some(port), Some(capability)));
+    #[cfg(not(feature = "managed-runtime"))]
+    let _ = app;
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        audio_device_started: state.device_started,
-        generation_port: generation.port(),
+        audio_device_started: audio_output.main_healthy,
+        audio_output,
+        generation_port: generation_connection.as_ref().map(|(port, _)| *port),
+        generation_capability: generation_connection.map(|(_, capability)| capability),
+        magenta_port,
+        magenta_capability,
         mcp_port: mcp.port(),
         mcp_token: mcp.token(),
     }
+}
+
+/// Return current output health without the unrelated app/server diagnostics.
+/// Settings polls this at a low fixed rate while its drawer is mounted.
+#[tauri::command]
+fn audio_output_health(audio: tauri::State<'_, AudioState>) -> AudioOutputHealth {
+    audio.output_health()
 }
 
 /// Mint a new MCP bearer token, persist it, and swap it in live (the Settings
@@ -368,6 +579,23 @@ fn selector(name: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
+fn cue_reselect_is_noop(
+    current_name: &str,
+    requested_name: &str,
+    applicable_stream_healthy: bool,
+) -> bool {
+    current_name == requested_name && applicable_stream_healthy
+}
+
+/// The explicit reconnect command rebuilds only failed streams. This avoids a
+/// gratuitous master gap when only a split cue device disappeared, and avoids
+/// retrying a healthy stereo main when combined cue merely lacks channels 3/4.
+fn recovery_targets(health: &AudioOutputHealth, combined: bool) -> (bool, bool) {
+    let main = !health.main_healthy;
+    let cue = !combined && !health.cue_healthy;
+    (main, cue)
+}
+
 /// (Re)open the MAIN stream for the given device choices. In combined mode the cue
 /// rides the main device's channels 3/4 (and any split cue stream is dropped); in
 /// split mode the main stream is master-only and the existing cue stream is left
@@ -391,15 +619,18 @@ fn reopen_main(
         (None, None)
     };
     let stream = engine_device::open_main_stream(selector(main_name), master_consumer, cue_consumer)
-        .map_err(|e| e.to_string())?;
-    if !host.install_master_ring(master_ring) {
-        return Err(ENGINE_BUSY.into());
-    }
+        .map_err(|error| error.to_string())?;
     if let Some(cue_ring) = cue_ring {
-        // Combined: the cue now rides the main stream's 3/4 — install its ring
-        // (best-effort; the cue is secondary) and drop any split cue stream.
-        host.install_cue_ring(cue_ring);
+        // A combined stream consumes both buses. Install the pair with one
+        // queue command; a full queue must leave both old rings and any split
+        // cue stream intact rather than accepting only the master half.
+        if !host.install_output_rings(master_ring, cue_ring) {
+            return Err(ENGINE_BUSY.to_string());
+        }
         *audio.cue_stream.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        audio.set_cue_error(None);
+    } else if !host.install_master_ring(master_ring) {
+        return Err(ENGINE_BUSY.to_string());
     }
     let info = stream.info();
     println!(
@@ -407,6 +638,7 @@ fn reopen_main(
         info.device_name, info.device_channels
     );
     *audio.main_stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
+    audio.set_main_error(None);
     Ok(())
 }
 
@@ -415,10 +647,17 @@ fn reopen_main(
 /// switch never interrupt the audience's master.
 fn reopen_cue_split(host: &Host, audio: &AudioState, cue_name: &str) -> Result<(), String> {
     let (cue_ring, cue_consumer) = host.new_output_ring();
-    let stream =
-        engine_device::open_cue_stream(selector(cue_name), cue_consumer).map_err(|e| e.to_string())?;
+    let stream = engine_device::open_cue_stream(selector(cue_name), cue_consumer).map_err(
+        |error| {
+            let error = error.to_string();
+            audio.set_cue_error(Some(error.clone()));
+            error
+        },
+    )?;
     if !host.install_cue_ring(cue_ring) {
-        return Err(ENGINE_BUSY.into());
+        let error = ENGINE_BUSY.to_string();
+        audio.set_cue_error(Some(error.clone()));
+        return Err(error);
     }
     let info = stream.info();
     println!(
@@ -426,6 +665,7 @@ fn reopen_cue_split(host: &Host, audio: &AudioState, cue_name: &str) -> Result<(
         info.device_name, info.device_channels
     );
     *audio.cue_stream.lock().unwrap_or_else(|p| p.into_inner()) = Some(stream);
+    audio.set_cue_error(None);
     Ok(())
 }
 
@@ -440,6 +680,10 @@ fn set_main_device(
     app: tauri::AppHandle,
     name: String,
 ) -> Result<(), String> {
+    let _transition = audio
+        .transition
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
     reopen_main(&host, &audio, &name, &cue_name)?;
     *audio.main_name.lock().unwrap_or_else(|p| p.into_inner()) = name.clone();
@@ -463,16 +707,25 @@ fn set_cue_device(
     app: tauri::AppHandle,
     name: String,
 ) -> Result<(), String> {
+    let _transition = audio
+        .transition
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    let was_combined = {
-        let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner());
-        // Re-selecting the already-active cue device would tear down and rebuild
-        // the cue stream for no change (a needless cue glitch) — short-circuit.
-        if name == *cue_name {
-            return Ok(());
-        }
-        is_combined(&main_name, &cue_name)
+    let current_cue = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let was_combined = is_combined(&main_name, &current_cue);
+    let health = audio.output_health();
+    let applicable_stream_healthy = if was_combined {
+        health.main_healthy
+    } else {
+        health.cue_healthy
     };
+    // Re-selecting the already-active cue device would tear down and rebuild the
+    // cue stream for no change (a needless cue glitch) — short-circuit only while
+    // its applicable stream is healthy. Re-selecting a failed stream retries.
+    if cue_reselect_is_noop(&current_cue, &name, applicable_stream_healthy) {
+        return Ok(());
+    }
     if is_combined(&main_name, &name) {
         // Cue rides the main device's 3/4: reopen main with cue duty (it also drops
         // any split cue stream).
@@ -498,10 +751,64 @@ fn set_cue_device(
         }
     }
     *audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = name.clone();
-    let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let main_name = audio
+        .main_name
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     settings::update(&app, |s| s.cue_device = name.clone());
     store.set_output_devices(main_name, name);
     Ok(())
+}
+
+/// Retry failed output streams using the currently selected topology. Transitions
+/// are serialized with device switches, and only unhealthy streams are rebuilt:
+/// a failed split cue never interrupts a healthy audience-facing main output.
+fn reconnect_audio_outputs_with(
+    audio: &AudioState,
+    mut reopen_main_route: impl FnMut(&str, &str) -> Result<(), String>,
+    mut reopen_cue_route: impl FnMut(&str) -> Result<(), String>,
+) -> Result<AudioOutputHealth, String> {
+    let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let combined = is_combined(&main_name, &cue_name);
+    let (retry_main, retry_cue) = recovery_targets(&audio.output_health(), combined);
+    let mut failures = Vec::new();
+
+    if retry_main {
+        if let Err(error) = reopen_main_route(&main_name, &cue_name) {
+            audio.set_main_error(Some(error.clone()));
+            failures.push(format!("main: {error}"));
+        }
+    }
+    if retry_cue {
+        if let Err(error) = reopen_cue_route(&cue_name) {
+            audio.set_cue_error(Some(error.clone()));
+            failures.push(format!("cue: {error}"));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(audio.output_health())
+    } else {
+        Err(format!("Couldn't reconnect audio outputs ({})", failures.join("; ")))
+    }
+}
+
+#[tauri::command]
+fn reconnect_audio_outputs(
+    host: tauri::State<'_, Host>,
+    audio: tauri::State<'_, AudioState>,
+) -> Result<AudioOutputHealth, String> {
+    let _transition = audio
+        .transition
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reconnect_audio_outputs_with(
+        &audio,
+        |main_name, cue_name| reopen_main(&host, &audio, main_name, cue_name),
+        |cue_name| reopen_cue_split(&host, &audio, cue_name),
+    )
 }
 
 /// Set (and persist) the recordings folder — "" = Downloads. The picker's
@@ -528,11 +835,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             configure_bundled_backend(app)?;
-            // Relocate the Magenta model weights out of ~/Documents (which users
-            // may sync to iCloud) into the app-owned data dir, migrating a prior
-            // install. MUST run before any backend process spawns so they — and
-            // magenta_rt.paths, read at import — inherit MAGENTA_HOME (issue #43).
-            models::ensure_magenta_home();
+            // Resolve every filesystem root once and pass the contract to Python
+            // through inherited environment variables. This also performs the
+            // restart-safe macOS model migration. MUST precede every service.
+            platform_paths::configure(app)?;
             // Start the audio host (engine + render thread + device), then spawn
             // the per-deck inference sidecars fed by the deck handles. Everything
             // is held in managed state for the app's lifetime.
@@ -546,30 +852,29 @@ pub fn run() {
             if !shell_settings.main_device.is_empty() || !shell_settings.cue_device.is_empty() {
                 let main = &shell_settings.main_device;
                 let cue = &shell_settings.cue_device;
+                // The persisted route is the requested topology even when the
+                // device is currently unplugged. Retain it before attempting the
+                // open so health and explicit reconnect never fall back to the
+                // startup default as their target.
+                audio_state.retain_requested_routes(main.clone(), cue.clone());
                 match reopen_main(&host, &audio_state, main, cue) {
                     Ok(()) => {
-                        *audio_state.main_name.lock().unwrap_or_else(|p| p.into_inner()) =
-                            main.clone();
+                        // The cue selection was retained above; if its split
+                        // stream is unplugged, its own open error remains live and
+                        // reconnect keeps targeting the persisted name.
                         if !is_combined(main, cue) {
                             match reopen_cue_split(&host, &audio_state, cue) {
-                                Ok(()) => {
-                                    *audio_state
-                                        .cue_name
-                                        .lock()
-                                        .unwrap_or_else(|p| p.into_inner()) = cue.clone();
-                                }
+                                Ok(()) => {}
                                 Err(e) => eprintln!(
                                     "lsdj-app: persisted cue device '{cue}' not applied: {e}"
                                 ),
                             }
-                        } else {
-                            *audio_state.cue_name.lock().unwrap_or_else(|p| p.into_inner()) =
-                                cue.clone();
                         }
                     }
-                    Err(e) => eprintln!(
-                        "lsdj-app: persisted main device '{main}' not applied: {e}"
-                    ),
+                    Err(e) => {
+                        audio_state.set_main_error(Some(e.clone()));
+                        eprintln!("lsdj-app: persisted main device '{main}' not applied: {e}");
+                    }
                 }
             }
             // The per-deck analysis PCM taps (gap 1): the sidecars tee model PCM
@@ -585,36 +890,36 @@ pub fn run() {
             // The sa3/Magenta generation server (gap 2): the gen-only FastAPI on a
             // loopback port the webview fetches; started with the app.
             let generation_server = generation::GenerationServer::start();
-            // The generated-songs library: a fixed folder under the user's Documents
-            // (override never reaches it from the webview) plus a JSON registry the
-            // take list restores from. Auto-save / list / load / delete all go
-            // through it. Fall back to a relative path only if Documents can't be
-            // resolved (effectively never on macOS) so the app still runs.
-            let songs_dir = app
-                .path()
-                .document_dir()
-                .map(|d| {
-                    models::migrate_legacy_dir(
-                        &d.join("LSDJ").join("generated_songs"),
-                        &d.join("LSDJai").join("generated_songs"),
+            #[cfg(feature = "managed-runtime")]
+            let magenta_gateway = magenta_gateway::MagentaGateway::start();
+            // The generated-songs library: the durable-data root from the platform
+            // contract plus a JSON registry the take list restores from. On macOS
+            // this remains Documents/LSDJ. Auto-save / list / load / delete all go
+            // through it.
+            let paths = platform_paths::get();
+            let songs_dir = paths.legacy_data().map_or_else(
+                || paths.data().join("generated_songs"),
+                |legacy| {
+                    platform_paths::migrate_legacy_dir(
+                        &paths.data().join("generated_songs"),
+                        &legacy.join("generated_songs"),
                     )
-                })
-                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJ/generated_songs"));
+                },
+            );
             app.manage(songs::SongLibrary::new(songs_dir.clone()));
             // The generated-samples library: the short-loop counterpart of the songs
             // folder (ADR-0022), the home for deck freezes / generated pads / composed
             // SFX-Music that used to die at session end. Same fixed-folder + registry
             // discipline.
-            let samples_dir = app
-                .path()
-                .document_dir()
-                .map(|d| {
-                    models::migrate_legacy_dir(
-                        &d.join("LSDJ").join("generated_samples"),
-                        &d.join("LSDJai").join("generated_samples"),
+            let samples_dir = paths.legacy_data().map_or_else(
+                || paths.data().join("generated_samples"),
+                |legacy| {
+                    platform_paths::migrate_legacy_dir(
+                        &paths.data().join("generated_samples"),
+                        &legacy.join("generated_samples"),
                     )
-                })
-                .unwrap_or_else(|_| std::path::PathBuf::from("LSDJ/generated_samples"));
+                },
+            );
             app.manage(samples::SampleLibrary::new(samples_dir.clone()));
             // Watch both library folders so the Media Explorer tabs live-reload on a
             // change (a deck auto-saving a sample, a hand-drop/-delete); Rust owns the
@@ -764,6 +1069,8 @@ pub fn run() {
             app.manage(analysis_feed);
             app.manage(analysis::track::TrackAnalysis::new(lsdj_engine::DECK_COUNT));
             app.manage(generation_server);
+            #[cfg(feature = "managed-runtime")]
+            app.manage(magenta_gateway);
             // The native MCP server (ADR-0020 Phase 2): an external agent as a
             // co-DJ. Always on, loopback-only, token-guarded; its tools mutate the
             // same managed state the IPC commands do. Reaches that state through the
@@ -774,11 +1081,14 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            audio_output_health,
+            platform_diagnostics::platform_diagnostics,
             rotate_mcp_token,
             set_mcp_port,
             list_output_devices,
             set_main_device,
             set_cue_device,
+            reconnect_audio_outputs,
             set_recordings_folder,
             commands::set_crossfade,
             commands::set_eq,
@@ -887,6 +1197,8 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
                 app.state::<generation::GenerationServer>().shutdown();
+                #[cfg(feature = "managed-runtime")]
+                app.state::<magenta_gateway::MagentaGateway>().shutdown();
                 app.state::<sidecar::Sidecars>().shutdown();
                 app.state::<models::InstallManager>().shutdown();
                 app.state::<mcp::McpServer>().shutdown();
@@ -896,12 +1208,29 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_backend_path, is_combined};
+    use super::{
+        bundled_backend_path, cue_reselect_is_noop, is_combined, recovery_targets,
+        reconnect_audio_outputs_with, summarize_audio_health, AudioState, StreamHealthSnapshot,
+    };
+
+    fn headless_audio_state() -> AudioState {
+        AudioState {
+            transition: std::sync::Mutex::new(()),
+            main_stream: std::sync::Mutex::new(None),
+            cue_stream: std::sync::Mutex::new(None),
+            main_error: std::sync::Mutex::new(None),
+            cue_error: std::sync::Mutex::new(None),
+            main_name: std::sync::Mutex::new(String::new()),
+            cue_name: std::sync::Mutex::new(String::new()),
+        }
+    }
 
     #[test]
     fn bundled_backend_lives_under_the_tauri_resource_dir() {
         assert_eq!(
-            bundled_backend_path(std::path::Path::new("/Applications/LSDJ.app/Contents/Resources")),
+            bundled_backend_path(std::path::Path::new(
+                "/Applications/LSDJ.app/Contents/Resources"
+            )),
             std::path::Path::new(
                 "/Applications/LSDJ.app/Contents/Resources/lsdj_backend/lsdj_backend"
             )
@@ -930,5 +1259,168 @@ mod tests {
         assert!(!is_combined("MacBook Speakers", "DDJ-FLX4"));
         assert!(!is_combined("", "DDJ-FLX4")); // default main, a named cue device
         assert!(!is_combined("DDJ-FLX4", "Built-in Output"));
+    }
+
+    #[test]
+    fn startup_without_a_device_is_live_unhealthy_and_reconnectable() {
+        let health = summarize_audio_health(
+            None,
+            None,
+            true,
+            Some("audio device unavailable: no default output device".into()),
+            None,
+        );
+        assert!(!health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(health.can_reconnect);
+        assert_eq!(
+            health.main_error.as_deref(),
+            Some("audio device unavailable: no default output device")
+        );
+    }
+
+    #[test]
+    fn persisted_main_open_error_overrides_a_healthy_fallback_stream() {
+        let health = summarize_audio_health(
+            Some(StreamHealthSnapshot {
+                healthy: true,
+                channels: 4,
+            }),
+            None,
+            true,
+            Some("persisted USB output is unplugged".into()),
+            None,
+        );
+
+        assert!(!health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(health.can_reconnect);
+        assert_eq!(
+            health.main_error.as_deref(),
+            Some("persisted USB output is unplugged")
+        );
+    }
+
+    #[test]
+    fn unplugged_persisted_route_is_retained_and_reconnect_retries_that_target() {
+        let audio = headless_audio_state();
+        audio.retain_requested_routes("Persisted USB".into(), "".into());
+        audio.set_main_error(Some("device unplugged".into()));
+        let attempted = std::cell::RefCell::new(None);
+
+        let result = reconnect_audio_outputs_with(
+            &audio,
+            |main_name, cue_name| {
+                attempted.replace(Some((main_name.to_string(), cue_name.to_string())));
+                Ok(())
+            },
+            |_| panic!("combined topology must not open a split cue"),
+        );
+
+        assert!(result.is_ok(), "simulated replug should reopen the route");
+        assert_eq!(
+            attempted.into_inner(),
+            Some(("Persisted USB".into(), "".into()))
+        );
+        assert_eq!(
+            *audio.main_name.lock().unwrap(),
+            "Persisted USB",
+            "failed boot hydration must not fall back to the default target"
+        );
+    }
+
+    #[test]
+    fn combined_install_backpressure_remains_visible_and_retryable() {
+        let audio = headless_audio_state();
+        audio.retain_requested_routes("Four-channel USB".into(), "".into());
+        audio.set_main_error(Some("stream stopped".into()));
+
+        let result = reconnect_audio_outputs_with(
+            &audio,
+            |main_name, cue_name| {
+                assert_eq!(main_name, "Four-channel USB");
+                assert_eq!(cue_name, "");
+                Err(super::ENGINE_BUSY.into())
+            },
+            |_| panic!("combined topology must not attempt an independent cue swap"),
+        );
+
+        assert_eq!(
+            result,
+            Err(format!(
+                "Couldn't reconnect audio outputs (main: {})",
+                super::ENGINE_BUSY
+            )),
+            "queue pressure must be reported to the caller"
+        );
+        let health = audio.output_health();
+        assert_eq!(health.main_error.as_deref(), Some(super::ENGINE_BUSY));
+        assert!(!health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(health.can_reconnect);
+        assert_eq!(recovery_targets(&health, true), (true, false));
+    }
+
+    #[test]
+    fn asynchronous_main_failure_invalidates_main_and_combined_cue() {
+        let health = summarize_audio_health(
+            Some(StreamHealthSnapshot {
+                healthy: false,
+                channels: 4,
+            }),
+            None,
+            true,
+            None,
+            None,
+        );
+        assert!(!health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(health.can_reconnect);
+        assert!(health.main_error.unwrap().contains("stopped after it started"));
+    }
+
+    #[test]
+    fn failed_split_cue_can_recover_without_reopening_healthy_main() {
+        let health = summarize_audio_health(
+            Some(StreamHealthSnapshot {
+                healthy: true,
+                channels: 2,
+            }),
+            Some(StreamHealthSnapshot {
+                healthy: false,
+                channels: 4,
+            }),
+            false,
+            None,
+            None,
+        );
+        assert!(health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert_eq!(recovery_targets(&health, false), (false, true));
+    }
+
+    #[test]
+    fn combined_stereo_cue_requires_a_route_change_not_a_retry_loop() {
+        let health = summarize_audio_health(
+            Some(StreamHealthSnapshot {
+                healthy: true,
+                channels: 2,
+            }),
+            None,
+            true,
+            None,
+            None,
+        );
+        assert!(health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(!health.can_reconnect);
+        assert_eq!(recovery_targets(&health, true), (false, false));
+    }
+
+    #[test]
+    fn same_cue_selection_is_a_noop_only_while_the_route_is_healthy() {
+        assert!(cue_reselect_is_noop("DDJ-FLX4", "DDJ-FLX4", true));
+        assert!(!cue_reselect_is_noop("DDJ-FLX4", "DDJ-FLX4", false));
+        assert!(!cue_reselect_is_noop("DDJ-FLX4", "Built-in", true));
     }
 }

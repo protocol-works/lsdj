@@ -60,20 +60,97 @@ export function isTauri(): boolean {
   return tauriGlobal() !== null
 }
 
-let apiBaseUrlPromise: Promise<string> | null = null
+type ApiConnection = { baseUrl: string; capability: string | null }
+type ApiConnections = { sa3: ApiConnection; magenta: ApiConnection }
+let apiConnectionPromise: Promise<ApiConnections> | null = null
+let apiConnectionOwner: TauriGlobal | null = null
+
+function loadApiConnections(): Promise<ApiConnections> {
+  const owner = tauriGlobal()
+  const unavailable = { baseUrl: '', capability: null }
+  if (!owner) return Promise.resolve({ sa3: unavailable, magenta: unavailable })
+  // A webview has one bridge for its lifetime. Coupling the cache to that bridge
+  // also avoids carrying a stale launch capability across test/dev hot reloads.
+  if (apiConnectionOwner !== owner) {
+    apiConnectionOwner = owner
+    apiConnectionPromise = null
+  }
+  if (!apiConnectionPromise) {
+    apiConnectionPromise = invoke<{
+      generationPort: number | null
+      generationCapability: string | null
+      magentaPort?: number | null
+      magentaCapability?: string | null
+    }>('app_info')
+      .then((info) => {
+        const sa3 = {
+          baseUrl: info.generationPort ? `http://127.0.0.1:${info.generationPort}` : '',
+          capability: info.generationCapability ?? null,
+        }
+        const hasDistinctMagentaGateway =
+          info.magentaPort !== undefined || info.magentaCapability !== undefined
+        return {
+          sa3,
+          // Bundled macOS reports no distinct gateway fields and deliberately
+          // retains the combined controller. Managed Linux/Windows supplies a
+          // Rust-owned Magenta endpoint here. Explicit nulls mean that gateway
+          // failed closed; they must never fall through to the SA3 controller.
+          magenta: hasDistinctMagentaGateway
+            ? {
+                baseUrl: info.magentaPort
+                  ? `http://127.0.0.1:${info.magentaPort}`
+                  : '',
+                capability: info.magentaCapability ?? null,
+              }
+            : sa3,
+        }
+      })
+      .catch(() => ({ sa3: unavailable, magenta: unavailable }))
+  }
+  return apiConnectionPromise
+}
+
+function isMagentaPath(path: string): boolean {
+  return path === '/api/render' || path === '/api/models'
+}
+
+async function getApiConnection(path: string): Promise<ApiConnection> {
+  const magenta = isMagentaPath(path)
+  // SA3 is deliberately replaced during managed promotion, including both its
+  // port and capability. Resolve one fresh atomic app_info snapshot before each
+  // request; a POST is never retried against either the old or new process.
+  if (isTauri() && !magenta) apiConnectionPromise = null
+  let connections = await loadApiConnections()
+  let connection = magenta ? connections.magenta : connections.sa3
+  // A fresh managed install legitimately starts without SA3. Do not pin that
+  // absence for the webview lifetime: the first request after promotion
+  // re-reads app_info and reaches the newly started generation server.
+  if (isTauri() && !connection.baseUrl) {
+    apiConnectionPromise = null
+    connections = await loadApiConnections()
+    connection = magenta ? connections.magenta : connections.sa3
+  }
+  return connection
+}
 
 /** Base URL for the backend `/api/*` generation endpoints (sa3/Magenta pad+track
  * render). FastAPI no longer serves the UI, so the Rust shell runs a generation
  * server on a loopback port it reports via `app_info`; the webview fetches
- * `http://127.0.0.1:<port>/api/...`. Resolved once and cached; falls back to ''
- * (relative) if the port can't be resolved. */
+ * `http://127.0.0.1:<port>/api/...`. SA3 is resolved fresh because promotion
+ * replaces both the port and capability; missing connections fall back to ''. */
 export function getApiBaseUrl(): Promise<string> {
-  if (!apiBaseUrlPromise) {
-    apiBaseUrlPromise = invoke<{ generationPort: number | null }>('app_info')
-      .then((info) => (info.generationPort ? `http://127.0.0.1:${info.generationPort}` : ''))
-      .catch(() => '')
+  return getApiConnection('/api/generate').then((connection) => connection.baseUrl)
+}
+
+/** Authenticated fetch to the app-owned loopback generation service. */
+export async function fetchGenerationApi(path: string, init: RequestInit = {}): Promise<Response> {
+  const connection = await getApiConnection(path)
+  if (isTauri() && !connection.capability) {
+    throw new Error('generation server authentication is unavailable')
   }
-  return apiBaseUrlPromise
+  const headers = new Headers(init.headers)
+  if (connection.capability) headers.set('x-lsdj-capability', connection.capability)
+  return fetch(`${connection.baseUrl}${path}`, { ...init, headers })
 }
 
 /** The native MCP server endpoint + bearer token (ADR-0020 Phase 2), reported by
@@ -99,6 +176,28 @@ export function rotateMcpToken(): Promise<string> {
  * the port is already taken), leaving the running server untouched. */
 export function setMcpPort(port: number): Promise<number> {
   return invoke<number>('set_mcp_port', { port })
+}
+
+/** Live health for the currently selected main/cue output topology. Combined cue
+ * follows the main stream; split cue follows its independent stream. */
+export type AudioOutputHealth = {
+  mainHealthy: boolean
+  cueHealthy: boolean
+  mainError: string | null
+  cueError: string | null
+  canReconnect: boolean
+}
+
+/** Read current CPAL output health. Unlike the legacy `audioDeviceStarted` field,
+ * this reflects asynchronous stream failures after launch. */
+export function getAudioOutputHealth(): Promise<AudioOutputHealth> {
+  return invoke<AudioOutputHealth>('audio_output_health')
+}
+
+/** Retry only unhealthy streams in the current topology. A failed split cue is
+ * rebuilt without interrupting a healthy main output. */
+export function reconnectAudioOutputs(): Promise<AudioOutputHealth> {
+  return invoke<AudioOutputHealth>('reconnect_audio_outputs')
 }
 
 /** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
@@ -149,8 +248,8 @@ export type InstalledModel = {
   needsResources: boolean
 }
 
-/** SA3's four readiness states (Rust `models`/`sa3.readiness`). */
-export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready'
+/** SA3 readiness states (Rust `models`/`sa3.readiness`). */
+export type Sa3State = 'missing' | 'venv_missing' | 'not_warmed' | 'ready' | 'failed'
 
 /** The source an SA3 checkout was installed from / is pinned to (Rust
  * `models::Sa3Source`): the `sa3-pin.json` repo + commit. */
@@ -183,7 +282,10 @@ export type ModelStatus = {
   }
   sa3: {
     state: Sa3State
+    backend: 'mlx' | 'tflite' | null
     sizeBytes: number
+    /** Exact model bytes from the selected backend's immutable manifest. */
+    downloadBytes: number
     checkout: string | null
     /** What the installed checkout was fetched from (`null` when unstamped). */
     installedSource: Sa3Source | null

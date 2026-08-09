@@ -20,6 +20,12 @@ path = "src/main.rs"
 # runtime and startup must resolve it from Contents/Resources. Developer builds
 # omit the feature and retain the uv-based source-tree commands.
 bundled-backend = []
+# Linux and Windows packages never consult developer tooling.  They resolve a
+# hash-verified, atomically promoted service manifest under app-owned storage.
+managed-runtime = []
+# Compatibility name used by the Windows packaging slice.  Keep one policy in
+# Rust even while the stacked shipping PRs converge on the canonical name.
+managed-backend = ["managed-runtime"]
 
 # The cargo WORKSPACE. The app is the root package; the audio engine is a member
 # library crate so it stays headless-testable (`cargo test -p lsdj-engine`)
@@ -72,15 +78,23 @@ serde_json = "1"
 rmcp = { version = "1.8", default-features = false, features = ["server", "transport-streamable-http-server", "macros", "schemars"] }
 axum = "0.8"
 tokio-util = "0.7.18"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "net"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "time"] }
 schemars = "1"
 rand = "0.10"
-# The MCP `generate_sample` tool proxies the loopback generation server's
-# `/api/generate` from the Rust shell (the webview's HTTP client isn't reachable
-# from a tool). reqwest is the de-facto async Rust HTTP client; loopback is plain
-# HTTP, so default TLS is dropped to keep the dependency lean. Shares axum's
-# hyper/tokio tree.
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# The MCP `generate_sample` proxies the loopback generation server, while the
+# model installer uses the blocking client on its dedicated worker thread.
+# Rustls keeps authenticated HTTPS portable without depending on OpenSSL/curl.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Native, bounded `.tar.gz` extraction and application-controlled SHA-256 checks
+# for downloaded runtime/model artifacts (issue #107). Exact pins make changes
+# to the installer trust boundary explicit in review.
+flate2 = "=1.1.9"
+tar = "=0.4.46"
+# Official uv Windows releases are ZIP archives. Keep extraction native and
+# apply the same path/count/expanded-size policy as the tar.gz installer path.
+zip = { version = "=4.6.1", default-features = false, features = ["deflate"] }
+sha2 = "=0.10.9"
+hex = "=0.4.3"
 # Shell-side track decode (ADR-0030): pure-Rust demux + decode covering the
 # folder browser's extension allowlist (wav/aiff via riff, flac/ogg-vorbis in
 # the defaults, mp3, and m4a via isomp4+aac+alac). The de-facto Rust audio
@@ -95,6 +109,20 @@ rubato = { version = "=3.0.0", default-features = false, features = ["fft_resamp
 # Issue 77's corpus-selected spectral-flux detector (ADR-0035). Directly pinned
 # instead of relying on rubato/realfft's transitive copy.
 rustfft = "=6.4.1"
+
+# Windows process-tree lifetime: Job Objects keep wrappers and every descendant
+# tied to the Rust host, including when it exits without running destructors.
+# The child is created suspended and resumed only after assignment, closing the
+# spawn/assign race. Target-scoped so Unix builds carry no Windows surface.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # The ADR-0025 corpus regression replays the spike WAVs (16-bit PCM) through

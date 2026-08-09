@@ -1,0 +1,7 @@
+# Direct dependencies of the pinned Stable Audio 3 MLX source. The native
+# installer consumes the generated, hash-locked sa3-requirements.lock file;
+# update both files when the source pin changes.
+mlx>=0.30
+numpy>=1.24
+sentencepiece>=0.2
+huggingface_hub>=0.20

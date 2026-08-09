@@ -5,6 +5,7 @@ measured facts this wrapper relies on); everything else in the backend
 depends on this interface instead of magenta_rt directly.
 """
 
+import importlib.metadata
 import math
 
 import numpy as np
@@ -132,6 +133,7 @@ class DeckEngine:
             cfg_notes=CFG_NOTES,
             cfg_drums=CFG_DRUMS,
         )
+        self._model = model
         self._state = None
         self._style = None
         self._notes: list[int] | None = None
@@ -147,6 +149,29 @@ class DeckEngine:
         self._chunk_frames = FRAMES_PER_CHUNK
         self._embed_cache: dict[str, np.ndarray] = {}
         self._samples: dict[str, np.ndarray] = {}
+
+    def diagnostics(self) -> dict[str, object]:
+        """Runtime facts matching the cross-platform worker ready contract."""
+
+        try:
+            version = importlib.metadata.version("magenta-rt")
+        except importlib.metadata.PackageNotFoundError:
+            version = "unknown"
+        return {
+            "runtime": "mlx",
+            "accelerator": "metal",
+            "model": self._model,
+            "magenta_rt_version": version,
+            "hardware_qualified": True,
+            "capabilities": {
+                "weighted_prompts": True,
+                "audio_style": True,
+                "notes": True,
+                "drums": True,
+                "negative_prompt": False,
+                "explicit_seed": False,
+            },
+        }
 
     def _embed_cached(self, text: str) -> np.ndarray:
         if text in self._embed_cache:

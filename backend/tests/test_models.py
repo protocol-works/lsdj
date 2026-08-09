@@ -11,7 +11,7 @@ import pathlib
 
 import pytest
 
-from lsdj import engine, sa3, sidecar
+from lsdj import engine, runtime_paths, sa3, sidecar
 
 
 # --- Dynamic Magenta discovery --------------------------------------------
@@ -45,8 +45,9 @@ def _checkout(root: pathlib.Path, *, venv: bool, warmed: bool) -> None:
     mlx = root / "optimized" / "mlx"
     mlx.mkdir(parents=True)
     if venv:
-        (mlx / ".venv" / "bin").mkdir(parents=True)
-        (mlx / ".venv" / "bin" / "python").write_text("")
+        python = runtime_paths.venv_python(mlx / ".venv", platform="darwin")
+        python.parent.mkdir(parents=True)
+        python.write_text("")
         (mlx / "scripts").mkdir()
         (mlx / "scripts" / "sa3_mlx.py").write_text("")
     if warmed:
@@ -64,7 +65,12 @@ def _checkout(root: pathlib.Path, *, venv: bool, warmed: bool) -> None:
 def test_readiness_classifies_a_checkout(tmp_path, venv, warmed, expected):
     root = tmp_path / "co"
     _checkout(root, venv=venv, warmed=warmed)
-    result = sa3.readiness(env={"SA3_MLX_HOME": str(root)}, home=tmp_path / "home")
+    result = sa3.readiness(
+        env={"SA3_MLX_HOME": str(root)},
+        home=tmp_path / "home",
+        platform_name="darwin",
+        machine="arm64",
+    )
     assert result["state"] == expected
     assert result["checkout"] == str(root)
 

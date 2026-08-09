@@ -19,7 +19,7 @@
 //! proceeds, intent kinds migrate from the forward list to native
 //! application without touching the transport or the translator.
 //!
-//! Input callbacks run on CoreMIDI threads: they translate, route, and
+//! Input callbacks run on the platform MIDI backend's threads: they translate, route, and
 //! return — the heavy lifting (LED frames, beat math) lives on the painter
 //! and scheduler threads. Nothing here goes near the cpal callback.
 
@@ -234,6 +234,7 @@ impl MidiService {
         // Dropping the wrapper is fine: coremidi 0.9 never disposes clients
         // (its `Drop` is deliberately disabled upstream), so the underlying
         // client — and the delivery it anchors — lives as long as the app.
+        #[cfg(target_os = "macos")]
         if let Err(e) = MidiInput::new("LSDJ hot-plug anchor") {
             eprintln!("lsdj-app: midi hot-plug anchor failed: {e}");
         }
@@ -475,10 +476,13 @@ fn bind_output(shared: &Arc<Shared>, driver: &Driver, name: &str) {
             return;
         }
     };
-    let port = output
-        .ports()
-        .into_iter()
-        .find(|p| output.port_name(p).is_ok_and(|n| n.contains(driver.name_fragment)));
+    let port = output.ports().into_iter().find(|port| {
+        output
+            .port_name(port)
+            .ok()
+            .and_then(|name| driver_for_name(&name))
+            .is_some_and(|candidate| candidate.id == driver.id)
+    });
     let Some(port) = port else {
         eprintln!("lsdj-app: no midi output port for '{name}'");
         return;

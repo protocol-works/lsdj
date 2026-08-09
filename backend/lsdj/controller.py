@@ -10,27 +10,44 @@ the generation RPC: /api/render (the third Magenta engine), /api/generate
 import argparse
 import asyncio
 import contextlib
-import io
 import json
 import logging
 import math
 import multiprocessing as mp
 import os
 import queue
+import re
+import secrets
+import threading
 import time
-import wave
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import engine, loras, sa3
+from .sa3_audio import AudioNormalizationCancelled
 from .worker import run_deck_worker
 
 logger = logging.getLogger(__name__)
+
+API_CAPABILITY_ENV = "LSDJ_API_CAPABILITY"
+API_CAPABILITY_HEADER = "x-lsdj-capability"
+JOB_ID_HEADER = "x-lsdj-job-id"
+SAFE_TAURI_ORIGINS = frozenset(
+    {
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    }
+)
+_PREFLIGHT_HEADERS = frozenset({"content-type", API_CAPABILITY_HEADER, JOB_ID_HEADER})
+_api_capability: str | None = None
+_allowed_origins = SAFE_TAURI_ORIGINS
 
 DEFAULT_MODEL = "mrt2_small"
 
@@ -39,7 +56,44 @@ DEFAULT_MODEL = "mrt2_small"
 MODEL_RAM_ESTIMATE_GB = {"mrt2_small": 2.0, "mrt2_base": 6.0}
 
 
+def _windows_total_ram_bytes(kernel32=None) -> int:
+    """Read physical RAM through the Windows kernel API.
+
+    ``os.sysconf`` is Unix-only. Keep this standard-library-only so the model
+    status endpoint remains available before any optional model runtime loads.
+    ``kernel32`` is injectable for a platform-independent contract test.
+    """
+    import ctypes
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    if kernel32 is None:
+        api = ctypes.windll.kernel32.GlobalMemoryStatusEx
+        api.argtypes = [ctypes.POINTER(MemoryStatusEx)]
+        api.restype = ctypes.c_int
+    else:
+        api = kernel32.GlobalMemoryStatusEx
+    if not api(ctypes.byref(status)):
+        raise OSError(ctypes.get_last_error(), "GlobalMemoryStatusEx failed")
+    return status.ullTotalPhys
+
+
 def _total_ram_gb() -> float:
+    if os.name == "nt":
+        return _windows_total_ram_bytes() / 1024**3
     return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
 
 
@@ -60,6 +114,78 @@ async def _render_lifespan(_: FastAPI):
 app = FastAPI(lifespan=_render_lifespan)
 
 
+def configure_local_api(
+    capability: str, allowed_origins: frozenset[str] = SAFE_TAURI_ORIGINS
+) -> None:
+    """Install the in-memory launch capability used by the loopback API."""
+
+    global _api_capability, _allowed_origins
+    if not 32 <= len(capability) <= 256 or not capability.isascii():
+        raise ValueError("the local API capability must be 32-256 ASCII characters")
+    if not allowed_origins or any("*" in origin for origin in allowed_origins):
+        raise ValueError("local API origins must be an exact non-wildcard allowlist")
+    _api_capability = capability
+    _allowed_origins = frozenset(allowed_origins)
+
+
+def _cors_headers(origin: str) -> dict[str, str]:
+    return {
+        "access-control-allow-origin": origin,
+        "vary": "Origin",
+    }
+
+
+@app.middleware("http")
+async def secure_local_api(request: Request, call_next):
+    """Authenticate every local API request and reject foreign web origins."""
+
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in _allowed_origins:
+        return JSONResponse(
+            status_code=403, content={"detail": "origin is not allowed"}
+        )
+    if request.method == "OPTIONS":
+        requested_method = request.headers.get(
+            "access-control-request-method", ""
+        ).upper()
+        requested_headers = {
+            value.strip().lower()
+            for value in request.headers.get(
+                "access-control-request-headers", ""
+            ).split(",")
+            if value.strip()
+        }
+        if (
+            origin is None
+            or requested_method not in {"GET", "POST"}
+            or not requested_headers.issubset(_PREFLIGHT_HEADERS)
+        ):
+            return JSONResponse(
+                status_code=403, content={"detail": "preflight rejected"}
+            )
+        return Response(
+            status_code=204,
+            headers={
+                **_cors_headers(origin),
+                "access-control-allow-methods": "GET, POST",
+                "access-control-allow-headers": ", ".join(sorted(_PREFLIGHT_HEADERS)),
+                "access-control-max-age": "600",
+            },
+        )
+    supplied = request.headers.get(API_CAPABILITY_HEADER, "")
+    expected = _api_capability
+    if expected is None or not secrets.compare_digest(supplied, expected):
+        return JSONResponse(
+            status_code=401, content={"detail": "authentication required"}
+        )
+    response = await call_next(request)
+    if origin is not None:
+        response.headers.update(_cors_headers(origin))
+    return response
+
+
 # Worst case: a 32 s clip at a pessimistic ~1× real time, plus a cold
 # prompt embed; well past it the worker is wedged, not slow.
 RENDER_TIMEOUT_SECONDS = 90
@@ -75,6 +201,95 @@ RENDER_MAX_SECONDS = 180.0
 MAX_MULTIPART_BODY_BYTES = (
     sa3.MAX_INIT_AUDIO_BYTES + sa3.MAX_GENERATE_METADATA_BYTES + 128 * 1024
 )
+MAX_RENDER_BODY_BYTES = 64 * 1024
+
+_JOB_ID = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
+_normalization_pool = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="sa3-normalize"
+)
+
+
+@dataclass
+class GenerationJob:
+    job_id: str
+    loop: asyncio.AbstractEventLoop
+    cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    normalization_cancel: threading.Event = field(default_factory=threading.Event)
+    state: str = "accepted"
+    progress: dict | None = None
+    detail: str | None = None
+    updated_at: float = field(default_factory=time.monotonic)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def cancel(self) -> None:
+        self.normalization_cancel.set()
+        with contextlib.suppress(RuntimeError):
+            self.loop.call_soon_threadsafe(self.cancel_event.set)
+
+    def update(
+        self, state: str, progress: dict | None = None, detail: str | None = None
+    ) -> None:
+        with self._lock:
+            self.state = state
+            self.progress = progress
+            self.detail = detail
+            self.updated_at = time.monotonic()
+
+    def public(self) -> dict:
+        with self._lock:
+            return {
+                "jobId": self.job_id,
+                "state": self.state,
+                "progress": self.progress,
+                "detail": self.detail,
+            }
+
+
+class JobRegistry:
+    def __init__(self, retained: int = 32):
+        self._jobs: dict[str, GenerationJob] = {}
+        self._lock = threading.Lock()
+        self._retained = retained
+
+    def create(self, requested: str | None) -> GenerationJob:
+        job_id = requested or secrets.token_hex(16)
+        if not _JOB_ID.fullmatch(job_id):
+            raise HTTPException(status_code=422, detail="invalid generation job id")
+        with self._lock:
+            if job_id in self._jobs:
+                raise HTTPException(
+                    status_code=409, detail="generation job id already exists"
+                )
+            job = GenerationJob(job_id=job_id, loop=asyncio.get_running_loop())
+            self._jobs[job_id] = job
+            self._prune_locked()
+            return job
+
+    def _prune_locked(self) -> None:
+        finished = sorted(
+            (
+                job
+                for job in self._jobs.values()
+                if job.public()["state"] in {"succeeded", "failed", "cancelled"}
+            ),
+            key=lambda job: job.updated_at,
+        )
+        for job in finished[: max(0, len(self._jobs) - self._retained)]:
+            self._jobs.pop(job.job_id, None)
+
+    def get(self, job_id: str) -> GenerationJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def snapshots(self) -> list[dict]:
+        with self._lock:
+            jobs = sorted(
+                self._jobs.values(), key=lambda job: job.updated_at, reverse=True
+            )
+            return [job.public() for job in jobs]
+
+
+generation_jobs = JobRegistry()
 
 
 def render_timeout_for(seconds: float) -> float:
@@ -197,34 +412,22 @@ def _generation_number(
     return float(value)
 
 
-def _validate_init_wav(data: bytes) -> None:
+def _normalize_init_wav(
+    data: bytes,
+    *,
+    cancel_event: threading.Event | None = None,
+    on_progress=None,
+) -> bytes:
     try:
-        with wave.open(io.BytesIO(data), "rb") as source:
-            channels = source.getnchannels()
-            sample_width = source.getsampwidth()
-            sample_rate = source.getframerate()
-            frames = source.getnframes()
-            compression = source.getcomptype()
-            pcm_bytes = source.readframes(frames)
-    except (EOFError, wave.Error):
-        raise HTTPException(
-            status_code=422, detail="'init_audio' must be a valid WAV file"
+        return sa3.normalize_wav(
+            data, cancel_event=cancel_event, on_progress=on_progress
+        ).wav
+    except AudioNormalizationCancelled:
+        raise sa3.GenerationCancelled(
+            "generation cancelled during normalization"
         ) from None
-    if (
-        compression != "NONE"
-        or channels not in (1, 2)
-        or sample_width != 2
-        or sample_rate != 44_100
-        or frames == 0
-        or len(pcm_bytes) != frames * channels * sample_width
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "'init_audio' must be non-empty 44.1 kHz 16-bit PCM WAV "
-                "with one or two channels"
-            ),
-        )
+    except sa3.AudioFormatError as error:
+        raise HTTPException(status_code=422, detail=f"'init_audio' {error}") from None
 
 
 async def _read_init_audio(upload: UploadFile) -> bytes:
@@ -241,8 +444,40 @@ async def _read_init_audio(upload: UploadFile) -> bytes:
             )
         chunks.append(chunk)
     data = b"".join(chunks)
-    _validate_init_wav(data)
     return data
+
+
+async def _normalize_init_wav_async(data: bytes, job: GenerationJob) -> bytes:
+    job.update(
+        "normalizing",
+        {
+            "stage": "normalizing",
+            "current": 0,
+            "total": 1,
+            "message": "normalizing input",
+        },
+    )
+
+    def progress(current: int, total: int) -> None:
+        job.update(
+            "normalizing",
+            {
+                "stage": "normalizing",
+                "current": current,
+                "total": total,
+                "message": f"normalizing {current}/{total}",
+            },
+        )
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _normalization_pool,
+        lambda: _normalize_init_wav(
+            data,
+            cancel_event=job.normalization_cancel,
+            on_progress=progress,
+        ),
+    )
 
 
 async def _read_capped_body(request: Request, limit: int, detail: str) -> bytes:
@@ -409,6 +644,19 @@ def _validate_generate_request(
             )
         options["apg"] = apg
 
+    if "steps" in parsed:
+        steps = parsed["steps"]
+        if (
+            isinstance(steps, bool)
+            or not isinstance(steps, int)
+            or not sa3.MIN_STEPS <= steps <= sa3.MAX_STEPS
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'steps' must be an integer from {sa3.MIN_STEPS}-{sa3.MAX_STEPS}",
+            )
+        options["steps"] = steps
+
     if "negative_prompt" in parsed:
         negative_prompt = parsed["negative_prompt"]
         if not isinstance(negative_prompt, str):
@@ -547,8 +795,11 @@ async def render_clip(request: Request) -> Response:
     Returns the clip as a float32 WAV.
     """
     try:
-        parsed = await request.json()
-    except json.JSONDecodeError:
+        body = await _read_capped_body(
+            request, MAX_RENDER_BODY_BYTES, "request body is too large"
+        )
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(status_code=422, detail="body must be JSON") from None
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=422, detail="body must be a JSON object")
@@ -629,16 +880,81 @@ async def generate_audio(request: Request) -> Response:
     subprocess and is serialised, so a busy moment queues rather than stacking
     memory.
     """
-    parsed, init_audio = await _parse_generate_body(request)
-    prompt, seconds, kind, options = _validate_generate_request(parsed, init_audio)
+    job = generation_jobs.create(request.headers.get(JOB_ID_HEADER))
     try:
-        wav = await sa3.generate(prompt, seconds, kind, **options)
+        parsed, raw_init_audio = await _parse_generate_body(request)
+        init_audio = (
+            None
+            if raw_init_audio is None
+            else await _normalize_init_wav_async(raw_init_audio, job)
+        )
+        prompt, seconds, kind, options = _validate_generate_request(parsed, init_audio)
+        job.update("queued")
+
+        def progress(event) -> None:
+            job.update("running", event.as_dict())
+
+        def state_changed(state: str) -> None:
+            job.update(state, job.public()["progress"])
+
+        wav = await sa3.generate(
+            prompt,
+            seconds,
+            kind,
+            **options,
+            cancel_event=job.cancel_event,
+            on_progress=progress,
+            on_state=state_changed,
+        )
     except sa3.GenerationUnavailable as error:
+        job.update("failed", detail=str(error))
         raise HTTPException(status_code=503, detail=str(error)) from None
     except sa3.GenerationFailed as error:
+        job.update("failed", detail=str(error))
         logger.warning("generation failed: %s", error)
         raise HTTPException(status_code=502, detail=str(error)) from None
-    return Response(content=wav, media_type="audio/wav")
+    except sa3.GenerationCancelled as error:
+        job.update("cancelled", detail=str(error))
+        raise HTTPException(status_code=499, detail=str(error)) from None
+    except HTTPException as error:
+        job.update("failed", detail=str(error.detail))
+        raise
+    except asyncio.CancelledError:
+        job.cancel()
+        job.update("cancelled", detail="request disconnected")
+        raise
+    job.update("succeeded")
+    return Response(
+        content=wav,
+        media_type="audio/wav",
+        headers={JOB_ID_HEADER: job.job_id},
+    )
+
+
+@app.get("/api/jobs/{job_id}")
+def generation_job_status(job_id: str) -> dict:
+    job = generation_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="generation job not found")
+    return job.public()
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_generation_job(job_id: str) -> dict:
+    job = generation_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="generation job not found")
+    snapshot = job.public()
+    if snapshot["state"] not in {"succeeded", "failed", "cancelled"}:
+        job.cancel()
+        job.update("cancelling", progress=snapshot["progress"])
+    return job.public()
+
+
+@app.get("/api/sa3/status")
+def stable_audio_status() -> dict:
+    """Selected runtime, feature matrix, limitations, and active generation."""
+    return {**sa3.status(), "jobs": generation_jobs.snapshots()}
 
 
 @app.get("/api/models")
@@ -670,15 +986,11 @@ def main(argv: list[str] | None = None) -> None:
         "--port", type=int, default=8000, help="loopback port to bind (default 8000)"
     )
     args = parser.parse_args(argv)
-
-    # The webview loads from the Tauri asset host and fetches this server
-    # cross-origin over loopback, so allow it. Loopback-bound; not exposed.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    capability = os.environ.pop(API_CAPABILITY_ENV, "")
+    try:
+        configure_local_api(capability)
+    except ValueError as error:
+        parser.error(str(error))
     uvicorn.run(app, host="127.0.0.1", port=args.port)
 
 

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "LSDJ",
+        "installerHooks": "./windows/installer-hooks.nsh",
+        "languages": ["English"],
+        "customLanguageFiles": {
+          "English": "./windows/English.nsh"
+        }
+      }
+    }
+  }
+}
