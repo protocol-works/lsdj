@@ -62,6 +62,9 @@ $startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Progra
 $registryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\LSDJ'
 $ciPurgeReady = Join-Path $env:TEMP 'lsdj-ci-before-purge.ready'
 $ciInstallerTrace = Join-Path $env:TEMP 'lsdj-ci-installer.trace'
+$ownerMarkerWithNul = [byte[]]::new(20)
+[Text.Encoding]::ASCII.GetBytes('works.protocol.lsdj').CopyTo($ownerMarkerWithNul, 0)
+$ownerMarkerWithNulHex = [Convert]::ToHexString($ownerMarkerWithNul)
 
 function Get-CiInstallerTrace {
     if (Test-Path -LiteralPath $ciInstallerTrace -PathType Leaf) {
@@ -250,6 +253,23 @@ Remove-ReparseDirectoryEntry $installNestedJunction
 Remove-Item -LiteralPath $dataRoot -Recurse -Force
 Remove-Item -LiteralPath $installNestedTarget -Recurse -Force
 
+# The native validator reads one byte beyond the exact owner identifier. This
+# rejects an embedded trailing NUL even though string conversion alone could
+# make that 20-byte file compare equal to the expected 19-character text.
+Start-LifecycleScenario 'reject install with NUL-extended ownership marker'
+New-RecognizedLsdjLayout
+$nulInstallSentinel = Join-Path $dataRoot 'data\nul-marker-install.txt'
+[System.IO.File]::WriteAllText($nulInstallSentinel, 'preserve NUL marker root')
+[System.IO.File]::WriteAllBytes($marker, $ownerMarkerWithNul)
+Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
+$actualNulMarkerHex = [Convert]::ToHexString([System.IO.File]::ReadAllBytes($marker))
+if ($actualNulMarkerHex -cne $ownerMarkerWithNulHex -or
+    -not (Test-Path -LiteralPath $nulInstallSentinel -PathType Leaf) -or
+    (Test-Path -LiteralPath $app)) {
+    throw 'Installer accepted or modified a NUL-extended ownership marker root.'
+}
+Remove-Item -LiteralPath $dataRoot -Recurse -Force
+
 # The one markerless migration case is the complete five-root layout created by
 # platform_paths.rs. It may be adopted, upgraded, and preserved normally.
 Start-LifecycleScenario 'adopt recognized markerless legacy layout'
@@ -339,6 +359,21 @@ Invoke-CheckedProcess $newer.FullName @('/S')
 Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
 if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
     throw 'Invalid ownership marker allowed explicit data removal.'
+}
+[System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
+
+# A trailing raw NUL must also invalidate destructive ownership validation.
+# The failed purge must stop before ordinary app removal and preserve the exact
+# marker bytes and data root.
+Start-LifecycleScenario 'reject purge with NUL-extended ownership marker'
+Invoke-CheckedProcess $newer.FullName @('/S')
+[System.IO.File]::WriteAllBytes($marker, $ownerMarkerWithNul)
+Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+$actualNulMarkerHex = [Convert]::ToHexString([System.IO.File]::ReadAllBytes($marker))
+if ($actualNulMarkerHex -cne $ownerMarkerWithNulHex -or
+    -not (Test-Path -LiteralPath $dataRoot -PathType Container) -or
+    -not (Test-Path -LiteralPath $app -PathType Leaf)) {
+    throw 'NUL-extended ownership marker allowed uninstall or data removal.'
 }
 [System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
 
