@@ -110,6 +110,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
         build = (REPO_ROOT / "scripts/build-windows-installer.ps1").read_text()
         lifecycle = (REPO_ROOT / "scripts/test-windows-installer.ps1").read_text()
+        hooks = (TAURI_ROOT / "windows/installer-hooks.nsh").read_text()
 
         self.assertIn("-UnsignedDevelopment", workflow)
         self.assertIn("assert-windows-release-rejects-unsigned.ps1", workflow)
@@ -118,6 +119,17 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("cargo install tauri-cli --version '=2.11.2' --locked", workflow)
         self.assertIn("LSDJ_CI_ADVERSARIAL_TESTS", build)
         self.assertIn("if ($UnsignedDevelopment)", build)
+        self.assertIn('FileOpen $R5 "$TEMP\\lsdj-ci-installer.trace" a', hooks)
+        self.assertIn("Var LsdjCiTraceHadErrors", hooks)
+        trace_else = hooks.index("!else", hooks.index("!macro LSDJ_CI_TRACE MESSAGE"))
+        trace_end = hooks.index("!endif", trace_else)
+        self.assertEqual(
+            hooks[trace_else:trace_end].count("FileOpen"),
+            0,
+            "Production trace macro must expand to no file operations.",
+        )
+        self.assertIn("Get-CiInstallerTrace", lifecycle)
+        self.assertIn("CI installer trace:", lifecycle)
         for contract in (
             "pre-existing empty LocalAppData root",
             "foreign LocalAppData root",
