@@ -217,10 +217,16 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("function Get-InstalledStateSnapshot", lifecycle)
         self.assertIn("function Get-UninstallRegistrySnapshot", lifecycle)
         self.assertIn("function Assert-CiInstallerTraceContract", lifecycle)
+        self.assertIn("$lastRequiredIndex = -1", lifecycle)
+        self.assertIn("[StringComparison]::Ordinal", lifecycle)
         self.assertIn(
             "Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256", lifecycle
         )
         self.assertIn("Assert-InstalledStateSnapshotUnchanged", lifecycle)
+        self.assertIn("MarkerAttributes", lifecycle)
+        self.assertIn("MarkerLinkType", lifecycle)
+        self.assertIn("MarkerTarget", lifecycle)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", lifecycle)
         self.assertIn("-ExpectedExitCodes @(2)", lifecycle)
         for contract in (
             "pre-existing empty LocalAppData root",
@@ -233,6 +239,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
             "nested directory reparse point",
             "reject unattended downgrade in update mode",
             "reject passive downgrade",
+            "reject combined silent and passive mode",
             "same-version silent reinstall",
             "reject existing install with empty version metadata",
             "reject existing install with corrupt version metadata",
@@ -242,6 +249,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("function Start-LifecycleScenario", lifecycle)
         self.assertIn("preinstall: version compare=-1", lifecycle)
         self.assertIn("preinstall: version compare=0", lifecycle)
+        self.assertIn("preinstall: version compare=1", lifecycle)
         self.assertIn("validity=1", lifecycle)
         self.assertIn("validity=0", lifecycle)
         self.assertIn("abort: passive install unsupported", lifecycle)
