@@ -320,6 +320,11 @@ foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
 Start-LifecycleScenario 'reject unattended downgrade'
 Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
 Require-InstalledVersion $NewerVersion
+foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
+    if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
+        throw "Rejected downgrade modified app-managed data: $sentinel"
+    }
+}
 
 if ($RequireSigned) {
     $installedPayloads = @(
