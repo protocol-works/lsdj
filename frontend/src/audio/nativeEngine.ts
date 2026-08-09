@@ -178,6 +178,28 @@ export function setMcpPort(port: number): Promise<number> {
   return invoke<number>('set_mcp_port', { port })
 }
 
+/** Live health for the currently selected main/cue output topology. Combined cue
+ * follows the main stream; split cue follows its independent stream. */
+export type AudioOutputHealth = {
+  mainHealthy: boolean
+  cueHealthy: boolean
+  mainError: string | null
+  cueError: string | null
+  canReconnect: boolean
+}
+
+/** Read current CPAL output health. Unlike the legacy `audioDeviceStarted` field,
+ * this reflects asynchronous stream failures after launch. */
+export function getAudioOutputHealth(): Promise<AudioOutputHealth> {
+  return invoke<AudioOutputHealth>('audio_output_health')
+}
+
+/** Retry only unhealthy streams in the current topology. A failed split cue is
+ * rebuilt without interrupting a healthy main output. */
+export function reconnectAudioOutputs(): Promise<AudioOutputHealth> {
+  return invoke<AudioOutputHealth>('reconnect_audio_outputs')
+}
+
 /** Fire a command at the Rust engine (or a Tauri plugin, e.g. `plugin:dialog|open`).
  * Rejects (caught by callers that care) when the IPC bridge is absent — never
  * throws synchronously. Exported for the few non-engine native callers
