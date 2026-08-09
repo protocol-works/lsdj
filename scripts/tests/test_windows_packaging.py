@@ -105,6 +105,16 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("StrCpy $LsdjDeleteData $DeleteAppDataCheckboxState", hooks)
         self.assertIn("StrCpy $DeleteAppDataCheckboxState 0", hooks)
         self.assertIn("${If} $LsdjDeleteData = 1", hooks)
+        preuninstall_start = hooks.index("!macro NSIS_HOOK_PREUNINSTALL")
+        preuninstall_end = hooks.index("!macroend", preuninstall_start)
+        preuninstall = hooks[preuninstall_start:preuninstall_end]
+        self.assertIn(
+            "preuninstall: owned root safe=$LsdjOwnedRootSafe tree safe=$LsdjTreeSafe",
+            preuninstall,
+        )
+        self.assertIn("abort: unsafe data removal", preuninstall)
+        self.assertIn("SetErrorLevel 2\n      Quit", preuninstall)
+        self.assertNotIn('Abort "Refusing unsafe LSDJ data removal."', preuninstall)
         self.assertIn('DeleteRegKey SHCTX "${MANUPRODUCTKEY}"', hooks)
         self.assertNotIn("RMDir /r", hooks)
         self.assertNotIn('RMDir /r "$LOCALAPPDATA"', hooks)
