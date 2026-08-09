@@ -1007,6 +1007,7 @@ FunctionEnd
       Push "${LSDJ_DATA_ROOT}"
       Call un.LsdjTreeIsLinkFree
     ${EndIf}
+    !insertmacro LSDJ_CI_TRACE "preuninstall: owned root safe=$LsdjOwnedRootSafe tree safe=$LsdjTreeSafe"
     ${If} $LsdjOwnedRootSafe != 1
     ${OrIf} $LsdjTreeSafe != 1
       StrCpy $LsdjDataRemovalFailed 1
@@ -1018,8 +1019,9 @@ FunctionEnd
       ; Stop before Tauri's ordinary payload deletion too: the application and
       ; data share a root in the default layout, so continuing after a root
       ; ownership failure could make even narrow file deletions unsafe.
+      !insertmacro LSDJ_CI_TRACE "abort: unsafe data removal"
       SetErrorLevel 2
-      Abort "Refusing unsafe LSDJ data removal."
+      Quit
     ${EndIf}
 
     ; GetSize reports KiB. The link-free walk above prevents it from traversing
