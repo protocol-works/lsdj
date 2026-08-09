@@ -149,6 +149,15 @@ jobs:
           tests/test_sa3.py
           tests/test_sa3_audio.py
           tests/test_sa3_manifest.py
+          tests/test_gpu_broker.py
+          tests/test_mrt2_pytorch.py
+          tests/test_mrt2_runtime.py
+          tests/test_mrt2_runtime_locks.py
+          tests/test_render_sidecar.py
+          tests/test_runtime_paths.py
+          tests/test_sa3_cuda.py
+          tests/test_sa3_cuda_pins.py
+          tests/test_sa3_cuda_worker.py
           tests/test_models.py::test_readiness_classifies_a_checkout
           tests/test_models.py::test_readiness_missing_when_no_checkout
 
