@@ -61,12 +61,14 @@ export function isTauri(): boolean {
 }
 
 type ApiConnection = { baseUrl: string; capability: string | null }
-let apiConnectionPromise: Promise<ApiConnection> | null = null
+type ApiConnections = { sa3: ApiConnection; magenta: ApiConnection }
+let apiConnectionPromise: Promise<ApiConnections> | null = null
 let apiConnectionOwner: TauriGlobal | null = null
 
-function getApiConnection(): Promise<ApiConnection> {
+function loadApiConnections(): Promise<ApiConnections> {
   const owner = tauriGlobal()
-  if (!owner) return Promise.resolve({ baseUrl: '', capability: null })
+  const unavailable = { baseUrl: '', capability: null }
+  if (!owner) return Promise.resolve({ sa3: unavailable, magenta: unavailable })
   // A webview has one bridge for its lifetime. Coupling the cache to that bridge
   // also avoids carrying a stale launch capability across test/dev hot reloads.
   if (apiConnectionOwner !== owner) {
@@ -77,14 +79,53 @@ function getApiConnection(): Promise<ApiConnection> {
     apiConnectionPromise = invoke<{
       generationPort: number | null
       generationCapability: string | null
+      magentaPort?: number | null
+      magentaCapability?: string | null
     }>('app_info')
-      .then((info) => ({
-        baseUrl: info.generationPort ? `http://127.0.0.1:${info.generationPort}` : '',
-        capability: info.generationCapability ?? null,
-      }))
-      .catch(() => ({ baseUrl: '', capability: null }))
+      .then((info) => {
+        const sa3 = {
+          baseUrl: info.generationPort ? `http://127.0.0.1:${info.generationPort}` : '',
+          capability: info.generationCapability ?? null,
+        }
+        const hasDistinctMagentaGateway =
+          info.magentaPort !== undefined || info.magentaCapability !== undefined
+        return {
+          sa3,
+          // Bundled macOS reports no distinct gateway fields and deliberately
+          // retains the combined controller. Managed Linux/Windows supplies a
+          // Rust-owned Magenta endpoint here. Explicit nulls mean that gateway
+          // failed closed; they must never fall through to the SA3 controller.
+          magenta: hasDistinctMagentaGateway
+            ? {
+                baseUrl: info.magentaPort
+                  ? `http://127.0.0.1:${info.magentaPort}`
+                  : '',
+                capability: info.magentaCapability ?? null,
+              }
+            : sa3,
+        }
+      })
+      .catch(() => ({ sa3: unavailable, magenta: unavailable }))
   }
   return apiConnectionPromise
+}
+
+function isMagentaPath(path: string): boolean {
+  return path === '/api/render' || path === '/api/models'
+}
+
+async function getApiConnection(path: string): Promise<ApiConnection> {
+  let connections = await loadApiConnections()
+  let connection = isMagentaPath(path) ? connections.magenta : connections.sa3
+  // A fresh managed install legitimately starts without SA3. Do not pin that
+  // absence for the webview lifetime: the first request after promotion
+  // re-reads app_info and reaches the newly started generation server.
+  if (isTauri() && !connection.baseUrl) {
+    apiConnectionPromise = null
+    connections = await loadApiConnections()
+    connection = isMagentaPath(path) ? connections.magenta : connections.sa3
+  }
+  return connection
 }
 
 /** Base URL for the backend `/api/*` generation endpoints (sa3/Magenta pad+track
@@ -93,12 +134,12 @@ function getApiConnection(): Promise<ApiConnection> {
  * `http://127.0.0.1:<port>/api/...`. Resolved once and cached; falls back to ''
  * (relative) if the port can't be resolved. */
 export function getApiBaseUrl(): Promise<string> {
-  return getApiConnection().then((connection) => connection.baseUrl)
+  return getApiConnection('/api/generate').then((connection) => connection.baseUrl)
 }
 
 /** Authenticated fetch to the app-owned loopback generation service. */
 export async function fetchGenerationApi(path: string, init: RequestInit = {}): Promise<Response> {
-  const connection = await getApiConnection()
+  const connection = await getApiConnection(path)
   if (isTauri() && !connection.capability) {
     throw new Error('generation server authentication is unavailable')
   }

@@ -112,6 +112,88 @@ describe('createNativeEngine — control contract', () => {
     expect((init.headers as Headers).get('x-lsdj-capability')).toBe('b'.repeat(64))
   })
 
+  it('routes Magenta requests to the distinct native gateway', async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({
+            generationPort: 4321,
+            generationCapability: 's'.repeat(64),
+            magentaPort: 9876,
+            magentaCapability: 'm'.repeat(64),
+          })
+        : Promise.resolve(undefined),
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/render', { method: 'POST' })
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+
+    const [renderUrl, renderInit] = fetchMock.mock.calls[0]
+    expect(renderUrl).toBe('http://127.0.0.1:9876/api/render')
+    expect((renderInit.headers as Headers).get('x-lsdj-capability')).toBe('m'.repeat(64))
+    const [generateUrl, generateInit] = fetchMock.mock.calls[1]
+    expect(generateUrl).toBe('http://127.0.0.1:4321/api/generate')
+    expect((generateInit.headers as Headers).get('x-lsdj-capability')).toBe('s'.repeat(64))
+  })
+
+  it('fails closed when a managed Magenta gateway could not bind', async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({
+            generationPort: 4321,
+            generationCapability: 's'.repeat(64),
+            magentaPort: null,
+            magentaCapability: null,
+          })
+        : Promise.resolve(undefined),
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchGenerationApi('/api/render', { method: 'POST' })).rejects.toThrow(
+      'authentication is unavailable',
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('refreshes app_info when a first SA3 install starts the service', async () => {
+    let appInfoCalls = 0
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd !== 'app_info') return Promise.resolve(undefined)
+      appInfoCalls += 1
+      return Promise.resolve(
+        appInfoCalls === 1
+          ? { generationPort: null, generationCapability: null }
+          : { generationPort: 2468, generationCapability: 'n'.repeat(64) },
+      )
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+
+    expect(appInfoCalls).toBe(2)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:2468/api/generate')
+    expect((init.headers as Headers).get('x-lsdj-capability')).toBe('n'.repeat(64))
+  })
+
   it('createDeckChannel replays NO mixer config — the shell hydrates (phase C)', async () => {
     const engine = createNativeEngine()
     await engine.createDeckChannel(
