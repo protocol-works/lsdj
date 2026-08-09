@@ -62,6 +62,26 @@ enum GenerationProcessState {
     },
 }
 
+struct GenerationSpawnFailure {
+    error: io::Error,
+    uncertain_process: Option<Box<dyn GenerationProcess>>,
+}
+
+impl GenerationSpawnFailure {
+    fn reaped(error: io::Error) -> Self {
+        Self {
+            error,
+            uncertain_process: None,
+        }
+    }
+}
+
+impl From<io::Error> for GenerationSpawnFailure {
+    fn from(error: io::Error) -> Self {
+        Self::reaped(error)
+    }
+}
+
 impl GenerationServer {
     /// Spawn the generation server — started with the app. Never fails the app: a
     /// failed spawn yields `port() == None` and generation is simply unreachable (the
@@ -78,7 +98,9 @@ impl GenerationServer {
         server
     }
 
-    fn spawn(capability: &str) -> io::Result<(u16, Box<dyn GenerationProcess>)> {
+    fn spawn(
+        capability: &str,
+    ) -> Result<(u16, Box<dyn GenerationProcess>), GenerationSpawnFailure> {
         // Pick a free loopback port, then hand it to the child (uvicorn binds it).
         // The brief drop→rebind window on loopback is benign.
         let port = {
@@ -94,39 +116,18 @@ impl GenerationServer {
         // a slow-but-working server is reported optimistically rather than
         // blocking the window; a child that EXITS is reported as a failure.
         let addr = ("127.0.0.1", port);
-        match child.wait_for_readiness(Duration::from_millis(1500), || {
+        let readiness = child.wait_for_readiness(Duration::from_millis(1500), || {
             Ok(TcpStream::connect(addr).is_ok())
-        })? {
-            Readiness::Ready | Readiness::TimedOut => {
-                // Preserve the existing macOS contract: a slow-but-running
-                // service is advertised optimistically after the bounded wait.
-                Ok((port, Box::new(child)))
-            }
-            Readiness::Exited(status) => Err(io::Error::other(format!(
-                "generation server exited before binding ({status})"
-            ))),
-        }
+        });
+        finish_generation_startup(port, Box::new(child), readiness)
     }
 
-    /// Return the port and capability from one lock acquisition. Neither half is
-    /// ever observable without the other across promotion/resume transitions.
-    pub fn connection(&self) -> Option<(u16, String)> {
-        match &*self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-        {
-            GenerationProcessState::Running {
-                port, capability, ..
-            } => Some((*port, capability.clone())),
-            GenerationProcessState::Stopped | GenerationProcessState::Uncertain { .. } => None,
-        }
-    }
-
-    /// Start (or recover) the service from the currently promoted verified
-    /// generation. A running healthy child is left untouched. This is called on
-    /// startup and after every managed SA3 promotion/rollback.
-    pub fn resume(&self) -> io::Result<()> {
+    fn resume_with_spawn(
+        &self,
+        spawn: impl FnOnce(
+            &str,
+        ) -> Result<(u16, Box<dyn GenerationProcess>), GenerationSpawnFailure>,
+    ) -> io::Result<()> {
         let mut state = self
             .state
             .lock()
@@ -170,7 +171,18 @@ impl GenerationServer {
             }
         }
         let capability = crate::local_auth::generate_capability();
-        let (port, process) = Self::spawn(&capability)?;
+        let (port, process) = match spawn(&capability) {
+            Ok(spawned) => spawned,
+            Err(spawn) => {
+                if let Some(process) = spawn.uncertain_process {
+                    *state = GenerationProcessState::Uncertain {
+                        process,
+                        was_running: false,
+                    };
+                }
+                return Err(spawn.error);
+            }
+        };
         println!("lsdj-app: generation server on 127.0.0.1:{port}");
         *state = GenerationProcessState::Running {
             port,
@@ -178,6 +190,28 @@ impl GenerationServer {
             process,
         };
         Ok(())
+    }
+
+    /// Return the port and capability from one lock acquisition. Neither half is
+    /// ever observable without the other across promotion/resume transitions.
+    pub fn connection(&self) -> Option<(u16, String)> {
+        match &*self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            GenerationProcessState::Running {
+                port, capability, ..
+            } => Some((*port, capability.clone())),
+            GenerationProcessState::Stopped | GenerationProcessState::Uncertain { .. } => None,
+        }
+    }
+
+    /// Start (or recover) the service from the currently promoted verified
+    /// generation. A running healthy child is left untouched. This is called on
+    /// startup and after every managed SA3 promotion/rollback.
+    pub fn resume(&self) -> io::Result<()> {
+        self.resume_with_spawn(Self::spawn)
     }
 
     /// Stop and reap the service before its managed generation is renamed.
@@ -216,6 +250,35 @@ impl GenerationServer {
     pub fn shutdown(&self) {
         if let Err(error) = self.quiesce() {
             crate::child_process::log_shutdown("generation server", Err(error));
+        }
+    }
+}
+
+fn finish_generation_startup(
+    port: u16,
+    mut process: Box<dyn GenerationProcess>,
+    readiness: io::Result<Readiness>,
+) -> Result<(u16, Box<dyn GenerationProcess>), GenerationSpawnFailure> {
+    match readiness {
+        Ok(Readiness::Ready | Readiness::TimedOut) => {
+            // Preserve the existing macOS contract: a slow-but-running
+            // service is advertised optimistically after the bounded wait.
+            Ok((port, process))
+        }
+        Ok(Readiness::Exited(status)) => Err(GenerationSpawnFailure::reaped(io::Error::other(
+            format!("generation server exited before binding ({status})"),
+        ))),
+        Err(readiness_error) => match process.shutdown() {
+            Ok(()) => Err(GenerationSpawnFailure::reaped(readiness_error)),
+            Err(cleanup_error) => Err(GenerationSpawnFailure {
+                error: io::Error::new(
+                    readiness_error.kind(),
+                    format!(
+                        "{readiness_error}; generation startup cleanup also failed: {cleanup_error}"
+                    ),
+                ),
+                uncertain_process: Some(process),
+            }),
         }
     }
 }
@@ -370,6 +433,51 @@ mod process_tests {
         assert_eq!(shutdowns.load(Ordering::Acquire), 1);
 
         assert!(matches!(server.quiesce(), Ok(true)));
+        assert!(matches!(
+            &*server.state.lock().unwrap(),
+            GenerationProcessState::Stopped
+        ));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn readiness_error_with_failed_cleanup_retains_ownership_until_second_shutdown() {
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let startup = finish_generation_startup(
+            4321,
+            Box::new(RetryProcess {
+                shutdowns: shutdowns.clone(),
+            }),
+            Err(io::Error::other("readiness OS error")),
+        );
+        let failure = match startup {
+            Err(failure) => failure,
+            Ok(_) => panic!("readiness error must fail startup"),
+        };
+        assert!(failure.error.to_string().contains("readiness OS error"));
+        assert!(failure
+            .error
+            .to_string()
+            .contains("startup cleanup also failed"));
+        assert!(failure.uncertain_process.is_some());
+        assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+
+        let server = GenerationServer {
+            state: Mutex::new(GenerationProcessState::Stopped),
+        };
+        let error = server
+            .resume_with_spawn(move |_| Err(failure))
+            .unwrap_err();
+        assert!(error.to_string().contains("readiness OS error"));
+        assert_eq!(server.connection(), None);
+        assert!(matches!(
+            &*server.state.lock().unwrap(),
+            GenerationProcessState::Uncertain { .. }
+        ));
+
+        // The startup cleanup was the first shutdown attempt. Quiesce owns the
+        // second attempt and cannot expose Stopped until that positive reap.
+        assert!(matches!(server.quiesce(), Ok(false)));
         assert!(matches!(
             &*server.state.lock().unwrap(),
             GenerationProcessState::Stopped
