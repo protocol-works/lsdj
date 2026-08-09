@@ -72,6 +72,15 @@ check, and always preserves the remaining tree. The equivalent explicit
 automation switch is `/PURGE-LSDJ-DATA`; `/S` alone always preserves data. There
 is no caller-supplied recursive target.
 
+NSIS installed uninstallers are self-copy launchers. A direct invocation such
+as `uninstall.exe /S /PURGE-LSDJ-DATA` reports whether the temporary worker
+started, not the worker's final script status. Automation that must distinguish
+a completed uninstall (`0`) from a fail-closed refusal (`2`) must copy the
+uninstaller to a unique temporary executable, run that copy while waiting with
+final unquoted `_?=<install-directory>`, and then remove the copy. This is the
+NSIS-documented worker form; the `_?=` argument must remain last so paths with
+spaces are preserved.
+
 ## WebView2
 
 Windows 11 normally receives the evergreen WebView2 Runtime with Windows. LSDJ's

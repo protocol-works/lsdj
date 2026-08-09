@@ -164,8 +164,30 @@ function New-UninstallerWorkerCopy {
 
     $workerName = "lsdj-uninstall-worker-$([Guid]::NewGuid().ToString('N')).exe"
     $workerPath = Join-Path $env:RUNNER_TEMP $workerName
-    Copy-Item -LiteralPath $FilePath -Destination $workerPath
-    return $workerPath
+    try {
+        Copy-Item -LiteralPath $FilePath -Destination $workerPath
+        return $workerPath
+    } catch {
+        Remove-Item -LiteralPath $workerPath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Stop-UninstallerWorker {
+    param(
+        [System.Diagnostics.Process] $Process,
+
+        [int] $TimeoutMilliseconds = 10000
+    )
+
+    if ($null -eq $Process -or $Process.HasExited) {
+        return
+    }
+
+    $Process.Kill($true)
+    if (-not $Process.WaitForExit($TimeoutMilliseconds)) {
+        throw "Timed out terminating uninstaller worker process $($Process.Id)."
+    }
 }
 
 function Invoke-ExpectedUninstallFailure {
@@ -184,14 +206,32 @@ function Invoke-ExpectedUninstallFailure {
     # Exercise the documented worker form so CI observes the script exit code.
     # https://nsis.sourceforge.io/Docs/AppendixD.html
     # `_?=` must remain the final, unquoted command-line argument.
-    $workerPath = New-UninstallerWorkerCopy -FilePath $FilePath
+    $workerPath = $null
+    $worker = $null
     try {
-        return Invoke-CheckedProcess `
+        $workerPath = New-UninstallerWorkerCopy -FilePath $FilePath
+        Remove-Item -LiteralPath $ciInstallerTrace -Force -ErrorAction SilentlyContinue
+        $worker = Start-Process `
             -FilePath $workerPath `
             -ArgumentList (@($ArgumentList) + "_?=$InstallDirectory") `
-            -ExpectedExitCodes @(2)
+            -PassThru
+        if (-not $worker.WaitForExit(30000)) {
+            throw "Timed out waiting for uninstaller worker: $workerPath"
+        }
+        if ($worker.ExitCode -ne 2) {
+            $trace = Get-CiInstallerTrace
+            Write-CiInstallerTrace
+            throw "Uninstaller worker exited $($worker.ExitCode), expected 2: $workerPath$([Environment]::NewLine)CI installer trace:$([Environment]::NewLine)$trace"
+        }
+        return $worker.ExitCode
     } finally {
-        Remove-Item -LiteralPath $workerPath -Force -ErrorAction SilentlyContinue
+        try {
+            Stop-UninstallerWorker -Process $worker
+        } finally {
+            if ($null -ne $workerPath) {
+                Remove-Item -LiteralPath $workerPath -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 
@@ -776,9 +816,10 @@ Remove-Item -LiteralPath $purgeMarkerTarget -Recurse -Force
 Start-LifecycleScenario 'reject ownership-marker replacement after purge confirmation'
 Invoke-CheckedProcess $newer.FullName @('/S')
 Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
-$racedPurgeWorker = New-UninstallerWorkerCopy -FilePath $uninstaller
+$racedPurgeWorker = $null
 $racedPurge = $null
 try {
+    $racedPurgeWorker = New-UninstallerWorkerCopy -FilePath $uninstaller
     $racedPurge = Start-Process -FilePath $racedPurgeWorker `
         -ArgumentList @(
             '/S',
@@ -799,18 +840,25 @@ try {
         throw "Purge exited before the marker-replacement test (exit $($racedPurge.ExitCode))."
     }
     [System.IO.File]::WriteAllText($marker, 'replaced-after-confirmation')
-    $racedPurge.WaitForExit()
+    if (-not $racedPurge.WaitForExit(30000)) {
+        throw 'Timed out waiting for the refused marker-replacement purge to exit.'
+    }
     if ($racedPurge.ExitCode -ne 2 -or
         -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
         throw 'Marker replacement after confirmation did not fail closed.'
     }
 } finally {
-    if ($null -ne $racedPurge -and -not $racedPurge.HasExited) {
-        $racedPurge.Kill($true)
-        $racedPurge.WaitForExit()
+    try {
+        Stop-UninstallerWorker -Process $racedPurge
+    } finally {
+        try {
+            if ($null -ne $racedPurgeWorker) {
+                Remove-Item -LiteralPath $racedPurgeWorker -Force -ErrorAction SilentlyContinue
+            }
+        } finally {
+            Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
+        }
     }
-    Remove-Item -LiteralPath $racedPurgeWorker -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
 }
 [System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
 
@@ -859,6 +907,22 @@ $unicodeUninstaller = Join-Path $unicodeInstall 'uninstall.exe'
 if (-not (Test-Path -LiteralPath $unicodeApp -PathType Leaf)) {
     throw "Unicode/space install did not produce the app at $unicodeApp."
 }
+
+# Exercise NSIS's documented worker form with a final, unquoted `_?=` value
+# whose remainder contains spaces and Unicode. The unsafe purge must expose
+# exact worker exit 2 and preserve both the custom app and owned data root.
+Start-LifecycleScenario 'reject purge worker with spaces and Unicode install path'
+[System.IO.File]::WriteAllText($marker, 'foreign-owner')
+Invoke-ExpectedUninstallFailure `
+    -FilePath $unicodeUninstaller `
+    -InstallDirectory $unicodeInstall `
+    -ArgumentList @('/S', '/PURGE-LSDJ-DATA') | Out-Null
+if (-not (Test-Path -LiteralPath $unicodeApp -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
+    throw 'Unicode/space worker invocation allowed uninstall or data removal.'
+}
+[System.IO.File]::WriteAllText($marker, 'works.protocol.lsdj')
+
 Invoke-CheckedProcess $unicodeUninstaller @('/S')
 Start-Sleep -Milliseconds 500
 if (Test-Path -LiteralPath $unicodeApp) {
