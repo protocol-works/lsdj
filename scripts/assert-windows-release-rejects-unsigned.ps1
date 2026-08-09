@@ -28,3 +28,4 @@ if ($rendered -notmatch 'Authenticode signature status is NotSigned') {
     throw "Release verification failed for an unexpected reason instead of rejecting an unsigned artifact:`n$rendered"
 }
 Write-Host 'Release signature verification correctly rejected the unsigned development installer.'
+exit 0
