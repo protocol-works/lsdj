@@ -112,7 +112,24 @@ def test_posix_liveness_semantics_are_preserved(monkeypatch, error, expected):
         raise error
 
     monkeypatch.setattr(gpu_broker.os, "kill", fail)
-    assert gpu_broker._pid_alive(gpu_broker.os.getpid() + 1000) is expected
+    assert gpu_broker._posix_pid_alive(gpu_broker.os.getpid() + 1000) is expected
+
+
+def test_pid_liveness_dispatches_to_the_host_platform(monkeypatch):
+    pid = gpu_broker.os.getpid() + 1000
+    calls = []
+    probe_name = (
+        "_windows_pid_alive" if gpu_broker.os.name == "nt" else "_posix_pid_alive"
+    )
+
+    monkeypatch.setattr(
+        gpu_broker,
+        probe_name,
+        lambda candidate: calls.append(candidate) or True,
+    )
+
+    assert gpu_broker._pid_alive(pid) is True
+    assert calls == [pid]
 
 
 def test_sa3_lease_is_bounded_by_measured_capacity(tmp_path):

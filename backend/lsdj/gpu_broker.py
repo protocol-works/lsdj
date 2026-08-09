@@ -100,13 +100,7 @@ def _windows_pid_alive(pid: int) -> bool:
         close_handle(handle)
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    if os.name == "nt":
-        return _windows_pid_alive(pid)
+def _posix_pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -114,6 +108,16 @@ def _pid_alive(pid: int) -> bool:
     except (PermissionError, OSError):
         return True
     return True
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
+    return _posix_pid_alive(pid)
 
 
 @contextlib.contextmanager
