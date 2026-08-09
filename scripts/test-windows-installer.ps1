@@ -137,9 +137,19 @@ function New-RecognizedLsdjLayout {
     }
 }
 
+function Start-LifecycleScenario {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name
+    )
+
+    Write-Host "[Windows installer lifecycle] $Name"
+}
+
 # An empty foreign root is still not evidence of ownership. This also proves
 # the hook's hidden root probe runs before Tauri's path-creating SetOutPath:
 # otherwise fresh and pre-existing empty roots would be indistinguishable.
+Start-LifecycleScenario 'reject pre-existing empty data root'
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
 if ((Test-Path -LiteralPath $marker) -or (Test-Path -LiteralPath $app)) {
@@ -149,6 +159,7 @@ Remove-Item -LiteralPath $dataRoot -Recurse -Force
 
 # A foreign pre-existing directory must never be claimed just because it has the
 # expected basename. The failed installer must not add a marker or payload.
+Start-LifecycleScenario 'reject foreign pre-existing data root'
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 $foreignSentinel = Join-Path $dataRoot 'foreign-owner.txt'
 [System.IO.File]::WriteAllText($foreignSentinel, 'not LSDJ')
@@ -162,6 +173,7 @@ Remove-Item -LiteralPath $dataRoot -Recurse -Force
 
 # A root junction must be rejected before either its target or an ownership
 # marker is touched.
+Start-LifecycleScenario 'reject install-time data-root junction'
 $rootJunctionTarget = Join-Path $env:RUNNER_TEMP 'lsdj-root-junction-target'
 New-Item -ItemType Directory -Path $rootJunctionTarget -Force | Out-Null
 $rootJunctionSentinel = Join-Path $rootJunctionTarget 'outside.txt'
@@ -177,6 +189,7 @@ Remove-Item -LiteralPath $rootJunctionTarget -Recurse -Force
 
 # Even an otherwise recognizable legacy layout is unsafe when its marker entry
 # is a junction/reparse point.
+Start-LifecycleScenario 'reject install-time ownership-marker junction'
 New-RecognizedLsdjLayout
 $installMarkerTarget = Join-Path $env:RUNNER_TEMP 'lsdj-install-marker-target'
 New-Item -ItemType Directory -Path $installMarkerTarget -Force | Out-Null
@@ -194,6 +207,7 @@ Remove-Item -LiteralPath $installMarkerTarget -Recurse -Force
 
 # A recognizable five-root shell is not safe to adopt if anything nested below
 # it is a junction. Installation must not mark or write through the link.
+Start-LifecycleScenario 'reject nested junction during legacy adoption'
 New-RecognizedLsdjLayout
 $installNestedTarget = Join-Path $env:RUNNER_TEMP 'lsdj-install-nested-target'
 New-Item -ItemType Directory -Path $installNestedTarget -Force | Out-Null
@@ -213,6 +227,7 @@ Remove-Item -LiteralPath $installNestedTarget -Recurse -Force
 
 # The one markerless migration case is the complete five-root layout created by
 # platform_paths.rs. It may be adopted, upgraded, and preserved normally.
+Start-LifecycleScenario 'adopt recognized markerless legacy layout'
 New-RecognizedLsdjLayout
 $legacySentinel = Join-Path $dataRoot 'data\recognized-layout.txt'
 [System.IO.File]::WriteAllText($legacySentinel, 'recognized LSDJ layout')
@@ -228,6 +243,7 @@ Remove-Item -LiteralPath $dataRoot -Recurse -Force
 
 # Initial per-user install: version metadata, Start menu integration, and the
 # marker that scopes the optional destructive uninstall.
+Start-LifecycleScenario 'fresh per-user install'
 Invoke-CheckedProcess $older.FullName @('/S')
 Require-InstalledVersion $OlderVersion
 if (-not (Test-Path -LiteralPath $startMenuShortcut -PathType Leaf)) {
@@ -246,6 +262,7 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $modelSentinel) -Force | 
 
 # Upgrade in place preserves app-managed data; the old signed/unsigned binary is
 # replaced and registry metadata follows the newer calendar version.
+Start-LifecycleScenario 'upgrade in place and preserve app-managed data'
 Invoke-CheckedProcess $newer.FullName @('/S', '/UPDATE')
 Require-InstalledVersion $NewerVersion
 foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
@@ -255,6 +272,7 @@ foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
 }
 
 # allowDowngrades=false must reject unattended rollback and leave the newer app.
+Start-LifecycleScenario 'reject unattended downgrade'
 Invoke-ExpectedFailure $older.FullName @('/S') | Out-Null
 Require-InstalledVersion $NewerVersion
 
@@ -272,6 +290,7 @@ if ($RequireSigned) {
 
 # The default uninstall removes application binaries and shortcuts but preserves
 # every app-owned runtime, model, setting, and user-data file.
+Start-LifecycleScenario 'default uninstall preserves app-managed data'
 Invoke-CheckedProcess $uninstaller @('/S')
 Start-Sleep -Milliseconds 500
 Require-No-Workers
@@ -289,6 +308,7 @@ foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
 
 # An invalid marker must make explicit automation fail closed while preserving
 # the exact root. Restore the installer-owned marker only after proving refusal.
+Start-LifecycleScenario 'reject purge with invalid ownership marker'
 Invoke-CheckedProcess $newer.FullName @('/S')
 [System.IO.File]::WriteAllText($marker, 'foreign-owner')
 Invoke-ExpectedFailure $uninstaller @('/S', '/PURGE-LSDJ-DATA') | Out-Null
@@ -301,6 +321,7 @@ if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
 # purge. The purge-time root junction check must stop before even Tauri's narrow
 # payload deletion, and
 # the outside target must remain byte-for-byte untouched.
+Start-LifecycleScenario 'reject purge after data-root junction replacement'
 Invoke-CheckedProcess $newer.FullName @('/S')
 $parkedRoot = Join-Path $env:RUNNER_TEMP 'lsdj-owned-root-parked'
 Move-Item -LiteralPath $dataRoot -Destination $parkedRoot
@@ -323,6 +344,7 @@ Move-Item -LiteralPath $parkedRoot -Destination $dataRoot
 
 # A marker junction is rejected both as ownership evidence and as a tree entry;
 # its outside target must remain untouched.
+Start-LifecycleScenario 'reject purge with ownership-marker junction'
 Invoke-CheckedProcess $newer.FullName @('/S')
 [System.IO.File]::Delete($marker)
 $purgeMarkerTarget = Join-Path $env:RUNNER_TEMP 'lsdj-purge-marker-target'
@@ -342,6 +364,7 @@ Remove-Item -LiteralPath $purgeMarkerTarget -Recurse -Force
 # Unsigned CI installers pause after the initial ownership/size decision and
 # core binary removal. Replace the marker during that window; the immediate
 # destructive revalidation must detect the change and preserve the root.
+Start-LifecycleScenario 'reject ownership-marker replacement after purge confirmation'
 Invoke-CheckedProcess $newer.FullName @('/S')
 Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
 $racedPurge = Start-Process -FilePath $uninstaller `
@@ -368,6 +391,7 @@ Remove-Item -LiteralPath $ciPurgeReady -Force -ErrorAction SilentlyContinue
 
 # Nested junctions are never traversed for size or removal. Purge refuses the
 # tree and leaves both the root and outside target intact.
+Start-LifecycleScenario 'reject purge with nested junction'
 Invoke-CheckedProcess $newer.FullName @('/S')
 $nestedTarget = Join-Path $env:RUNNER_TEMP 'lsdj-nested-junction-target'
 New-Item -ItemType Directory -Path $nestedTarget -Force | Out-Null
@@ -384,6 +408,7 @@ Remove-ReparseDirectoryEntry $nestedJunction
 Remove-Item -LiteralPath $nestedTarget -Recurse -Force
 
 # Explicit automation opt-in mirrors the GUI checkbox + path/size confirmation.
+Start-LifecycleScenario 'explicit purge removes owned data root'
 Invoke-CheckedProcess $newer.FullName @('/S')
 Invoke-CheckedProcess $uninstaller @('/S', '/PURGE-LSDJ-DATA')
 Start-Sleep -Milliseconds 500
@@ -394,6 +419,7 @@ Require-No-Workers
 
 # A non-default install location with spaces, Unicode, and a long (but pre-MAX_PATH)
 # directory proves package resources do not depend on Windows long-path support.
+Start-LifecycleScenario 'custom install path with spaces Unicode and long leaf'
 $longLeaf = ('path segment ' * 10).Trim()
 $unicodeInstall = Join-Path $env:RUNNER_TEMP "LSDJ installer 路径 $longLeaf"
 if ($unicodeInstall.Length -ge 240) {
@@ -414,6 +440,7 @@ if (Test-Path -LiteralPath $unicodeApp) {
 # The custom-location uninstall intentionally retains its remembered location.
 # Override it explicitly so the final purge cleans the isolated runner's normal
 # application/data root as well as the remembered-location registry state.
+Start-LifecycleScenario 'final explicit cleanup after custom install location'
 Invoke-CheckedProcess $newer.FullName @('/S', "/D=$dataRoot")
 Invoke-CheckedProcess $uninstaller @('/S', '/PURGE-LSDJ-DATA')
 Start-Sleep -Milliseconds 500
