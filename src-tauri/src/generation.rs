@@ -2,10 +2,11 @@
 //!
 //! The native shell hosts the realtime decks (the inference sidecars, [`crate::sidecar`])
 //! and serves the frontend from the Tauri asset host, so FastAPI no longer serves
-//! the UI. But the Stable Audio 3 / Magenta pad+track GENERATION still lives behind
-//! HTTP (`/api/render`, `/api/generate`). This module spawns the FastAPI generation
-//! server on a loopback port — the controller is generation-only: no deck workers, no
-//! static mount — and the webview fetches it via `getApiBaseUrl()`.
+//! the UI. This module supervises the Stable Audio 3 generation service on a
+//! loopback port. In managed Linux/Windows builds Magenta rendering belongs to
+//! the Rust gateway (`crate::magenta_gateway`), so this child receives no MRT2
+//! paths or dependencies. The bundled macOS backend retains its existing
+//! combined `/api/render` + `/api/generate` behavior.
 //!
 //! Mirrors the sidecar's spawn/supervise/Drop-kill pattern. Started with the app; a
 //! failed spawn just leaves generation unreachable (the UI already surfaces those as
@@ -25,9 +26,13 @@ use crate::child_process::{Readiness, SupervisedChild};
 /// webview via `app_info`) and the child process. Held in Tauri managed state;
 /// dropping it kills the child.
 pub struct GenerationServer {
+    state: Mutex<GenerationState>,
+}
+
+struct GenerationState {
     port: Option<u16>,
     capability: Option<String>,
-    child: Mutex<Option<SupervisedChild>>,
+    child: Option<SupervisedChild>,
 }
 
 impl GenerationServer {
@@ -35,25 +40,19 @@ impl GenerationServer {
     /// failed spawn yields `port() == None` and generation is simply unreachable (the
     /// webview surfaces that as fetch errors).
     pub fn start() -> GenerationServer {
-        let capability = crate::local_auth::generate_capability();
-        match Self::spawn(&capability) {
-            Ok((port, child)) => {
-                println!("lsdj-app: generation server on 127.0.0.1:{port}");
-                GenerationServer {
-                    port: Some(port),
-                    capability: Some(capability),
-                    child: Mutex::new(Some(child)),
-                }
-            }
-            Err(e) => {
-                eprintln!("lsdj-app: generation server spawn failed: {e}");
-                GenerationServer {
-                    port: None,
-                    capability: None,
-                    child: Mutex::new(None),
-                }
-            }
+        let server = GenerationServer {
+            state: Mutex::new(GenerationState {
+                port: None,
+                capability: None,
+                child: None,
+            }),
+        };
+        if let Err(error) = server.resume() {
+            // A fresh managed install intentionally has no runtime yet. The
+            // model manager calls `resume` immediately after first promotion.
+            eprintln!("lsdj-app: generation server unavailable: {error}");
         }
+        server
     }
 
     fn spawn(capability: &str) -> io::Result<(u16, SupervisedChild)> {
@@ -89,12 +88,62 @@ impl GenerationServer {
     /// The loopback port the generation server bound, or `None` if disabled / not
     /// running. The webview reads this through `app_info` to build the API base URL.
     pub fn port(&self) -> Option<u16> {
-        self.port
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .port
     }
 
     /// The in-memory capability paired with [`port`](Self::port). Never persisted.
     pub fn capability(&self) -> Option<String> {
-        self.capability.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .capability
+            .clone()
+    }
+
+    /// Start (or recover) the service from the currently promoted verified
+    /// generation. A running healthy child is left untouched. This is called on
+    /// startup and after every managed SA3 promotion/rollback.
+    pub fn resume(&self) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(child) = state.child.as_mut() {
+            if child.try_wait()?.is_none() {
+                return Ok(());
+            }
+            state.child = None;
+            state.port = None;
+            state.capability = None;
+        }
+        let capability = crate::local_auth::generate_capability();
+        let (port, child) = Self::spawn(&capability)?;
+        println!("lsdj-app: generation server on 127.0.0.1:{port}");
+        state.port = Some(port);
+        state.capability = Some(capability);
+        state.child = Some(child);
+        Ok(())
+    }
+
+    /// Stop and reap the service before its managed generation is renamed.
+    /// Returns whether a live child was present so tests/lifecycle diagnostics
+    /// can distinguish first install from an update.
+    pub fn quiesce(&self) -> io::Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.port = None;
+        state.capability = None;
+        let Some(mut child) = state.child.take() else {
+            return Ok(false);
+        };
+        let report = child.shutdown(Duration::from_millis(500))?;
+        crate::child_process::log_shutdown("generation server", Ok(report));
+        Ok(true)
     }
 
     /// Kill the generation server child. Called explicitly from the app's
@@ -102,11 +151,8 @@ impl GenerationServer {
     /// macOS quit (`process::exit` skips destructors), so [`Drop`] alone would
     /// leak the process.
     pub fn shutdown(&self) {
-        if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            crate::child_process::log_shutdown(
-                "generation server",
-                child.shutdown(Duration::from_millis(500)),
-            );
+        if let Err(error) = self.quiesce() {
+            crate::child_process::log_shutdown("generation server", Err(error));
         }
     }
 }
@@ -127,10 +173,17 @@ pub fn generation_command(port: u16, capability: &str) -> io::Result<Command> {
         use std::ffi::OsString;
 
         let paths = crate::platform_paths::get();
-        let ephemeral = paths.backend_env().into_iter().chain(std::iter::once((
-            OsString::from("LSDJ_API_CAPABILITY"),
-            OsString::from(capability),
-        )));
+        let ephemeral = paths
+            .backend_env()
+            .into_iter()
+            // The managed SA3 interpreter has its own dependency closure and
+            // receives no MRT2 location. This makes accidental `/api/render`
+            // use fail closed instead of coupling the services again.
+            .filter(|(name, _)| name.to_str() != Some("MAGENTA_HOME"))
+            .chain(std::iter::once((
+                OsString::from("LSDJ_API_CAPABILITY"),
+                OsString::from(capability),
+            )));
         crate::managed_runtime::resolve(
             paths.assets(),
             crate::managed_runtime::Service::Sa3,

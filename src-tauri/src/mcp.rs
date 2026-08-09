@@ -36,6 +36,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::{valid_deck, DrumModeArg, EqBandArg, FxKindArg};
 use crate::generation::GenerationServer;
+#[cfg(feature = "managed-runtime")]
+use crate::magenta_gateway::MagentaGateway;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
 use crate::songs::{NewSong, SongLibrary};
@@ -915,13 +917,36 @@ impl McpHandler {
     /// validation. `magenta` routes to the Magenta renderer (`/api/render`, body
     /// `{prompt, seconds}`); the rest are Stable Audio 3 (`/api/generate`).
     async fn generate_clip(&self, prompt: &str, seconds: f32, kind: &str) -> Result<Vec<u8>, String> {
-        let generation = self.app.state::<GenerationServer>();
-        let port = generation
-            .port()
-            .ok_or("the generation server is not running")?;
-        let capability = generation
-            .capability()
-            .ok_or("the generation server authentication capability is unavailable")?;
+        let (port, capability) = if kind == "magenta" {
+            #[cfg(feature = "managed-runtime")]
+            {
+                let gateway = self.app.state::<MagentaGateway>();
+                (
+                    gateway.port().ok_or("the Magenta gateway is not running")?,
+                    gateway
+                        .capability()
+                        .ok_or("the Magenta gateway authentication capability is unavailable")?,
+                )
+            }
+            #[cfg(not(feature = "managed-runtime"))]
+            {
+                let generation = self.app.state::<GenerationServer>();
+                (
+                    generation.port().ok_or("the generation server is not running")?,
+                    generation
+                        .capability()
+                        .ok_or("the generation server authentication capability is unavailable")?,
+                )
+            }
+        } else {
+            let generation = self.app.state::<GenerationServer>();
+            (
+                generation.port().ok_or("the generation server is not running")?,
+                generation
+                    .capability()
+                    .ok_or("the generation server authentication capability is unavailable")?,
+            )
+        };
         // sa3 generation is serialised; a full track (medium model) can take minutes,
         // so allow generous headroom but never wait forever for a wedged worker.
         let client = reqwest::Client::builder()

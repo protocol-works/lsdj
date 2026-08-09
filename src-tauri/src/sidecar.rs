@@ -657,6 +657,30 @@ pub struct SharedSidecar {
 }
 
 impl SharedSidecar {
+    /// Construct the shared CUDA topology without launching Python.  The native
+    /// engine's permanent ring producers remain parked here until a verified
+    /// managed MRT2 generation is installed (or a later retry succeeds).
+    pub fn parked(
+        models: [String; lsdj_engine::DECK_COUNT],
+        handles: [DeckHandle; lsdj_engine::DECK_COUNT],
+        on_status: DeckStatusSinks,
+        taps: PcmTaps,
+        feed: AnalysisFeed,
+    ) -> Self {
+        Self {
+            models,
+            taps,
+            feed,
+            on_status: on_status.map(|sink| Arc::new(Mutex::new(sink))),
+            control: Arc::new(Mutex::new(None)),
+            child: Arc::new(Mutex::new(None)),
+            stop: Arc::new(AtomicBool::new(true)),
+            reader: None,
+            parked: Some(SharedReaderExit { handles }),
+        }
+    }
+
+    #[cfg(all(test, not(feature = "managed-runtime")))]
     pub fn spawn(
         models: [String; lsdj_engine::DECK_COUNT],
         handles: [DeckHandle; lsdj_engine::DECK_COUNT],
@@ -664,27 +688,65 @@ impl SharedSidecar {
         taps: PcmTaps,
         feed: AnalysisFeed,
     ) -> Result<Self, (io::Error, [DeckHandle; lsdj_engine::DECK_COUNT])> {
-        let (listener, child, token) = match bind_and_launch_shared(&models) {
-            Ok(launch) => launch,
-            Err(error) => return Err((error, handles)),
-        };
-        let on_status = on_status.map(|sink| Arc::new(Mutex::new(sink)));
+        let mut sidecar = Self::parked(models, handles, on_status, taps, feed);
+        if let Err(error) = sidecar.activate() {
+            let handles = sidecar
+                .parked
+                .take()
+                .expect("failed shared activation preserves deck handles")
+                .handles;
+            return Err((error, handles));
+        }
+        Ok(sidecar)
+    }
+
+    /// Start a worker from parked handles.  Resolution and manifest validation
+    /// occur inside `bind_and_launch_shared` immediately before spawn, so an
+    /// install that completed after app startup becomes usable without restart.
+    pub fn activate(&mut self) -> io::Result<()> {
+        if self.reader.is_some() {
+            return Ok(());
+        }
+        if self.parked.is_none() {
+            return Err(io::Error::other(
+                "shared sidecar has no parked deck handles",
+            ));
+        }
+        let (listener, child, token) = bind_and_launch_shared(&self.models)?;
+        let exit = self
+            .parked
+            .take()
+            .ok_or_else(|| io::Error::other("shared sidecar has no parked deck handles"))?;
         let on_pcm: DeckPcmSinks = [
-            Box::new(pcm_tee(taps.clone(), feed.clone(), 0)),
-            Box::new(pcm_tee(taps.clone(), feed.clone(), 1)),
+            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 0)),
+            Box::new(pcm_tee(self.taps.clone(), self.feed.clone(), 1)),
         ];
-        let parts = start_shared_reader(listener, child, token, handles, on_status.clone(), on_pcm);
-        Ok(Self {
-            models,
-            taps,
-            feed,
-            on_status,
-            control: parts.control,
-            child: parts.child,
-            stop: parts.stop,
-            reader: Some(parts.reader),
-            parked: None,
-        })
+        let parts = start_shared_reader(
+            listener,
+            child,
+            token,
+            exit.handles,
+            self.on_status.clone(),
+            on_pcm,
+        );
+        self.control = parts.control;
+        self.child = parts.child;
+        self.stop = parts.stop;
+        self.reader = Some(parts.reader);
+        Ok(())
+    }
+
+    /// Stop and fully reap the worker while retaining the permanent deck ring
+    /// producers.  Promotion may rename the managed generation only after this
+    /// succeeds (notably on Windows, where a live Python process holds DLLs).
+    #[cfg(feature = "managed-runtime")]
+    pub fn quiesce(&mut self) -> io::Result<()> {
+        if self.reader.is_none() {
+            return Ok(());
+        }
+        let exit = self.stop_and_reclaim()?;
+        self.parked = Some(exit);
+        Ok(())
     }
 
     fn send_control(&self, deck: usize, json: &str) {
@@ -874,6 +936,28 @@ impl Sidecars {
                 .collect(),
             shared: Mutex::new(Some(shared)),
         }
+    }
+
+    /// Quiesce the managed shared worker before its verified generation is
+    /// renamed. A no-op for the macOS per-deck topology.
+    #[cfg(feature = "managed-runtime")]
+    pub fn quiesce_shared(&self) -> Result<(), String> {
+        let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(shared) = shared.as_mut() {
+            shared.quiesce().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Revalidate and activate a parked shared worker. This covers both first
+    /// install and post-promotion restart without reconstructing the audio host.
+    #[cfg(feature = "managed-runtime")]
+    pub fn resume_shared(&self) -> Result<(), String> {
+        let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        let shared = shared
+            .as_mut()
+            .ok_or_else(|| "shared MRT2 decks are unavailable on this platform".to_string())?;
+        shared.activate().map_err(|error| error.to_string())
     }
 
     /// Forward a JSON deck command to the sidecar for `deck` (a no-op for a deck
@@ -1074,16 +1158,48 @@ fn authenticated_sidecar_base_command(token: &str) -> io::Result<Command> {
     use std::ffi::OsString;
 
     let paths = crate::platform_paths::get();
-    let ephemeral = paths.backend_env().into_iter().chain(std::iter::once((
-        OsString::from("LSDJ_WORKER_LAUNCH_TOKEN"),
-        OsString::from(token),
-    )));
+    let ephemeral = paths
+        .backend_env()
+        .into_iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.to_str(),
+                Some("SA3_HOME" | "SA3_MLX_HOME" | "SA3_LORAS_HOME")
+            )
+        })
+        .chain(std::iter::once((
+            OsString::from("LSDJ_WORKER_LAUNCH_TOKEN"),
+            OsString::from(token),
+        )));
     crate::managed_runtime::resolve(
         paths.assets(),
         crate::managed_runtime::Service::Mrt2,
     )
     .and_then(|resolved| resolved.into_command([], ephemeral))
     .map_err(io::Error::other)
+}
+
+/// Build the dedicated managed MRT2 renderer command.  The render worker is a
+/// separate, disposable process from both realtime decks and the SA3 server;
+/// every launch re-resolves and revalidates the promoted MRT2 manifest and gets
+/// a fresh one-use loopback capability.
+#[cfg(feature = "managed-runtime")]
+pub(crate) fn authenticated_render_worker_command(
+    model: &str,
+    port: u16,
+    token: &str,
+) -> io::Result<Command> {
+    let mut command = authenticated_sidecar_base_command(token)?;
+    command.args([
+        "--render-worker",
+        "--model",
+        model,
+        "--runtime",
+        "pytorch-cuda",
+        "--port",
+        &port.to_string(),
+    ]);
+    Ok(command)
 }
 
 /// Runtime selected by the native platform.  The value is always sent over the
@@ -1217,6 +1333,31 @@ mod tests {
         } else {
             assert_eq!(runtime, "pytorch-cuda");
         }
+    }
+
+    #[test]
+    fn shared_deck_handles_can_park_until_the_first_managed_install() {
+        let mut engine = Engine::new();
+        let handles = [engine.create_deck(0), engine.create_deck(1)];
+        let sinks: DeckStatusSinks = std::array::from_fn(|_| {
+            Box::new(|_message| {}) as StatusSink
+        });
+        let shared = SharedSidecar::parked(
+            ["mrt2_small".into(), "mrt2_small".into()],
+            handles,
+            sinks,
+            PcmTaps::new(lsdj_engine::DECK_COUNT),
+            AnalysisFeed::disconnected(lsdj_engine::DECK_COUNT),
+        );
+
+        assert!(shared.reader.is_none());
+        assert!(shared.parked.is_some());
+        assert!(shared
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none());
+        assert!(shared.stop.load(Ordering::Acquire));
     }
 
     #[test]

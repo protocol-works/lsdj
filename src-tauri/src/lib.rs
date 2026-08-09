@@ -46,6 +46,8 @@ mod generation;
 mod library;
 mod local_auth;
 mod loras;
+#[cfg(feature = "managed-runtime")]
+mod magenta_gateway;
 #[cfg_attr(not(feature = "managed-runtime"), allow(dead_code))]
 mod managed_runtime;
 mod mcp;
@@ -251,22 +253,20 @@ fn start_sidecars(
             sidecar_status_sink(app.clone(), 0, feed.clone()),
             sidecar_status_sink(app.clone(), 1, feed.clone()),
         ];
-        return match sidecar::SharedSidecar::spawn(
+        let mut shared = sidecar::SharedSidecar::parked(
             models,
             handles,
             sinks,
             taps.clone(),
             feed.clone(),
-        ) {
-            Ok(shared) => (sidecar::Sidecars::new_shared(shared), Vec::new()),
-            Err((error, handles)) => {
-                eprintln!("lsdj-app: shared MRT2 sidecar spawn failed: {error}");
-                (
-                    sidecar::Sidecars::new((0..lsdj_engine::DECK_COUNT).map(|_| None).collect()),
-                    handles.into_iter().collect(),
-                )
-            }
-        };
+        );
+        if let Err(error) = shared.activate() {
+            // A fresh managed install has no runtime yet. Keep both permanent
+            // DeckHandles parked inside the supervisor; the first MRT2 install
+            // activates this same topology without restarting the app.
+            eprintln!("lsdj-app: shared MRT2 sidecar unavailable: {error}");
+        }
+        return (sidecar::Sidecars::new_shared(shared), Vec::new());
     }
 
     let mut decks = Vec::new();
@@ -305,6 +305,11 @@ struct AppInfo {
     /// Per-launch bearer capability for the generation service. It exists only in
     /// Rust state/the webview process and is never written to settings or logs.
     generation_capability: Option<String>,
+    /// Managed Linux/Windows route Magenta through a separate Rust-owned
+    /// gateway. On bundled macOS these mirror the combined generation service,
+    /// preserving its established behavior.
+    magenta_port: Option<u16>,
+    magenta_capability: Option<String>,
     /// The loopback port the MCP server bound (`None` only if the loopback bind
     /// failed — the server is otherwise always on), and the bearer token a client must
     /// present (ADR-0020 Phase 2). Surfaced so the client config can point at
@@ -315,15 +320,27 @@ struct AppInfo {
 
 #[tauri::command]
 fn app_info(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AudioState>,
     generation: tauri::State<'_, generation::GenerationServer>,
     mcp: tauri::State<'_, mcp::McpServer>,
 ) -> AppInfo {
+    #[cfg(feature = "managed-runtime")]
+    let (magenta_port, magenta_capability) = {
+        let gateway = app.state::<magenta_gateway::MagentaGateway>();
+        (gateway.port(), gateway.capability())
+    };
+    #[cfg(not(feature = "managed-runtime"))]
+    let (magenta_port, magenta_capability) = (generation.port(), generation.capability());
+    #[cfg(not(feature = "managed-runtime"))]
+    let _ = app;
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         audio_device_started: state.device_started,
         generation_port: generation.port(),
         generation_capability: generation.capability(),
+        magenta_port,
+        magenta_capability,
         mcp_port: mcp.port(),
         mcp_token: mcp.token(),
     }
@@ -618,6 +635,8 @@ pub fn run() {
             // The sa3/Magenta generation server (gap 2): the gen-only FastAPI on a
             // loopback port the webview fetches; started with the app.
             let generation_server = generation::GenerationServer::start();
+            #[cfg(feature = "managed-runtime")]
+            let magenta_gateway = magenta_gateway::MagentaGateway::start();
             // The generated-songs library: the durable-data root from the platform
             // contract plus a JSON registry the take list restores from. On macOS
             // this remains Documents/LSDJ. Auto-save / list / load / delete all go
@@ -795,6 +814,8 @@ pub fn run() {
             app.manage(analysis_feed);
             app.manage(analysis::track::TrackAnalysis::new(lsdj_engine::DECK_COUNT));
             app.manage(generation_server);
+            #[cfg(feature = "managed-runtime")]
+            app.manage(magenta_gateway);
             // The native MCP server (ADR-0020 Phase 2): an external agent as a
             // co-DJ. Always on, loopback-only, token-guarded; its tools mutate the
             // same managed state the IPC commands do. Reaches that state through the
@@ -918,6 +939,8 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
                 app.state::<generation::GenerationServer>().shutdown();
+                #[cfg(feature = "managed-runtime")]
+                app.state::<magenta_gateway::MagentaGateway>().shutdown();
                 app.state::<sidecar::Sidecars>().shutdown();
                 app.state::<models::InstallManager>().shutdown();
                 app.state::<mcp::McpServer>().shutdown();

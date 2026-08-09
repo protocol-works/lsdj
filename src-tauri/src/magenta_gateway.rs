@@ -1,0 +1,1405 @@
+//! Native, authenticated Magenta render gateway for managed Linux/Windows.
+//!
+//! The public loopback HTTP service is deliberately separate from Stable Audio
+//! 3. It owns one lazy, warm, disposable MRT2 render worker and translates the
+//! user-facing `{prompt, seconds}` request into the reviewed binary protocol's
+//! authoritative integer frame count and monotonic sequence. Every response is
+//! bounded, sequence-bound, byte-counted, and SHA-256 checked before it becomes
+//! a WAV. A cancellation, deadline, dropped HTTP request, or protocol mismatch
+//! tears down and reaps the complete worker process tree; the next request starts
+//! from a freshly revalidated managed generation.
+
+use std::collections::BTreeMap;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::Router;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
+
+use crate::child_process::SupervisedChild;
+
+const FRAME_STATUS: u8 = 2;
+const FRAME_AUTH: u8 = 5;
+const FRAME_RENDER_REQUEST: u8 = 6;
+const FRAME_RENDER_BEGIN: u8 = 7;
+const FRAME_RENDER_CHUNK: u8 = 8;
+const FRAME_RENDER_END: u8 = 9;
+const FRAME_RENDER_CANCEL: u8 = 10;
+const FRAME_RENDER_ERROR: u8 = 11;
+
+const RENDER_SCHEMA_VERSION: u32 = 1;
+const RENDER_SAMPLE_RATE: u64 = 48_000;
+const RENDER_CHANNELS: u64 = 2;
+const RENDER_BYTES_PER_FRAME: u64 = RENDER_CHANNELS * 4;
+const MIN_RENDER_FRAMES: u64 = 24_000;
+const MAX_RENDER_FRAMES: u64 = 8_640_000;
+const MAX_RENDER_PCM_BYTES: usize = (MAX_RENDER_FRAMES * RENDER_BYTES_PER_FRAME) as usize;
+const MAX_RENDER_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_RENDER_PROMPT_CHARS: usize = 32_000;
+const MAX_RENDER_CONTROL_BYTES: usize = 1024;
+const MAX_RENDER_METADATA_BYTES: usize = 8 * 1024;
+const MAX_RENDER_CHUNK_BYTES: usize = 1024 * 1024;
+const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
+const READY_TIMEOUT: Duration = Duration::from_secs(180);
+const IO_POLL: Duration = Duration::from_millis(50);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const SAFE_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureKind {
+    Unavailable,
+    Protocol,
+    Deadline,
+    Cancelled,
+}
+
+#[derive(Debug)]
+struct RenderFailure {
+    kind: FailureKind,
+    detail: &'static str,
+}
+
+impl RenderFailure {
+    fn unavailable() -> Self {
+        Self {
+            kind: FailureKind::Unavailable,
+            detail: "Magenta runtime is not installed or failed verification",
+        }
+    }
+
+    fn protocol(detail: &'static str) -> Self {
+        Self {
+            kind: FailureKind::Protocol,
+            detail,
+        }
+    }
+
+    fn deadline() -> Self {
+        Self {
+            kind: FailureKind::Deadline,
+            detail: "Magenta render timed out",
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            kind: FailureKind::Cancelled,
+            detail: "Magenta render was cancelled",
+        }
+    }
+}
+
+impl From<io::Error> for RenderFailure {
+    fn from(_: io::Error) -> Self {
+        Self::protocol("Magenta render worker connection failed")
+    }
+}
+
+#[derive(Clone)]
+struct RequestCancellation {
+    request: Arc<AtomicBool>,
+    lifecycle: Arc<AtomicBool>,
+}
+
+impl RequestCancellation {
+    fn cancelled(&self) -> bool {
+        self.request.load(Ordering::Acquire) || self.lifecycle.load(Ordering::Acquire)
+    }
+}
+
+struct CancelOnDrop {
+    flag: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Release);
+        }
+    }
+}
+
+trait ProcessTree: Send {
+    fn shutdown(&mut self) -> io::Result<()>;
+}
+
+struct ManagedProcess {
+    child: SupervisedChild,
+}
+
+impl ProcessTree for ManagedProcess {
+    fn shutdown(&mut self) -> io::Result<()> {
+        let report = self.child.shutdown(Duration::from_millis(500))?;
+        crate::child_process::log_shutdown("MRT2 render worker", Ok(report));
+        Ok(())
+    }
+}
+
+struct ManagedRenderWorker {
+    stream: TcpStream,
+    process: Box<dyn ProcessTree>,
+}
+
+impl ManagedRenderWorker {
+    fn render(
+        &mut self,
+        request: &WorkerRenderRequest,
+        cancellation: &RequestCancellation,
+    ) -> Result<Vec<u8>, RenderFailure> {
+        let payload = serde_json::to_vec(request)
+            .map_err(|_| RenderFailure::protocol("Magenta render request is invalid"))?;
+        if payload.len() > MAX_RENDER_REQUEST_BYTES {
+            return Err(RenderFailure::protocol(
+                "Magenta render request is too large",
+            ));
+        }
+        self.stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+        write_frame(&mut self.stream, FRAME_RENDER_REQUEST, &payload)?;
+        let duration = request.frames as f64 / RENDER_SAMPLE_RATE as f64;
+        let deadline = Instant::now() + Duration::from_secs_f64((duration * 2.0).max(90.0));
+        match read_render_response(&mut self.stream, request, cancellation, deadline) {
+            Err(error) if error.kind == FailureKind::Cancelled => {
+                let cancel = WorkerRenderCancel {
+                    schema_version: RENDER_SCHEMA_VERSION,
+                    job_id: request.job_id.clone(),
+                    sequence: request.sequence,
+                };
+                if let Ok(payload) = serde_json::to_vec(&cancel) {
+                    if payload.len() <= MAX_RENDER_CONTROL_BYTES {
+                        let _ = write_frame(&mut self.stream, FRAME_RENDER_CANCEL, &payload);
+                    }
+                }
+                Err(error)
+            }
+            result => result,
+        }
+    }
+
+    fn shutdown(&mut self) -> io::Result<()> {
+        let _ = self.stream.shutdown(Shutdown::Both);
+        self.process.shutdown()
+    }
+}
+
+trait WorkerFactory: Send + Sync {
+    fn spawn(
+        &self,
+        cancellation: &RequestCancellation,
+    ) -> Result<ManagedRenderWorker, RenderFailure>;
+}
+
+struct ManagedWorkerFactory;
+
+impl WorkerFactory for ManagedWorkerFactory {
+    fn spawn(
+        &self,
+        cancellation: &RequestCancellation,
+    ) -> Result<ManagedRenderWorker, RenderFailure> {
+        spawn_managed_worker(cancellation)
+    }
+}
+
+struct GatewayCore {
+    worker: Mutex<Option<ManagedRenderWorker>>,
+    factory: Arc<dyn WorkerFactory>,
+    next_sequence: AtomicU64,
+    lifecycle: Mutex<Arc<AtomicBool>>,
+    quiescing: AtomicBool,
+}
+
+impl GatewayCore {
+    fn new(factory: Arc<dyn WorkerFactory>) -> Self {
+        Self {
+            worker: Mutex::new(None),
+            factory,
+            next_sequence: AtomicU64::new(1),
+            lifecycle: Mutex::new(Arc::new(AtomicBool::new(false))),
+            quiescing: AtomicBool::new(false),
+        }
+    }
+
+    fn cancellation(&self, request: Arc<AtomicBool>) -> RequestCancellation {
+        RequestCancellation {
+            request,
+            lifecycle: self
+                .lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        }
+    }
+
+    fn sequence(&self) -> Result<u64, RenderFailure> {
+        self.next_sequence
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                (value < u64::MAX).then_some(value + 1)
+            })
+            .map_err(|_| RenderFailure::protocol("Magenta render sequence is exhausted"))
+    }
+
+    fn render(
+        &self,
+        prompt: String,
+        frames: u64,
+        request_cancel: Arc<AtomicBool>,
+    ) -> Result<Vec<u8>, RenderFailure> {
+        if self.quiescing.load(Ordering::Acquire) {
+            return Err(RenderFailure::unavailable());
+        }
+        let cancellation = self.cancellation(request_cancel);
+        if cancellation.cancelled() {
+            return Err(RenderFailure::cancelled());
+        }
+        let sequence = self.sequence()?;
+        let request = WorkerRenderRequest {
+            schema_version: RENDER_SCHEMA_VERSION,
+            job_id: format!("render-{:032x}", rand::random::<u128>()),
+            sequence,
+            prompt,
+            frames,
+        };
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if cancellation.cancelled() || self.quiescing.load(Ordering::Acquire) {
+            return Err(RenderFailure::cancelled());
+        }
+        if worker.is_none() {
+            *worker = Some(self.factory.spawn(&cancellation)?);
+        }
+        let result = worker
+            .as_mut()
+            .expect("worker was installed")
+            .render(&request, &cancellation);
+        if result.is_err() {
+            if let Some(mut failed) = worker.take() {
+                if failed.shutdown().is_err() {
+                    // Keep ownership so a later quiesce can retry and, most
+                    // importantly, an installer cannot mistake an uncertain
+                    // process-tree state for "reaped" before a Windows rename.
+                    *worker = Some(failed);
+                    return Err(RenderFailure::protocol(
+                        "Magenta render worker could not be reaped",
+                    ));
+                }
+            }
+        }
+        result
+    }
+
+    /// Cancel in-flight/queued renders, then kill and reap the warm worker.
+    /// Returns whether a worker was resident before the quiesce.
+    fn quiesce(&self) -> Result<bool, String> {
+        self.quiescing.store(true, Ordering::Release);
+        self.lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .store(true, Ordering::Release);
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(mut resident) = worker.take() else {
+            return Ok(false);
+        };
+        match resident.shutdown() {
+            Ok(()) => Ok(true),
+            Err(_) => {
+                *worker = Some(resident);
+                Err("Magenta render worker could not be reaped".to_string())
+            }
+        }
+    }
+
+    /// Open a fresh request generation. If an update displaced a previously warm
+    /// renderer, eagerly restore it from the now-current verified generation.
+    fn resume(&self, restore_warm_worker: bool) -> Result<(), String> {
+        *self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(AtomicBool::new(false));
+        self.quiescing.store(false, Ordering::Release);
+        if !restore_warm_worker {
+            return Ok(());
+        }
+        let cancellation = self.cancellation(Arc::new(AtomicBool::new(false)));
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if worker.is_none() {
+            *worker = Some(
+                self.factory
+                    .spawn(&cancellation)
+                    .map_err(|error| error.detail.to_string())?,
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct HttpState {
+    core: Arc<GatewayCore>,
+}
+
+#[derive(Clone)]
+struct AuthState {
+    capability: Arc<str>,
+}
+
+/// The always-available public HTTP gateway. Absence of an MRT2 runtime affects
+/// only render requests; it never prevents the window, model manager, or model
+/// status endpoint from starting.
+pub struct MagentaGateway {
+    port: Option<u16>,
+    capability: String,
+    cancel: CancellationToken,
+    core: Arc<GatewayCore>,
+}
+
+impl MagentaGateway {
+    pub fn start() -> Self {
+        let capability = crate::local_auth::generate_capability();
+        let core = Arc::new(GatewayCore::new(Arc::new(ManagedWorkerFactory)));
+        match bind_loopback() {
+            Ok((listener, port)) => {
+                let cancel = serve(listener, port, &capability, core.clone());
+                Self {
+                    port: Some(port),
+                    capability,
+                    cancel,
+                    core,
+                }
+            }
+            Err(error) => {
+                eprintln!("lsdj-app: Magenta gateway bind failed: {error}");
+                Self {
+                    port: None,
+                    capability,
+                    cancel: CancellationToken::new(),
+                    core,
+                }
+            }
+        }
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    pub fn capability(&self) -> Option<String> {
+        self.port.map(|_| self.capability.clone())
+    }
+
+    pub fn quiesce(&self) -> Result<bool, String> {
+        self.core.quiesce()
+    }
+
+    pub fn resume(&self, restore_warm_worker: bool) -> Result<(), String> {
+        self.core.resume(restore_warm_worker)
+    }
+
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
+        if let Err(error) = self.core.quiesce() {
+            eprintln!("lsdj-app: Magenta gateway shutdown failed: {error}");
+        }
+    }
+}
+
+impl Drop for MagentaGateway {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HttpRenderRequest {
+    prompt: String,
+    seconds: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerRenderRequest {
+    schema_version: u32,
+    job_id: String,
+    sequence: u64,
+    prompt: String,
+    frames: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerRenderCancel {
+    schema_version: u32,
+    job_id: String,
+    sequence: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenderReady {
+    schema_version: u32,
+    event: String,
+    model: String,
+    runtime: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenderBegin {
+    schema_version: u32,
+    job_id: String,
+    sequence: u64,
+    sample_rate: u64,
+    channels: u64,
+    sample_format: String,
+    frames: u64,
+    pcm_bytes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenderEnd {
+    schema_version: u32,
+    job_id: String,
+    sequence: u64,
+    frames: u64,
+    pcm_bytes: u64,
+    sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenderError {
+    schema_version: u32,
+    job_id: Option<String>,
+    sequence: u64,
+    code: String,
+    message: String,
+}
+
+async fn render_clip(State(state): State<HttpState>, body: Bytes) -> Response {
+    if body.len() > MAX_RENDER_REQUEST_BYTES {
+        return json_error(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large");
+    }
+    let parsed: HttpRenderRequest = match serde_json::from_slice(&body) {
+        Ok(parsed) => parsed,
+        Err(_) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, "body must be JSON"),
+    };
+    let prompt = parsed.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return json_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "'prompt' must be a non-empty string",
+        );
+    }
+    if prompt.chars().count() > MAX_RENDER_PROMPT_CHARS {
+        return json_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "'prompt' must be at most 32000 characters",
+        );
+    }
+    let frames = match frames_for_seconds(parsed.seconds) {
+        Some(frames) => frames,
+        None => {
+            return json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "'seconds' must be 0.5-180",
+            )
+        }
+    };
+
+    let request_cancel = Arc::new(AtomicBool::new(false));
+    let mut drop_guard = CancelOnDrop::new(request_cancel.clone());
+    let core = state.core.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || core.render(prompt, frames, request_cancel))
+            .await;
+    drop_guard.disarm();
+    match result {
+        Ok(Ok(pcm)) => match float32_wav(&pcm) {
+            Ok(wav) => (StatusCode::OK, [(header::CONTENT_TYPE, "audio/wav")], wav).into_response(),
+            Err(_) => json_error(StatusCode::BAD_GATEWAY, "Magenta returned invalid audio"),
+        },
+        Ok(Err(error)) => failure_response(error),
+        Err(_) => json_error(StatusCode::BAD_GATEWAY, "Magenta render task failed"),
+    }
+}
+
+async fn model_info() -> Response {
+    let mut estimates = BTreeMap::new();
+    estimates.insert("mrt2_small", 2.0);
+    estimates.insert("mrt2_base", 6.0);
+    axum::Json(serde_json::json!({
+        "models": crate::models::magenta_models_for_gateway(),
+        "sample_rate": RENDER_SAMPLE_RATE,
+        "channels": RENDER_CHANNELS,
+        "chunk_seconds": 1.0,
+        "total_ram_gb": total_ram_gb(),
+        "model_ram_estimate_gb": estimates,
+    }))
+    .into_response()
+}
+
+fn failure_response(error: RenderFailure) -> Response {
+    let status = match error.kind {
+        FailureKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        FailureKind::Protocol => StatusCode::BAD_GATEWAY,
+        FailureKind::Deadline => StatusCode::GATEWAY_TIMEOUT,
+        FailureKind::Cancelled => StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_GATEWAY),
+    };
+    json_error(status, error.detail)
+}
+
+fn json_error(status: StatusCode, detail: &str) -> Response {
+    (status, axum::Json(serde_json::json!({ "detail": detail }))).into_response()
+}
+
+fn frames_for_seconds(seconds: f64) -> Option<u64> {
+    if !seconds.is_finite() || !(0.5..=180.0).contains(&seconds) {
+        return None;
+    }
+    let frames = (seconds * RENDER_SAMPLE_RATE as f64 + 0.5).floor() as u64;
+    (MIN_RENDER_FRAMES..=MAX_RENDER_FRAMES)
+        .contains(&frames)
+        .then_some(frames)
+}
+
+fn float32_wav(pcm: &[u8]) -> Result<Vec<u8>, ()> {
+    if pcm.len() > MAX_RENDER_PCM_BYTES
+        || !pcm.len().is_multiple_of(RENDER_BYTES_PER_FRAME as usize)
+    {
+        return Err(());
+    }
+    let data_len = u32::try_from(pcm.len()).map_err(|_| ())?;
+    let riff_len = 36u32.checked_add(data_len).ok_or(())?;
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&riff_len.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&3u16.to_le_bytes());
+    wav.extend_from_slice(&(RENDER_CHANNELS as u16).to_le_bytes());
+    wav.extend_from_slice(&(RENDER_SAMPLE_RATE as u32).to_le_bytes());
+    wav.extend_from_slice(&((RENDER_SAMPLE_RATE * RENDER_BYTES_PER_FRAME) as u32).to_le_bytes());
+    wav.extend_from_slice(&(RENDER_BYTES_PER_FRAME as u16).to_le_bytes());
+    wav.extend_from_slice(&32u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(pcm);
+    Ok(wav)
+}
+
+fn spawn_managed_worker(
+    cancellation: &RequestCancellation,
+) -> Result<ManagedRenderWorker, RenderFailure> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| RenderFailure::unavailable())?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|_| RenderFailure::unavailable())?;
+    let port = listener
+        .local_addr()
+        .map_err(|_| RenderFailure::unavailable())?
+        .port();
+    let token = crate::local_auth::generate_capability();
+    let mut command =
+        crate::sidecar::authenticated_render_worker_command(crate::DEFAULT_MODEL, port, &token)
+            .map_err(|_| RenderFailure::unavailable())?;
+    let mut child = crate::child_process::spawn_grouped(&mut command)
+        .map_err(|_| RenderFailure::unavailable())?;
+
+    let result =
+        accept_worker(&listener, &mut child, &token, cancellation).and_then(|mut stream| {
+            stream.set_nodelay(true).ok();
+            let ready_deadline = Instant::now() + READY_TIMEOUT;
+            let (frame_type, payload) = read_bounded_frame(
+                &mut stream,
+                &[FRAME_STATUS, FRAME_RENDER_ERROR],
+                MAX_RENDER_METADATA_BYTES,
+                cancellation,
+                ready_deadline,
+            )?;
+            if frame_type == FRAME_RENDER_ERROR {
+                validate_startup_error(&payload)?;
+                return Err(RenderFailure::unavailable());
+            }
+            let ready: RenderReady = serde_json::from_slice(&payload)
+                .map_err(|_| RenderFailure::protocol("Magenta worker readiness is invalid"))?;
+            if ready.schema_version != RENDER_SCHEMA_VERSION
+                || ready.event != "render_ready"
+                || ready.model != crate::DEFAULT_MODEL
+                || ready.runtime != "pytorch-cuda"
+            {
+                return Err(RenderFailure::protocol(
+                    "Magenta worker readiness is invalid",
+                ));
+            }
+            Ok(stream)
+        });
+    match result {
+        Ok(stream) => Ok(ManagedRenderWorker {
+            stream,
+            process: Box::new(ManagedProcess { child }),
+        }),
+        Err(error) => {
+            let _ = child.force_kill();
+            Err(error)
+        }
+    }
+}
+
+fn accept_worker(
+    listener: &TcpListener,
+    child: &mut SupervisedChild,
+    token: &str,
+    cancellation: &RequestCancellation,
+) -> Result<TcpStream, RenderFailure> {
+    let deadline = Instant::now() + ACCEPT_TIMEOUT;
+    loop {
+        if cancellation.cancelled() {
+            return Err(RenderFailure::cancelled());
+        }
+        if Instant::now() >= deadline {
+            return Err(RenderFailure::deadline());
+        }
+        if child
+            .try_wait()
+            .map_err(|_| RenderFailure::unavailable())?
+            .is_some()
+        {
+            return Err(RenderFailure::unavailable());
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                // The launch token is single-use: the first connection attempt
+                // consumes it, even when authentication fails.
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|_| RenderFailure::protocol("Magenta worker connection failed"))?;
+                stream
+                    .set_read_timeout(Some(IO_POLL))
+                    .map_err(|_| RenderFailure::protocol("Magenta worker connection failed"))?;
+                let (frame_type, payload) = read_bounded_frame(
+                    &mut stream,
+                    &[FRAME_AUTH],
+                    256,
+                    cancellation,
+                    deadline.min(Instant::now() + Duration::from_secs(1)),
+                )?;
+                if frame_type != FRAME_AUTH
+                    || !(32..=256).contains(&payload.len())
+                    || !crate::local_auth::constant_time_eq(&payload, token.as_bytes())
+                {
+                    return Err(RenderFailure::protocol(
+                        "Magenta worker authentication failed",
+                    ));
+                }
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(IO_POLL);
+            }
+            Err(_) => return Err(RenderFailure::unavailable()),
+        }
+    }
+}
+
+fn validate_startup_error(payload: &[u8]) -> Result<(), RenderFailure> {
+    let error: RenderError = serde_json::from_slice(payload)
+        .map_err(|_| RenderFailure::protocol("Magenta worker error is invalid"))?;
+    if error.schema_version != RENDER_SCHEMA_VERSION
+        || error.job_id.is_some()
+        || error.sequence != 0
+        || error.code.is_empty()
+        || error.code.len() > 64
+        || error.message.len() > 512
+    {
+        return Err(RenderFailure::protocol("Magenta worker error is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_render_error(
+    payload: &[u8],
+    request: &WorkerRenderRequest,
+) -> Result<(), RenderFailure> {
+    let error: RenderError = serde_json::from_slice(payload)
+        .map_err(|_| RenderFailure::protocol("Magenta worker error is invalid"))?;
+    if error.schema_version != RENDER_SCHEMA_VERSION
+        || error.job_id.as_deref() != Some(&request.job_id)
+        || error.sequence != request.sequence
+        || error.code.is_empty()
+        || error.code.len() > 64
+        || error.message.len() > 512
+    {
+        return Err(RenderFailure::protocol("Magenta worker error is invalid"));
+    }
+    Err(RenderFailure::protocol("Magenta render worker failed"))
+}
+
+fn read_render_response(
+    stream: &mut TcpStream,
+    request: &WorkerRenderRequest,
+    cancellation: &RequestCancellation,
+    deadline: Instant,
+) -> Result<Vec<u8>, RenderFailure> {
+    let (frame_type, payload) = read_bounded_frame(
+        stream,
+        &[FRAME_RENDER_BEGIN, FRAME_RENDER_ERROR],
+        MAX_RENDER_METADATA_BYTES,
+        cancellation,
+        deadline,
+    )?;
+    if frame_type == FRAME_RENDER_ERROR {
+        validate_render_error(&payload, request)?;
+        unreachable!("a valid worker error is returned as a render failure");
+    }
+    let begin: RenderBegin = serde_json::from_slice(&payload)
+        .map_err(|_| RenderFailure::protocol("Magenta render begin is invalid"))?;
+    let expected_bytes = request
+        .frames
+        .checked_mul(RENDER_BYTES_PER_FRAME)
+        .ok_or_else(|| RenderFailure::protocol("Magenta render size overflow"))?;
+    if begin.schema_version != RENDER_SCHEMA_VERSION
+        || begin.job_id != request.job_id
+        || begin.sequence != request.sequence
+        || begin.sample_rate != RENDER_SAMPLE_RATE
+        || begin.channels != RENDER_CHANNELS
+        || begin.sample_format != "f32le"
+        || begin.frames != request.frames
+        || begin.pcm_bytes != expected_bytes
+        || begin.pcm_bytes as usize > MAX_RENDER_PCM_BYTES
+    {
+        return Err(RenderFailure::protocol("Magenta render begin is invalid"));
+    }
+
+    let mut pcm = Vec::with_capacity(expected_bytes as usize);
+    let mut digest = Sha256::new();
+    loop {
+        let (frame_type, payload) = read_bounded_frame(
+            stream,
+            &[FRAME_RENDER_CHUNK, FRAME_RENDER_END, FRAME_RENDER_ERROR],
+            MAX_RENDER_CHUNK_BYTES,
+            cancellation,
+            deadline,
+        )?;
+        match frame_type {
+            FRAME_RENDER_CHUNK => {
+                if payload.is_empty()
+                    || !payload
+                        .len()
+                        .is_multiple_of(RENDER_BYTES_PER_FRAME as usize)
+                    || pcm.len().saturating_add(payload.len()) > expected_bytes as usize
+                {
+                    return Err(RenderFailure::protocol("Magenta PCM chunk is invalid"));
+                }
+                digest.update(&payload);
+                pcm.extend_from_slice(&payload);
+            }
+            FRAME_RENDER_ERROR => {
+                if payload.len() > MAX_RENDER_METADATA_BYTES {
+                    return Err(RenderFailure::protocol("Magenta worker error is too large"));
+                }
+                validate_render_error(&payload, request)?;
+                unreachable!("a valid worker error is returned as a render failure");
+            }
+            FRAME_RENDER_END => {
+                if payload.len() > MAX_RENDER_METADATA_BYTES {
+                    return Err(RenderFailure::protocol("Magenta render end is too large"));
+                }
+                let end: RenderEnd = serde_json::from_slice(&payload)
+                    .map_err(|_| RenderFailure::protocol("Magenta render end is invalid"))?;
+                let actual_hash = hex::encode(digest.finalize());
+                if end.schema_version != RENDER_SCHEMA_VERSION
+                    || end.job_id != request.job_id
+                    || end.sequence != request.sequence
+                    || end.frames != request.frames
+                    || end.pcm_bytes != expected_bytes
+                    || pcm.len() != expected_bytes as usize
+                    || end.sha256.len() != 64
+                    || !end.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || end.sha256 != actual_hash
+                {
+                    return Err(RenderFailure::protocol("Magenta render end is invalid"));
+                }
+                return Ok(pcm);
+            }
+            _ => unreachable!("frame type was checked"),
+        }
+    }
+}
+
+fn write_frame(writer: &mut impl Write, frame_type: u8, payload: &[u8]) -> io::Result<()> {
+    let length = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame is too large"))?;
+    writer.write_all(&[frame_type])?;
+    writer.write_all(&length.to_le_bytes())?;
+    writer.write_all(payload)?;
+    writer.flush()
+}
+
+fn read_bounded_frame(
+    reader: &mut impl Read,
+    allowed_types: &[u8],
+    maximum: usize,
+    cancellation: &RequestCancellation,
+    deadline: Instant,
+) -> Result<(u8, Vec<u8>), RenderFailure> {
+    let mut header = [0u8; 5];
+    read_exact_cancellable(reader, &mut header, cancellation, deadline)?;
+    let frame_type = header[0];
+    if !allowed_types.contains(&frame_type) {
+        return Err(RenderFailure::protocol("Magenta frame is out of order"));
+    }
+    let length = u32::from_le_bytes(header[1..5].try_into().expect("four bytes")) as usize;
+    // Metadata and PCM share this helper. A caller that accepts chunks passes
+    // the chunk cap, but control metadata remains capped before allocation or
+    // reading so an END/ERROR frame cannot consume a chunk-sized buffer.
+    let maximum = if frame_type == FRAME_RENDER_CHUNK {
+        maximum
+    } else {
+        maximum.min(MAX_RENDER_METADATA_BYTES)
+    };
+    if length > maximum {
+        return Err(RenderFailure::protocol(
+            "Magenta frame exceeds its size cap",
+        ));
+    }
+    let mut payload = vec![0u8; length];
+    read_exact_cancellable(reader, &mut payload, cancellation, deadline)?;
+    Ok((frame_type, payload))
+}
+
+fn read_exact_cancellable(
+    reader: &mut impl Read,
+    mut output: &mut [u8],
+    cancellation: &RequestCancellation,
+    deadline: Instant,
+) -> Result<(), RenderFailure> {
+    while !output.is_empty() {
+        if cancellation.cancelled() {
+            return Err(RenderFailure::cancelled());
+        }
+        if Instant::now() >= deadline {
+            return Err(RenderFailure::deadline());
+        }
+        match reader.read(output) {
+            Ok(0) => {
+                return Err(RenderFailure::protocol(
+                    "Magenta render response was truncated",
+                ))
+            }
+            Ok(read) => output = &mut output[read..],
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => {
+                return Err(RenderFailure::protocol(
+                    "Magenta render worker connection failed",
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bind_loopback() -> io::Result<(TcpListener, u16)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    listener.set_nonblocking(true)?;
+    Ok((listener, port))
+}
+
+fn serve(
+    listener: TcpListener,
+    port: u16,
+    capability: &str,
+    core: Arc<GatewayCore>,
+) -> CancellationToken {
+    let auth = AuthState {
+        capability: Arc::from(capability),
+    };
+    let router = Router::new()
+        .route("/api/render", post(render_clip).options(preflight))
+        .route("/api/models", get(model_info).options(preflight))
+        .layer(DefaultBodyLimit::max(MAX_RENDER_REQUEST_BYTES))
+        .layer(axum::middleware::from_fn_with_state(auth, authenticate))
+        .with_state(HttpState { core });
+    let cancel = CancellationToken::new();
+    let serve_cancel = cancel.clone();
+    tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("lsdj-app: Magenta gateway listener failed: {error}");
+                return;
+            }
+        };
+        println!("lsdj-app: Magenta gateway on http://127.0.0.1:{port}");
+        if let Err(error) = axum::serve(listener, router)
+            .with_graceful_shutdown(async move { serve_cancel.cancelled().await })
+            .await
+        {
+            eprintln!("lsdj-app: Magenta gateway stopped: {error}");
+        }
+    });
+    cancel
+}
+
+async fn preflight() -> StatusCode {
+    StatusCode::NO_CONTENT
+}
+
+async fn authenticate(State(auth): State<AuthState>, request: Request, next: Next) -> Response {
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    if origin
+        .as_deref()
+        .is_some_and(|origin| !SAFE_ORIGINS.contains(&origin))
+    {
+        return json_error(StatusCode::FORBIDDEN, "origin is not allowed");
+    }
+    if request.method() == Method::OPTIONS {
+        let requested_method = request
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|value| value.to_str().ok());
+        let requested_headers = request
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .split(',')
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if origin.is_none()
+            || !matches!(requested_method, Some("GET" | "POST"))
+            || requested_headers
+                .iter()
+                .any(|value| !matches!(value.as_str(), "content-type" | "x-lsdj-capability"))
+        {
+            return json_error(StatusCode::FORBIDDEN, "preflight rejected");
+        }
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        add_cors(&mut response, origin.as_deref().expect("origin checked"));
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("content-type, x-lsdj-capability"),
+        );
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+        return response;
+    }
+    let supplied = request
+        .headers()
+        .get("x-lsdj-capability")
+        .map(|value| value.as_bytes())
+        .unwrap_or_default();
+    if !crate::local_auth::constant_time_eq(supplied, auth.capability.as_bytes()) {
+        return json_error(StatusCode::UNAUTHORIZED, "authentication required");
+    }
+    let mut response = next.run(request).await;
+    if let Some(origin) = origin.as_deref() {
+        add_cors(&mut response, origin);
+    }
+    response
+}
+
+fn add_cors(response: &mut Response, origin: &str) {
+    if let Ok(origin) = HeaderValue::from_str(origin) {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Origin"));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn total_ram_gb() -> Option<f64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))?
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()
+        .map(|kilobytes| kilobytes / 1024.0 / 1024.0)
+}
+
+#[cfg(target_os = "windows")]
+fn total_ram_gb() -> Option<f64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: `status` is writable and advertises its exact structure size.
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0)
+        .then_some(status.ullTotalPhys as f64 / 1024.0 / 1024.0 / 1024.0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn total_ram_gb() -> Option<f64> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    enum Scenario {
+        Valid,
+        WrongSequence,
+        WrongFrames,
+        WrongTotals,
+        WrongHash,
+        OutOfOrder,
+        OversizeEnd,
+        MisalignedChunk,
+        Stall,
+    }
+
+    struct FakeProcess {
+        shutdowns: Arc<AtomicUsize>,
+        shutdown_failures: Arc<AtomicUsize>,
+    }
+
+    impl ProcessTree for FakeProcess {
+        fn shutdown(&mut self) -> io::Result<()> {
+            self.shutdowns.fetch_add(1, Ordering::AcqRel);
+            if self
+                .shutdown_failures
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(io::Error::other("fake process is not reaped"));
+            }
+            Ok(())
+        }
+    }
+
+    struct FakeFactory {
+        scenarios: Mutex<VecDeque<Scenario>>,
+        spawns: Arc<AtomicUsize>,
+        shutdowns: Arc<AtomicUsize>,
+        shutdown_failures: Arc<AtomicUsize>,
+    }
+
+    impl FakeFactory {
+        fn new(scenarios: impl IntoIterator<Item = Scenario>) -> Arc<Self> {
+            Arc::new(Self {
+                scenarios: Mutex::new(scenarios.into_iter().collect()),
+                spawns: Arc::new(AtomicUsize::new(0)),
+                shutdowns: Arc::new(AtomicUsize::new(0)),
+                shutdown_failures: Arc::new(AtomicUsize::new(0)),
+            })
+        }
+
+        fn fail_shutdowns(&self, count: usize) {
+            self.shutdown_failures.store(count, Ordering::Release);
+        }
+    }
+
+    impl WorkerFactory for FakeFactory {
+        fn spawn(
+            &self,
+            _cancellation: &RequestCancellation,
+        ) -> Result<ManagedRenderWorker, RenderFailure> {
+            let scenario = self
+                .scenarios
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+                .ok_or_else(RenderFailure::unavailable)?;
+            self.spawns.fetch_add(1, Ordering::AcqRel);
+            let listener =
+                TcpListener::bind("127.0.0.1:0").map_err(|_| RenderFailure::unavailable())?;
+            let address = listener
+                .local_addr()
+                .map_err(|_| RenderFailure::unavailable())?;
+            let client = TcpStream::connect(address).map_err(RenderFailure::from)?;
+            client
+                .set_read_timeout(Some(IO_POLL))
+                .map_err(RenderFailure::from)?;
+            let (server, _) = listener.accept().map_err(RenderFailure::from)?;
+            thread::spawn(move || serve_scenario(server, scenario));
+            Ok(ManagedRenderWorker {
+                stream: client,
+                process: Box::new(FakeProcess {
+                    shutdowns: self.shutdowns.clone(),
+                    shutdown_failures: self.shutdown_failures.clone(),
+                }),
+            })
+        }
+    }
+
+    fn read_test_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
+        let mut header = [0u8; 5];
+        stream.read_exact(&mut header).expect("request header");
+        let length = u32::from_le_bytes(header[1..].try_into().unwrap()) as usize;
+        let mut payload = vec![0u8; length];
+        stream.read_exact(&mut payload).expect("request payload");
+        (header[0], payload)
+    }
+
+    fn serve_scenario(mut stream: TcpStream, scenario: Scenario) {
+        let (frame_type, payload) = read_test_frame(&mut stream);
+        assert_eq!(frame_type, FRAME_RENDER_REQUEST);
+        let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        let job_id = request["jobId"].as_str().unwrap();
+        let sequence = request["sequence"].as_u64().unwrap();
+        let frames = request["frames"].as_u64().unwrap();
+        if matches!(scenario, Scenario::Stall) {
+            thread::sleep(Duration::from_millis(250));
+            return;
+        }
+        if matches!(scenario, Scenario::OutOfOrder) {
+            write_frame(&mut stream, FRAME_RENDER_END, b"{}").ok();
+            return;
+        }
+
+        let pcm = vec![0x3fu8; frames as usize * RENDER_BYTES_PER_FRAME as usize];
+        let begin_sequence = if matches!(scenario, Scenario::WrongSequence) {
+            sequence + 1
+        } else {
+            sequence
+        };
+        let begin_frames = if matches!(scenario, Scenario::WrongFrames) {
+            frames + 1
+        } else {
+            frames
+        };
+        let begin = serde_json::json!({
+            "schemaVersion": RENDER_SCHEMA_VERSION,
+            "jobId": job_id,
+            "sequence": begin_sequence,
+            "sampleRate": RENDER_SAMPLE_RATE,
+            "channels": RENDER_CHANNELS,
+            "sampleFormat": "f32le",
+            "frames": begin_frames,
+            "pcmBytes": pcm.len(),
+        });
+        if write_frame(
+            &mut stream,
+            FRAME_RENDER_BEGIN,
+            &serde_json::to_vec(&begin).unwrap(),
+        )
+        .is_err()
+        {
+            return;
+        }
+        if matches!(scenario, Scenario::OversizeEnd) {
+            let _ = stream.write_all(&[FRAME_RENDER_END]);
+            let _ = stream.write_all(&((MAX_RENDER_METADATA_BYTES + 1) as u32).to_le_bytes());
+            return;
+        }
+        let chunk = if matches!(scenario, Scenario::MisalignedChunk) {
+            &pcm[..3]
+        } else {
+            &pcm
+        };
+        if write_frame(&mut stream, FRAME_RENDER_CHUNK, chunk).is_err() {
+            return;
+        }
+        let reported_bytes = if matches!(scenario, Scenario::WrongTotals) {
+            pcm.len() as u64 + RENDER_BYTES_PER_FRAME
+        } else {
+            pcm.len() as u64
+        };
+        let hash = if matches!(scenario, Scenario::WrongHash) {
+            "0".repeat(64)
+        } else {
+            hex::encode(Sha256::digest(&pcm))
+        };
+        let end = serde_json::json!({
+            "schemaVersion": RENDER_SCHEMA_VERSION,
+            "jobId": job_id,
+            "sequence": sequence,
+            "frames": frames,
+            "pcmBytes": reported_bytes,
+            "sha256": hash,
+        });
+        write_frame(
+            &mut stream,
+            FRAME_RENDER_END,
+            &serde_json::to_vec(&end).unwrap(),
+        )
+        .ok();
+    }
+
+    fn render_with(
+        core: &GatewayCore,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<Vec<u8>, RenderFailure> {
+        core.render("test prompt".to_string(), 2, cancellation)
+    }
+
+    #[test]
+    fn seconds_are_converted_to_authoritative_integer_frames() {
+        assert_eq!(frames_for_seconds(0.5), Some(24_000));
+        assert_eq!(
+            frames_for_seconds((24_000.5) / RENDER_SAMPLE_RATE as f64),
+            Some(24_001)
+        );
+        assert_eq!(frames_for_seconds(180.0), Some(MAX_RENDER_FRAMES));
+        assert_eq!(frames_for_seconds(0.499), None);
+        assert_eq!(frames_for_seconds(f64::NAN), None);
+    }
+
+    #[test]
+    fn valid_fake_worker_response_is_accepted_exactly() {
+        let factory = FakeFactory::new([Scenario::Valid]);
+        let core = GatewayCore::new(factory.clone());
+        let pcm = render_with(&core, Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(pcm, vec![0x3f; 2 * RENDER_BYTES_PER_FRAME as usize]);
+        assert_eq!(factory.spawns.load(Ordering::Acquire), 1);
+        assert_eq!(core.quiesce(), Ok(true));
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn every_protocol_violation_discards_and_reaps_the_worker() {
+        for scenario in [
+            Scenario::WrongSequence,
+            Scenario::WrongFrames,
+            Scenario::WrongTotals,
+            Scenario::WrongHash,
+            Scenario::OutOfOrder,
+            Scenario::OversizeEnd,
+            Scenario::MisalignedChunk,
+        ] {
+            let factory = FakeFactory::new([scenario]);
+            let core = GatewayCore::new(factory.clone());
+            let error = render_with(&core, Arc::new(AtomicBool::new(false))).unwrap_err();
+            assert_eq!(error.kind, FailureKind::Protocol);
+            assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
+            assert!(core.worker.lock().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn next_request_recovers_with_a_fresh_worker_after_failure() {
+        let factory = FakeFactory::new([Scenario::WrongHash, Scenario::Valid]);
+        let core = GatewayCore::new(factory.clone());
+        assert!(render_with(&core, Arc::new(AtomicBool::new(false))).is_err());
+        assert!(render_with(&core, Arc::new(AtomicBool::new(false))).is_ok());
+        assert_eq!(factory.spawns.load(Ordering::Acquire), 2);
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
+        assert_eq!(core.quiesce(), Ok(true));
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn uncertain_reap_state_is_retained_and_blocks_promotion() {
+        let factory = FakeFactory::new([Scenario::Valid]);
+        let core = GatewayCore::new(factory.clone());
+        assert!(render_with(&core, Arc::new(AtomicBool::new(false))).is_ok());
+        factory.fail_shutdowns(1);
+
+        assert!(core.quiesce().is_err());
+        assert!(core.worker.lock().unwrap().is_some());
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
+
+        assert_eq!(core.quiesce(), Ok(true));
+        assert!(core.worker.lock().unwrap().is_none());
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_stalled_worker_and_reaps_it() {
+        let factory = FakeFactory::new([Scenario::Stall]);
+        let core = Arc::new(GatewayCore::new(factory.clone()));
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let flag = cancellation.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            flag.store(true, Ordering::Release);
+        });
+        let error = render_with(&core, cancellation).unwrap_err();
+        assert_eq!(error.kind, FailureKind::Cancelled);
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
+        assert!(core.worker.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn deadline_and_drop_cancellation_are_observed_while_reading() {
+        let request = Arc::new(AtomicBool::new(false));
+        {
+            let _guard = CancelOnDrop::new(request.clone());
+        }
+        assert!(request.load(Ordering::Acquire));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_read_timeout(Some(IO_POLL)).unwrap();
+        let (_server, _) = listener.accept().unwrap();
+        let cancellation = RequestCancellation {
+            request: Arc::new(AtomicBool::new(false)),
+            lifecycle: Arc::new(AtomicBool::new(false)),
+        };
+        let error = read_bounded_frame(
+            &mut client,
+            &[FRAME_RENDER_BEGIN],
+            MAX_RENDER_METADATA_BYTES,
+            &cancellation,
+            Instant::now() + Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, FailureKind::Deadline);
+    }
+}

@@ -25,6 +25,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "managed-runtime")]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 use crate::child_process::{
@@ -127,17 +129,25 @@ const BACKEND_PATH_ENVIRONMENT: &[&str] = &[
     "LSDJ_CONFIG_HOME",
     "LSDJ_DATA_HOME",
     "LSDJ_STAGING_HOME",
-    "MAGENTA_HOME",
-    "SA3_HOME",
-    "SA3_LORAS_HOME",
-    "SA3_MLX_HOME",
 ];
+const MRT2_PATH_ENVIRONMENT: &[&str] = &["MAGENTA_HOME"];
+const SA3_PATH_ENVIRONMENT: &[&str] = &["SA3_HOME", "SA3_LORAS_HOME", "SA3_MLX_HOME"];
 
 const WINDOWS_CHILD_ENVIRONMENT: &[&str] = &["SYSTEMROOT", "WINDIR", "TEMP", "TMP"];
 
-fn service_ephemeral_environment(secret: &str) -> Vec<String> {
+fn service_ephemeral_environment(
+    service: crate::managed_runtime::Service,
+    secret: &str,
+) -> Vec<String> {
+    let service_paths = match service {
+        crate::managed_runtime::Service::Mrt2 => MRT2_PATH_ENVIRONMENT,
+        crate::managed_runtime::Service::Sa3 | crate::managed_runtime::Service::Sa3Cuda => {
+            SA3_PATH_ENVIRONMENT
+        }
+    };
     std::iter::once(secret)
         .chain(BACKEND_PATH_ENVIRONMENT.iter().copied())
+        .chain(service_paths.iter().copied())
         .chain(WINDOWS_CHILD_ENVIRONMENT.iter().copied())
         .map(str::to_string)
         .collect()
@@ -593,6 +603,25 @@ fn status(active: Option<(Family, String)>) -> ModelStatus {
         loras: crate::loras::discover(&crate::loras::loras_dir()),
         installing: active.map(|(family, name)| ActiveInstall { family, name }),
     }
+}
+
+/// Installed MRT2 models for the Rust-owned managed render gateway's lightweight
+/// `/api/models` compatibility endpoint. Only the authenticated, generation-
+/// bound install identity is trusted; a candidate or hand-placed directory never
+/// becomes loadable merely because files exist.
+#[cfg(feature = "managed-runtime")]
+pub(crate) fn magenta_models_for_gateway() -> Vec<String> {
+    let models_dir = magenta_models_dir();
+    let root = models_dir.parent().unwrap_or(&models_dir);
+    let pin = mrt2_pin();
+    if !managed_mrt2_host() || validate_mrt2_identity(root, &pin).is_err() {
+        return Vec::new();
+    }
+    pin.models
+        .iter()
+        .filter(|(name, snapshot)| mrt2_snapshot_present(root, name, snapshot))
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 // --- Install / delete ------------------------------------------------------
@@ -1058,13 +1087,13 @@ impl InstallManager {
                     return Err(format!("unknown model '{name}'"));
                 }
                 let model = name.clone();
-                self.start(app, family, name, move |progress, shared| {
-                    install_magenta(progress, shared, &model)
+                self.start(app, family, name, move |app, progress, shared| {
+                    install_magenta(app, progress, shared, &model)
                 })
             }
             // `model://progress` carries the model name for Magenta, "" for SA3.
-            Family::Sa3 => self.start(app, family, String::new(), move |progress, shared| {
-                install_sa3(progress, shared, update)
+            Family::Sa3 => self.start(app, family, String::new(), move |app, progress, shared| {
+                install_sa3(app, progress, shared, update)
             }),
             Family::Lora => Err("adapters are installed via install_lora".into()),
         }
@@ -1079,7 +1108,7 @@ impl InstallManager {
         spec: crate::loras::ImportSpec,
     ) -> Result<(), String> {
         let name = spec.display_name()?;
-        self.start(app, Family::Lora, name, move |progress, shared| {
+        self.start(app, Family::Lora, name, move |_app, progress, shared| {
             crate::loras::install(progress, shared, &spec)
         })
     }
@@ -1092,7 +1121,7 @@ impl InstallManager {
         app: AppHandle,
         family: Family,
         name: String,
-        job: impl FnOnce(&Progress, &InstallShared) -> Result<(), String> + Send + 'static,
+        job: impl FnOnce(&AppHandle, &Progress, &InstallShared) -> Result<(), String> + Send + 'static,
     ) -> Result<(), String> {
         if self.shared.busy.swap(true, Ordering::AcqRel) {
             return Err("an install is already running".into());
@@ -1108,7 +1137,7 @@ impl InstallManager {
                 let progress = move |stage: &str, message: Option<String>, file: Option<String>| {
                     emit(&progress_app, family, &name, stage, message, file);
                 };
-                let result = job(&progress, &shared);
+                let result = job(&app, &progress, &shared);
                 *shared
                     .current_child
                     .lock()
@@ -1283,14 +1312,92 @@ struct SidecarLine {
 /// emit; tests record the events while the install actually runs.
 pub(crate) type Progress = dyn Fn(&str, Option<String>, Option<String>);
 
-fn install_magenta(progress: &Progress, shared: &InstallShared, name: &str) -> Result<(), String> {
+#[cfg(feature = "managed-runtime")]
+#[derive(Clone, Copy)]
+struct Mrt2Lifecycle {
+    render_was_warm: bool,
+}
+
+#[cfg(feature = "managed-runtime")]
+fn quiesce_mrt2_services(app: &AppHandle) -> Result<Mrt2Lifecycle, String> {
+    let gateway = app.state::<crate::magenta_gateway::MagentaGateway>();
+    let render_was_warm = gateway
+        .quiesce()
+        .map_err(|error| format!("cannot quiesce Magenta renderer before promotion: {error}"))?;
+    if let Err(error) = app.state::<crate::sidecar::Sidecars>().quiesce_shared() {
+        // No rename has happened. Restore the still-current verified render
+        // generation before returning the deck teardown error.
+        let _ = gateway.resume(render_was_warm);
+        return Err(format!(
+            "cannot quiesce realtime MRT2 decks before promotion: {error}"
+        ));
+    }
+    Ok(Mrt2Lifecycle { render_was_warm })
+}
+
+#[cfg(feature = "managed-runtime")]
+fn resume_mrt2_services(app: &AppHandle, lifecycle: Mrt2Lifecycle) -> Result<(), String> {
+    // Restore a previously warm renderer completely before launching the deck
+    // process, avoiding concurrent cold model allocations during promotion.
+    app.state::<crate::magenta_gateway::MagentaGateway>()
+        .resume(lifecycle.render_was_warm)
+        .map_err(|error| format!("cannot resume Magenta renderer: {error}"))?;
+    app.state::<crate::sidecar::Sidecars>()
+        .resume_shared()
+        .map_err(|error| format!("cannot resume realtime MRT2 decks: {error}"))
+}
+
+/// Promotion owns the commit/rollback result, but service restart is part of
+/// operational success. A failed promotion still attempts to restore the prior
+/// verified generation, and reports both causes if that recovery also fails.
+#[cfg(feature = "managed-runtime")]
+fn finish_promotion(
+    label: &str,
+    promoted: Result<(), String>,
+    resumed: Result<(), String>,
+) -> Result<(), String> {
+    match (promoted, resumed) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(resume)) => Err(format!(
+            "{label} was promoted but its service could not resume: {resume}"
+        )),
+        (Err(promote), Ok(())) => Err(promote),
+        (Err(promote), Err(resume)) => Err(format!(
+            "{promote}; the previous {label} service also could not resume: {resume}"
+        )),
+    }
+}
+
+/// Execute the rename window in its only safe order.  Keeping the sequence in
+/// one small, injectable helper makes the Windows "dead before rename" rule and
+/// rollback restart behavior testable without Python, CUDA, or model files.
+#[cfg(feature = "managed-runtime")]
+fn run_promotion_lifecycle<L>(
+    label: &str,
+    quiesce: impl FnOnce() -> Result<L, String>,
+    promote: impl FnOnce() -> Result<(), String>,
+    resume: impl FnOnce(L) -> Result<(), String>,
+) -> Result<(), String> {
+    let lifecycle = quiesce()?;
+    let promoted = promote();
+    let resumed = resume(lifecycle);
+    finish_promotion(label, promoted, resumed)
+}
+
+fn install_magenta(
+    app: &AppHandle,
+    progress: &Progress,
+    shared: &InstallShared,
+    name: &str,
+) -> Result<(), String> {
     #[cfg(feature = "managed-runtime")]
     {
-        install_mrt2_managed(progress, shared, name)
+        install_mrt2_managed(app, progress, shared, name)
     }
 
     #[cfg(not(feature = "managed-runtime"))]
     {
+        let _ = app;
         progress("download", None, None);
         let mut cmd = crate::sidecar::sidecar_base_command().map_err(|e| e.to_string())?;
         if !resources_present() {
@@ -1305,6 +1412,7 @@ fn install_magenta(progress: &Progress, shared: &InstallShared, name: &str) -> R
 
 #[cfg(feature = "managed-runtime")]
 fn install_mrt2_managed(
+    app: &AppHandle,
     progress: &Progress,
     shared: &InstallShared,
     name: &str,
@@ -1402,9 +1510,16 @@ fn install_mrt2_managed(
     seal_mrt2_candidate(&candidate, &pin, python)?;
     validate_mrt2_candidate(&candidate, &pin, name, &cancelled_now)?;
     progress("promote", None, None);
-    promotion::promote(&candidate, &home, &backup, |root| {
-        validate_mrt2_candidate(root, &pin, name, &cancelled_now)
-    })?;
+    run_promotion_lifecycle(
+        "MRT2",
+        || quiesce_mrt2_services(app),
+        || {
+            promotion::promote(&candidate, &home, &backup, |root| {
+                validate_mrt2_candidate(root, &pin, name, &cancelled_now)
+            })
+        },
+        |lifecycle| resume_mrt2_services(app, lifecycle),
+    )?;
     let _ = std::fs::remove_dir_all(&work);
     Ok(())
 }
@@ -1713,7 +1828,12 @@ fn run_download(progress: &Progress, shared: &InstallShared, cmd: Command) -> Re
     result.map_err(|exit_err| sanitize_diagnostic(&last_error.unwrap_or(exit_err)))
 }
 
-fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Result<(), String> {
+fn install_sa3(
+    app: &AppHandle,
+    progress: &Progress,
+    shared: &InstallShared,
+    _update: bool,
+) -> Result<(), String> {
     let pin = sa3_pin();
     validate_sa3_pin(&pin)?;
     let backend = host_sa3_backend()?;
@@ -1752,9 +1872,34 @@ fn install_sa3(progress: &Progress, shared: &InstallShared, _update: bool) -> Re
     )?;
     cancelled(shared)?;
     progress("promote", None, None);
-    promotion::promote(&candidate, &home, &backup, |path| {
+    #[cfg(feature = "managed-runtime")]
+    let service_was_running = app
+        .state::<crate::generation::GenerationServer>()
+        .quiesce()
+        .map_err(|error| format!("cannot quiesce SA3 before promotion: {error}"))?;
+    let promoted = promotion::promote(&candidate, &home, &backup, |path| {
         validate_sa3_install_cancellable(path, &pin, backend, &install_cancelled)
-    })?;
+    });
+    #[cfg(feature = "managed-runtime")]
+    let resumed = app
+        .state::<crate::generation::GenerationServer>()
+        .resume()
+        .map_err(|error| format!("cannot resume SA3 after promotion: {error}"));
+    #[cfg(feature = "managed-runtime")]
+    let resumed = if promoted.is_err() && !service_was_running {
+        // First install had no prior service to restore; keep the promotion
+        // cause authoritative instead of appending the expected "not installed"
+        // resume failure.
+        Ok(())
+    } else {
+        resumed
+    };
+    #[cfg(feature = "managed-runtime")]
+    finish_promotion("SA3", promoted, resumed)?;
+    #[cfg(not(feature = "managed-runtime"))]
+    promoted?;
+    #[cfg(not(feature = "managed-runtime"))]
+    let _ = app;
     // Verified blobs are hard-linked into the promoted tree. Removing retry
     // state here reclaims only the staging directory entries, not model bytes.
     let _ = std::fs::remove_dir_all(&work);
@@ -2619,7 +2764,10 @@ fn seal_sa3_candidate(
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
     .collect();
-    let ephemeral_environment = service_ephemeral_environment("LSDJ_API_CAPABILITY");
+    let ephemeral_environment = service_ephemeral_environment(
+        crate::managed_runtime::Service::Sa3,
+        "LSDJ_API_CAPABILITY",
+    );
     let spec = crate::managed_runtime::CommandSpec {
         program: relative_wire(candidate, &program)?,
         argv: vec!["launch.py".into(), "--generation-server".into()],
@@ -2728,7 +2876,10 @@ fn seal_mrt2_candidate(candidate: &Path, pin: &Mrt2Pin, python: &PythonPin) -> R
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
     .collect();
-    let ephemeral_environment = service_ephemeral_environment("LSDJ_WORKER_LAUNCH_TOKEN");
+    let ephemeral_environment = service_ephemeral_environment(
+        crate::managed_runtime::Service::Mrt2,
+        "LSDJ_WORKER_LAUNCH_TOKEN",
+    );
     let spec = crate::managed_runtime::CommandSpec {
         program: relative_wire(candidate, &program)?,
         argv: vec!["launch.py".into()],
@@ -3316,12 +3467,18 @@ mod tests {
             backend_sources_digest()
         );
 
-        let sa3: BTreeSet<_> = service_ephemeral_environment("LSDJ_API_CAPABILITY")
-            .into_iter()
-            .collect();
-        let mrt2: BTreeSet<_> = service_ephemeral_environment("LSDJ_WORKER_LAUNCH_TOKEN")
-            .into_iter()
-            .collect();
+        let sa3: BTreeSet<_> = service_ephemeral_environment(
+            crate::managed_runtime::Service::Sa3,
+            "LSDJ_API_CAPABILITY",
+        )
+        .into_iter()
+        .collect();
+        let mrt2: BTreeSet<_> = service_ephemeral_environment(
+            crate::managed_runtime::Service::Mrt2,
+            "LSDJ_WORKER_LAUNCH_TOKEN",
+        )
+        .into_iter()
+        .collect();
         assert!(sa3.contains("LSDJ_API_CAPABILITY"));
         assert!(!sa3.contains("LSDJ_WORKER_LAUNCH_TOKEN"));
         assert!(mrt2.contains("LSDJ_WORKER_LAUNCH_TOKEN"));
@@ -3333,6 +3490,61 @@ mod tests {
             assert!(sa3.contains(*name));
             assert!(mrt2.contains(*name));
         }
+        assert!(sa3.contains("SA3_HOME"));
+        assert!(!sa3.contains("MAGENTA_HOME"));
+        assert!(mrt2.contains("MAGENTA_HOME"));
+        assert!(!mrt2.contains("SA3_HOME"));
+    }
+
+    #[cfg(feature = "managed-runtime")]
+    #[test]
+    fn managed_promotion_quiesces_before_rename_and_resumes_after_rollback() {
+        use std::cell::RefCell;
+
+        let events = RefCell::new(Vec::new());
+        let result = run_promotion_lifecycle(
+            "fake runtime",
+            || {
+                events.borrow_mut().push("quiesce");
+                Ok("prior generation")
+            },
+            || {
+                events.borrow_mut().push("promote");
+                Err("fake promotion failed".to_string())
+            },
+            |generation| {
+                assert_eq!(generation, "prior generation");
+                events.borrow_mut().push("resume");
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "fake promotion failed");
+        assert_eq!(*events.borrow(), ["quiesce", "promote", "resume"]);
+    }
+
+    #[cfg(feature = "managed-runtime")]
+    #[test]
+    fn failed_quiesce_never_enters_the_rename_window() {
+        use std::cell::RefCell;
+
+        let events = RefCell::new(Vec::new());
+        let result = run_promotion_lifecycle(
+            "fake runtime",
+            || {
+                events.borrow_mut().push("quiesce");
+                Err::<(), _>("worker could not be reaped".to_string())
+            },
+            || {
+                events.borrow_mut().push("promote");
+                Ok(())
+            },
+            |_| {
+                events.borrow_mut().push("resume");
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "worker could not be reaped");
+        assert_eq!(*events.borrow(), ["quiesce"]);
     }
 
     #[test]
