@@ -32,6 +32,38 @@ Var LsdjRootEmpty
 Var LsdjSafeLayout
 Var LsdjTreeSafe
 
+; Unsigned hosted-test installers can leave a narrow control-flow trace when a
+; silent fail-closed branch returns only NSIS's generic exit code. Production
+; builds do not define LSDJ_CI_ADVERSARIAL_TESTS, so every trace call expands
+; to no instructions. Preserve both the scratch register and the caller's NSIS
+; error flag so diagnostics cannot change installer decisions.
+!ifdef LSDJ_CI_ADVERSARIAL_TESTS
+  Var LsdjCiTraceHadErrors
+  !macro LSDJ_CI_TRACE MESSAGE
+    ${If} ${Errors}
+      StrCpy $LsdjCiTraceHadErrors 1
+    ${Else}
+      StrCpy $LsdjCiTraceHadErrors 0
+    ${EndIf}
+    Push $R5
+    ClearErrors
+    FileOpen $R5 "$TEMP\lsdj-ci-installer.trace" a
+    ${IfNot} ${Errors}
+      FileWrite $R5 "${MESSAGE}$\r$\n"
+      FileClose $R5
+    ${EndIf}
+    Pop $R5
+    ${If} $LsdjCiTraceHadErrors = 1
+      SetErrors
+    ${Else}
+      ClearErrors
+    ${EndIf}
+  !macroend
+!else
+  !macro LSDJ_CI_TRACE MESSAGE
+  !macroend
+!endif
+
 ; GetFullPathNameW is lexical and does not traverse the candidate. The exact
 ; canonical target must equal canonical LOCALAPPDATA + \LSDJ; callers then
 ; separately reject a root reparse point before reading or changing it.
@@ -134,10 +166,13 @@ Function LsdjCreateDataMarker
   Push $R8
   StrCpy $LsdjMarkerSafe 0
   StrCpy $R7 0
+  !insertmacro LSDJ_CI_TRACE "marker-create: begin"
   System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER_NEW}", i ${LSDJ_GENERIC_WRITE}, i 0, p 0, i ${LSDJ_CREATE_NEW}, i ${LSDJ_FILE_ATTRIBUTE_NORMAL}|${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6'
+  !insertmacro LSDJ_CI_TRACE "marker-create: create handle=$R6"
   StrCmp $R6 ${LSDJ_INVALID_HANDLE_VALUE} lsdj_marker_create_done
   System::Call 'kernel32::WriteFile(p R6, m "${LSDJ_OWNER_ID}", i ${LSDJ_OWNER_ID_BYTES}, *i .R8, p 0) i .R7'
   System::Call 'kernel32::CloseHandle(p R6)'
+  !insertmacro LSDJ_CI_TRACE "marker-create: write result=$R7 bytes=$R8"
   ${If} $R7 = 0
   ${OrIf} $R8 != ${LSDJ_OWNER_ID_BYTES}
     Goto lsdj_marker_done
@@ -145,9 +180,12 @@ Function LsdjCreateDataMarker
   StrCpy $R7 0
   ClearErrors
   Rename "${LSDJ_DATA_MARKER_NEW}" "${LSDJ_DATA_MARKER}"
+  !insertmacro LSDJ_CI_TRACE "marker-create: rename returned"
   IfErrors lsdj_marker_create_done
+  !insertmacro LSDJ_CI_TRACE "marker-create: rename succeeded"
   StrCpy $R7 1
   Call LsdjDataMarkerIsValid
+  !insertmacro LSDJ_CI_TRACE "marker-create: validate safe=$LsdjMarkerSafe"
   ${If} $LsdjMarkerSafe = 1
     Goto lsdj_marker_create_done
   ${EndIf}
@@ -389,21 +427,27 @@ FunctionEnd
 ; SetOutPath and immediately revalidates before establishing ownership.
 Section -LsdjProbeDataRootBeforeTauri
   StrCpy $LsdjInstallRootState 0
+  !insertmacro LSDJ_CI_TRACE "probe: begin root=${LSDJ_DATA_ROOT}"
   Call LsdjCanonicalDataRootIsValid
+  !insertmacro LSDJ_CI_TRACE "probe: canonical=$LsdjCanonicalRootSafe"
   ${If} $LsdjCanonicalRootSafe != 1
+    !insertmacro LSDJ_CI_TRACE "abort: probe canonical root"
     Abort "Refusing to install: the LSDJ data root is not the exact LocalAppData target."
   ${EndIf}
 
   System::Call 'kernel32::GetFileAttributesW(w "${LSDJ_DATA_ROOT}") i .R8'
+  !insertmacro LSDJ_CI_TRACE "probe: root attributes=$R8"
   ${If} $R8 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
     Goto lsdj_probe_absent
   ${EndIf}
   IntOp $R7 $R8 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
   ${If} $R7 <> 0
+    !insertmacro LSDJ_CI_TRACE "abort: probe root reparse"
     Abort "Refusing to install into a junction, symbolic link, or reparse point at ${LSDJ_DATA_ROOT}."
   ${EndIf}
   IntOp $R7 $R8 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
   ${If} $R7 = 0
+    !insertmacro LSDJ_CI_TRACE "abort: probe root not directory"
     Abort "Refusing to install: ${LSDJ_DATA_ROOT} exists but is not a directory."
   ${EndIf}
 
@@ -411,29 +455,38 @@ Section -LsdjProbeDataRootBeforeTauri
   FindFirst $R7 $R8 "${LSDJ_DATA_MARKER}"
   IfErrors lsdj_probe_legacy
   FindClose $R7
+  !insertmacro LSDJ_CI_TRACE "probe: marker entry present"
   Call LsdjDataMarkerIsValid
+  !insertmacro LSDJ_CI_TRACE "probe: marker safe=$LsdjMarkerSafe"
   ${If} $LsdjMarkerSafe != 1
+    !insertmacro LSDJ_CI_TRACE "abort: probe marker invalid"
     Abort "Refusing to install: the LSDJ ownership marker is invalid or is a reparse point."
   ${EndIf}
   StrCpy $LsdjInstallRootState 3
   Goto lsdj_probe_done
 
   lsdj_probe_legacy:
+    !insertmacro LSDJ_CI_TRACE "probe: marker absent, checking legacy layout"
     Call LsdjExistingLayoutIsRecognized
+    !insertmacro LSDJ_CI_TRACE "probe: legacy layout=$LsdjSafeLayout"
     StrCpy $LsdjTreeSafe 1
     ${If} $LsdjSafeLayout = 1
       Push "${LSDJ_DATA_ROOT}"
       Call LsdjInstallTreeIsLinkFree
     ${EndIf}
+    !insertmacro LSDJ_CI_TRACE "probe: legacy tree=$LsdjTreeSafe"
     ${If} $LsdjSafeLayout != 1
     ${OrIf} $LsdjTreeSafe != 1
+      !insertmacro LSDJ_CI_TRACE "abort: probe legacy ownership"
       Abort "Refusing to claim a pre-existing foreign or unrecognized directory at ${LSDJ_DATA_ROOT}."
     ${EndIf}
     StrCpy $LsdjInstallRootState 2
+    !insertmacro LSDJ_CI_TRACE "probe: classified legacy state=2"
     Goto lsdj_probe_done
 
   lsdj_probe_absent:
     StrCpy $LsdjInstallRootState 1
+    !insertmacro LSDJ_CI_TRACE "probe: classified absent state=1"
   lsdj_probe_done:
 SectionEnd
 
@@ -650,12 +703,16 @@ FunctionEnd
   ; SetOutPath has now created a root that the early section proved absent, or
   ; selected an existing root whose ownership/layout the early section proved.
   ; Revalidate that captured state before writing anything into the directory.
+  !insertmacro LSDJ_CI_TRACE "preinstall: begin state=$LsdjInstallRootState"
   Call LsdjCanonicalDataRootIsValid
+  !insertmacro LSDJ_CI_TRACE "preinstall: canonical=$LsdjCanonicalRootSafe"
   ${If} $LsdjCanonicalRootSafe != 1
+    !insertmacro LSDJ_CI_TRACE "abort: preinstall canonical root"
     Abort "Refusing to install: the LSDJ data root is not the exact LocalAppData target."
   ${EndIf}
 
   System::Call 'kernel32::GetFileAttributesW(w "${LSDJ_DATA_ROOT}") i .R8'
+  !insertmacro LSDJ_CI_TRACE "preinstall: root attributes=$R8"
   ${If} $R8 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
     ${If} $LsdjInstallRootState != 1
       Goto lsdj_install_root_missing
@@ -673,43 +730,53 @@ FunctionEnd
   ${EndIf}
   IntOp $R7 $R8 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
   ${If} $R7 <> 0
+    !insertmacro LSDJ_CI_TRACE "abort: preinstall root reparse"
     Abort "Refusing to install into a junction, symbolic link, or reparse point at ${LSDJ_DATA_ROOT}."
   ${EndIf}
   IntOp $R7 $R8 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
   ${If} $R7 = 0
+    !insertmacro LSDJ_CI_TRACE "abort: preinstall root not directory"
     Abort "Refusing to install: ${LSDJ_DATA_ROOT} exists but is not a directory."
   ${EndIf}
 
   ${If} $LsdjInstallRootState = 1
     Call LsdjDataRootIsEmpty
+    !insertmacro LSDJ_CI_TRACE "preinstall: fresh root empty=$LsdjRootEmpty"
     ${If} $LsdjRootEmpty != 1
+      !insertmacro LSDJ_CI_TRACE "abort: preinstall fresh root changed"
       Abort "Refusing to install: the newly created LSDJ root changed before ownership was established."
     ${EndIf}
     Goto lsdj_write_data_marker
   ${ElseIf} $LsdjInstallRootState = 2
     Call LsdjExistingLayoutIsRecognized
+    !insertmacro LSDJ_CI_TRACE "preinstall: legacy layout=$LsdjSafeLayout"
     StrCpy $LsdjTreeSafe 1
     ${If} $LsdjSafeLayout = 1
       Push "${LSDJ_DATA_ROOT}"
       Call LsdjInstallTreeIsLinkFree
     ${EndIf}
+    !insertmacro LSDJ_CI_TRACE "preinstall: legacy tree=$LsdjTreeSafe"
     ${If} $LsdjSafeLayout != 1
     ${OrIf} $LsdjTreeSafe != 1
+      !insertmacro LSDJ_CI_TRACE "abort: preinstall legacy ownership changed"
       Abort "Refusing to install: the recognized LSDJ layout changed before ownership was established."
     ${EndIf}
     Goto lsdj_write_data_marker
   ${ElseIf} $LsdjInstallRootState = 3
     Call LsdjDataMarkerIsValid
+    !insertmacro LSDJ_CI_TRACE "preinstall: owned marker safe=$LsdjMarkerSafe"
     ${If} $LsdjMarkerSafe != 1
       Abort "Refusing to install: LSDJ ownership changed after the early root probe."
     ${EndIf}
     Goto lsdj_install_root_ready
   ${Else}
+    !insertmacro LSDJ_CI_TRACE "abort: preinstall unknown root state"
     Abort "Refusing to install: the LSDJ data root was not safely classified before SetOutPath."
   ${EndIf}
 
   lsdj_write_data_marker:
     Call LsdjCreateDataMarker
+    !insertmacro LSDJ_CI_TRACE "preinstall: marker result=$LsdjMarkerSafe"
     ${If} $LsdjMarkerSafe != 1
       Goto lsdj_marker_create_failed
     ${EndIf}
@@ -723,16 +790,20 @@ FunctionEnd
   lsdj_install_root_create_failed:
     Abort "Refusing to install: the separately located LSDJ data root could not be created safely."
   lsdj_install_root_ready:
+    !insertmacro LSDJ_CI_TRACE "preinstall: ready"
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
   ; A second check ensures copying never silently replaced the owned root or
   ; marker. Do not rewrite or repair either safety boundary here.
+  !insertmacro LSDJ_CI_TRACE "postinstall: begin"
   Call LsdjCanonicalDataRootIsValid
+  !insertmacro LSDJ_CI_TRACE "postinstall: canonical=$LsdjCanonicalRootSafe"
   ${If} $LsdjCanonicalRootSafe != 1
     Abort "LSDJ installation did not retain the exact LocalAppData root."
   ${EndIf}
   System::Call 'kernel32::GetFileAttributesW(w "${LSDJ_DATA_ROOT}") i .R8'
+  !insertmacro LSDJ_CI_TRACE "postinstall: root attributes=$R8"
   ${If} $R8 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
     Abort "LSDJ installation lost its LocalAppData root."
   ${EndIf}
@@ -741,6 +812,7 @@ FunctionEnd
     Abort "LSDJ installation encountered an unsafe data-root reparse point."
   ${EndIf}
   Call LsdjDataMarkerIsValid
+  !insertmacro LSDJ_CI_TRACE "postinstall: marker safe=$LsdjMarkerSafe"
   ${If} $LsdjMarkerSafe != 1
     Abort "LSDJ installation did not retain its plain ownership marker."
   ${EndIf}

@@ -61,6 +61,14 @@ $marker = Join-Path $dataRoot '.lsdj-data-root'
 $startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\LSDJ\LSDJ.lnk'
 $registryKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\LSDJ'
 $ciPurgeReady = Join-Path $env:TEMP 'lsdj-ci-before-purge.ready'
+$ciInstallerTrace = Join-Path $env:TEMP 'lsdj-ci-installer.trace'
+
+function Get-CiInstallerTrace {
+    if (Test-Path -LiteralPath $ciInstallerTrace -PathType Leaf) {
+        return [System.IO.File]::ReadAllText($ciInstallerTrace)
+    }
+    return '<no CI installer trace was written>'
+}
 
 function Invoke-CheckedProcess {
     param(
@@ -72,9 +80,11 @@ function Invoke-CheckedProcess {
         [int[]] $ExpectedExitCodes = @(0)
     )
 
+    Remove-Item -LiteralPath $ciInstallerTrace -Force -ErrorAction SilentlyContinue
     $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
     if ($process.ExitCode -notin $ExpectedExitCodes) {
-        throw "Process exited $($process.ExitCode), expected $($ExpectedExitCodes -join ', '): $FilePath $($ArgumentList -join ' ')"
+        $trace = Get-CiInstallerTrace
+        throw "Process exited $($process.ExitCode), expected $($ExpectedExitCodes -join ', '): $FilePath $($ArgumentList -join ' ')`nCI installer trace:`n$trace"
     }
     return $process.ExitCode
 }
@@ -87,9 +97,11 @@ function Invoke-ExpectedFailure {
         [string[]] $ArgumentList = @()
     )
 
+    Remove-Item -LiteralPath $ciInstallerTrace -Force -ErrorAction SilentlyContinue
     $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
     if ($process.ExitCode -eq 0) {
-        throw "Process unexpectedly succeeded: $FilePath $($ArgumentList -join ' ')"
+        $trace = Get-CiInstallerTrace
+        throw "Process unexpectedly succeeded: $FilePath $($ArgumentList -join ' ')`nCI installer trace:`n$trace"
     }
     return $process.ExitCode
 }
