@@ -50,7 +50,10 @@ def test_manifest_keeps_every_external_dependency_immutable():
     assert manifest["release_ready"] is False
     assert manifest["topology"] == "shared-worker-two-state"
     assert manifest["topology_implemented"] is True
-    pins = [manifest["adapter_reference"]["revision"], manifest["processor"]["revision"]]
+    pins = [
+        manifest["adapter_reference"]["revision"],
+        manifest["processor"]["revision"],
+    ]
     pins.extend(model["revision"] for model in manifest["models"].values())
     assert all(len(pin) == 40 for pin in pins)
     assert manifest["models"] == MODEL_SNAPSHOTS

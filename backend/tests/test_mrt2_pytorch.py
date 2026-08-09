@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 
 from lsdj.engine import CHANNELS, FRAME_SECONDS, NOTE_SUSTAIN, SAMPLE_RATE
-from lsdj.mrt2 import RuntimeSelection, RuntimeUnavailable
+from lsdj.mrt2 import (
+    MODEL_SNAPSHOTS,
+    PROCESSOR_SNAPSHOT,
+    RuntimeSelection,
+    RuntimeUnavailable,
+)
 from lsdj.mrt2_pytorch import PytorchBindings, PytorchMrt2Engine
 from lsdj.gpu_broker import Priority
 
@@ -228,6 +233,13 @@ def test_invalid_upstream_audio_shape_fails_before_pcm_handoff():
 def test_diagnostics_disclose_unqualified_runtime_and_cuda_versions():
     engine, _, _, _ = make_engine()
     diagnostics = engine.diagnostics()
+    model_pin = MODEL_SNAPSHOTS["mrt2_small"]
+    assert diagnostics["model_repository"] == model_pin["repository"]
+    assert diagnostics["model_revision"] == model_pin["revision"]
+    assert diagnostics["remote_code_repository"] == model_pin["repository"]
+    assert diagnostics["remote_code_revision"] == model_pin["revision"]
+    assert diagnostics["processor_repository"] == PROCESSOR_SNAPSHOT["repository"]
+    assert diagnostics["processor_revision"] == PROCESSOR_SNAPSHOT["revision"]
     assert diagnostics["hardware_qualified"] is False
     assert diagnostics["experimental"] is True
     assert diagnostics["torch_cuda_runtime"] == "13.0"

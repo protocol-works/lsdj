@@ -113,9 +113,7 @@ def _verified_manifest(adapter_dir: pathlib.Path, root: pathlib.Path) -> bool:
         return False
 
 
-def _adapter_file(
-    adapter_dir: pathlib.Path, root: pathlib.Path
-) -> pathlib.Path | None:
+def _adapter_file(adapter_dir: pathlib.Path, root: pathlib.Path) -> pathlib.Path | None:
     """The adapter's .safetensors inside its directory, or None. The importer
     writes exactly one; tolerate a hand-placed dir the same way the runtime's
     `_resolve_path` does (one .safetensors, any name)."""
@@ -124,8 +122,7 @@ def _adapter_file(
     hits = sorted(
         entry
         for entry in adapter_dir.iterdir()
-        if _contained(entry, root, directory=False)
-        and entry.suffix == ".safetensors"
+        if _contained(entry, root, directory=False) and entry.suffix == ".safetensors"
     )
     if len(hits) != 1 or not _verified_manifest(adapter_dir, root):
         return None
@@ -147,6 +144,9 @@ def resolve(
         raise UnknownAdapter(f"unknown adapter {name!r}")
     base_dir = root / base
     adapter_dir = base_dir / slug
-    if not _contained(base_dir, root, directory=True) or _adapter_file(adapter_dir, root) is None:
+    if (
+        not _contained(base_dir, root, directory=True)
+        or _adapter_file(adapter_dir, root) is None
+    ):
         raise UnknownAdapter(f"unknown adapter {name!r}")
     return adapter_dir, base

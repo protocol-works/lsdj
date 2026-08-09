@@ -110,7 +110,9 @@ def _driver_version(torch: Any) -> str | None:
     return f"{major}.{minor}"
 
 
-def _verified_local_directory(root: Path, child: Path, required: tuple[str, ...]) -> Path:
+def _verified_local_directory(
+    root: Path, child: Path, required: tuple[str, ...]
+) -> Path:
     """Reject links/reparse escapes before Transformers imports remote code."""
 
     try:
@@ -505,8 +507,6 @@ class PytorchMrt2Engine:
             "processor_revision": PROCESSOR_SNAPSHOT["revision"],
             "remote_code_repository": self._model_pin["repository"],
             "remote_code_revision": self._model_pin["revision"],
-            "processor_repository": PROCESSOR_SNAPSHOT["repository"],
-            "processor_revision": PROCESSOR_SNAPSHOT["revision"],
             "torch_version": self._bindings.versions["torch"],
             "transformers_version": self._bindings.versions["transformers"],
             "huggingface_hub_version": self._bindings.versions["huggingface_hub"],

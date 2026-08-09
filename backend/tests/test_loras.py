@@ -96,7 +96,9 @@ class TestResolve:
                 "medium/both", env={"SA3_LORAS_HOME": str(tmp_path)}, home=tmp_path
             )
 
-    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+    @pytest.mark.skipif(
+        os.name == "nt", reason="symlink creation needs privileges on Windows"
+    )
     def test_rejects_symlinked_directory_and_weights(self, tmp_path):
         outside = tmp_path / "outside"
         install_adapter(outside, "small", "real")
