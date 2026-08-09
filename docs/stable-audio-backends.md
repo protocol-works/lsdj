@@ -4,11 +4,17 @@ LSDJ selects one Stable Audio backend explicitly:
 
 - Apple Silicon macOS uses the existing MLX runtime.
 - Linux and Windows use the official LiteRT/TFLite CPU runtime.
+- Windows x64 has an optional PyTorch/CUDA candidate for Small Music and Small
+  SFX. It remains behind a fail-closed release gate; Auto therefore continues
+  to select TFLite until the issue #114 hardware and provenance matrix is done.
 - Unsupported platforms fail with a diagnostic. They do not silently select a
   different runtime.
 - `LSDJ_SA3_BACKEND=mlx|tflite` is a diagnostic/developer override. The MLX
   override remains restricted to Apple Silicon; TFLite remains restricted to
   supported Linux/Windows x64 targets.
+- `LSDJ_SA3_PREFERENCE=auto|gpu|cpu_tflite` is the backend-policy seam. An
+  explicit GPU request never silently falls back; while the release gate is
+  incomplete it fails before launch and asks the caller to confirm TFLite.
 
 Both adapters consume the same `GenerationRequest` contract and share one
 argument translator. A populated control is either forwarded or rejected; it
@@ -16,23 +22,54 @@ is never silently discarded.
 
 ## Feature matrix
 
-| Capability | MLX | TFLite | Notes |
-| --- | --- | --- | --- |
-| Music and SFX | Yes | Yes | Official small Music/SFX DiTs |
-| Medium / 380 seconds | Yes | Yes | Runtime correctness is model-free tested; Windows/Linux performance still needs hardware evidence |
-| Audio-to-audio | Yes | Yes | LSDJ normalizes input before either CLI sees it |
-| Inpainting | Yes | Yes | Shared `inpaint_range` control |
-| Continuation | Yes | Yes | The official continuation primitive is an inpaint range from source duration to requested duration |
-| Positive/negative prompt | Yes | Yes | Negative prompt requires CFG other than 1 |
-| Seed, duration, steps, CFG, APG | Yes | Yes | Shared validation and CLI spelling |
-| Stacked LoRA with strength | Yes | Yes | TFLite runs fp32 because upstream cannot merge LoRA into quantized graphs |
-| Per-step LoRA gating | Yes upstream | No | Not exposed by LSDJ; the TFLite CLI explicitly rejects it |
-| Progress | Text stream | Text stream | LSDJ normalizes sampling/decode messages; upstream has no structured progress protocol |
-| Cancellation | Process stop | Process stop | A cancelled request stops the isolated generation process |
-| Partial audio preview | No | No | Neither pinned CLI exposes audio before the final WAV is written |
+| Capability | MLX | TFLite | Windows CUDA candidate | Notes |
+| --- | --- | --- | --- | --- |
+| Music and SFX | Yes | Yes | Gated | Official Small Music/SFX models |
+| Medium / 380 seconds | Yes | Yes | No | TFLite fallback; no unofficial FlashAttention build |
+| Audio-to-audio | Yes | Yes | Gated | LSDJ normalizes input before every backend |
+| Inpainting | Yes | Yes | Gated | Shared `inpaint_range` control |
+| Continuation | Yes | Yes | Gated | Inpaint range from source duration to requested duration |
+| Positive/negative prompt | Yes | Yes | Gated | Negative prompt requires CFG other than 1 |
+| Seed, duration, steps, CFG, APG | Yes | Yes | Gated | CUDA maps directly to the pinned upstream Python API |
+| Stacked LoRA with strength | Yes | Yes | Gated | Independent strength per adapter |
+| Per-step LoRA gating | Yes upstream | No | No | Not exposed by LSDJ |
+| Progress | Text stream | Text stream | Sampler callback | Normalized by LSDJ |
+| Cancellation | Process stop | Process stop | Callback + process stop | CUDA also yields to realtime MRT2 |
+| Partial audio preview | No | No | No | No pinned backend returns partial audio |
 
-The `/api/sa3/status` endpoint reports the selected backend, readiness,
-capabilities, real limitations, and current queued/running state.
+The `/api/sa3/status` endpoint reports the preference choices, active backend,
+readiness, capabilities, real limitations, current queued/running state, and on
+Windows the CUDA release gate and qualification blockers.
+
+## Windows CUDA process and scheduling model
+
+The CUDA adapter calls the official pinned Python API; no upstream code is
+copied into LSDJ. Each request runs in a disposable child and checks an exact
+provenance stamp before heavyweight imports. It then verifies the shared
+package versions, CUDA runtime, NVIDIA driver, device, reported memory, and the
+measured reservation before loading Small Music or Small SFX. It never invokes
+the Hub downloader and never falls back to PyTorch CPU.
+
+The managed launcher binds the private request to that child with an ephemeral
+secret inherited through an allowlisted environment entry; the request contains
+only its SHA-256. The worker verifies and removes the secret before importing
+upstream code. Every structured event carries a bounded job ID, while secrets,
+prompts, paths, and ambient credentials are excluded from diagnostics.
+
+The file-locked GPU broker is shared with MRT2 across processes. MRT2 leases
+have realtime priority. SA3 is admitted only when no MRT2 lease or waiter is
+present and its measured reservation fits the conservative budget. If MRT2
+arrives during sampling, the next upstream callback cancels the SA3 child. A
+daemon watchdog provides the same hard process boundary while upstream model
+loading or decoding offers no callback. Process exit releases the CUDA context.
+OOM, driver reset, worker crash, and app exit are contained by the same process
+boundary and the native process-tree supervisor.
+
+The candidate lock resolves the pinned SA3 requirements as PyTorch/torchaudio
+2.7.1+cu126 and Hugging Face Hub 1.7.1. This differs from #110's MRT2 candidate,
+so it is a shared-runtime hypothesis rather than a production upgrade. MRT2
+must pass its parity and dual-deck matrix on this exact lock. LSDJ will not ship
+a second multi-gigabyte PyTorch environment if that qualification fails.
 
 ## Audio boundary
 

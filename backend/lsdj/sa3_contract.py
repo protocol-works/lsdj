@@ -15,6 +15,7 @@ from enum import StrEnum
 class BackendName(StrEnum):
     MLX = "mlx"
     TFLITE = "tflite"
+    PYTORCH_CUDA = "pytorch_cuda"
 
 
 class GenerationMode(StrEnum):
@@ -138,6 +139,26 @@ TFLITE_CAPABILITIES = BackendCapabilities(
     ),
 )
 
+PYTORCH_CUDA_CAPABILITIES = BackendCapabilities(
+    backend=BackendName.PYTORCH_CUDA,
+    modes=COMMON_MODES,
+    controls=COMMON_CONTROLS,
+    models=("small_music", "small_sfx"),
+    progress=True,
+    cancellation=True,
+    preview=False,
+    limitations=(
+        "Windows x64 with a qualified NVIDIA GPU, driver, runtime, and measured VRAM is required.",
+        "Stable Audio Medium remains on TFLite until an official Windows FlashAttention build is qualified.",
+        "There is no PyTorch CPU fallback; CPU mode uses the separate TFLite runtime.",
+        "The disposable worker releases its CUDA context after every generation.",
+    ),
+)
+
 
 def capabilities_for(backend: BackendName) -> BackendCapabilities:
-    return MLX_CAPABILITIES if backend is BackendName.MLX else TFLITE_CAPABILITIES
+    return {
+        BackendName.MLX: MLX_CAPABILITIES,
+        BackendName.TFLITE: TFLITE_CAPABILITIES,
+        BackendName.PYTORCH_CUDA: PYTORCH_CUDA_CAPABILITIES,
+    }[backend]

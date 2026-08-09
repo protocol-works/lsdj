@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from lsdj.engine import CHANNELS, FRAME_SECONDS, NOTE_SUSTAIN, SAMPLE_RATE
 from lsdj.mrt2 import RuntimeSelection, RuntimeUnavailable
 from lsdj.mrt2_pytorch import PytorchBindings, PytorchMrt2Engine
+from lsdj.gpu_broker import Priority
 
 
 class FakeCuda:
@@ -88,7 +90,7 @@ class FakeAutoModel:
         return self.model
 
 
-def make_engine(*, cuda=True):
+def make_engine(*, cuda=True, gpu_broker=None):
     model = FakeModel()
     auto_model = FakeAutoModel(model)
     bindings = PytorchBindings(
@@ -120,6 +122,7 @@ def make_engine(*, cuda=True):
         selection=selection,
         bindings=bindings,
         cache_root=runtime_root,
+        gpu_broker=gpu_broker,
     )
     return engine, model, auto_model, runtime_root
 
@@ -204,6 +207,7 @@ def test_shared_deck_reuses_one_model_with_independent_continuation_state():
     second = first.shared_deck()
     assert first._system is second._system
     assert first._model_lock is second._model_lock
+    assert first._gpu_broker is second._gpu_broker
 
     first.generate_chunk()
     second.generate_chunk()
@@ -230,3 +234,29 @@ def test_diagnostics_disclose_unqualified_runtime_and_cuda_versions():
     assert diagnostics["nvidia_driver"] == "13.2"
     assert diagnostics["cuda_device"] == "Fake NVIDIA"
     assert diagnostics["capabilities"]["negative_prompt"] is False
+
+
+def test_mrt2_generation_takes_realtime_priority_over_background_sa3():
+    class FakeBroker:
+        def __init__(self):
+            self.calls = []
+
+        @contextmanager
+        def hold(self, service, **kwargs):
+            self.calls.append((service, kwargs))
+            yield object()
+
+    broker = FakeBroker()
+    engine, _, _, _ = make_engine(gpu_broker=broker)
+    engine.generate_chunk()
+
+    service, values = broker.calls[-1]
+    assert service == "mrt2"
+    assert values["priority"] is Priority.MRT2_REALTIME
+    assert values["reservation_bytes"] == 0
+    assert values["capacity_bytes"] == 12 * 1024**3
+    assert engine.diagnostics()["gpu_broker"] == {
+        "enabled": True,
+        "priority": 100,
+        "preempts": "sa3-background",
+    }

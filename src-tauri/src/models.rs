@@ -751,6 +751,10 @@ struct Sa3Pin {
 
 const SA3_PIN_JSON: &str = include_str!("../../sa3-pin.json");
 const TFLITE_PIN_JSON: &str = include_str!("../../sa3-tflite-pin.json");
+#[allow(dead_code)]
+const SA3_CUDA_PIN_JSON: &str = include_str!("../../sa3-pytorch-cuda-pin.json");
+#[allow(dead_code)]
+const SA3_CUDA_LOCK: &str = include_str!("../../backend/runtime-locks/windows-gpu-pytorch.txt");
 
 fn sa3_pin() -> Sa3Pin {
     serde_json::from_str(SA3_PIN_JSON).expect("sa3-pin.json is valid JSON")
@@ -887,6 +891,82 @@ fn mrt2_pin() -> Mrt2Pin {
 #[cfg(any(feature = "managed-runtime", test))]
 fn mrt2_wheel_manifest() -> Mrt2WheelManifest {
     serde_json::from_str(MRT2_WHEEL_PIN_JSON).expect("mrt2-pytorch-wheels.json is valid JSON")
+}
+
+/// Release/install gate for the optional Windows CUDA bundle.  The public
+/// model metadata is intentionally compiled into the app for review, but the
+/// installer must never expose a download until issue #108 has supplied every
+/// required gated hash and the physical qualification blockers are cleared.
+#[allow(dead_code)]
+fn validate_sa3_cuda_install_gate(json: &str, lock: &[u8]) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let pin: serde_json::Value = serde_json::from_str(json)
+        .map_err(|error| format!("SA3 CUDA pin is invalid JSON: {error}"))?;
+    if pin.get("schemaVersion").and_then(|value| value.as_u64()) != Some(1)
+        || pin.get("backend").and_then(|value| value.as_str()) != Some("pytorch_cuda")
+        || pin.get("platform").and_then(|value| value.as_str()) != Some("windows-x86_64")
+    {
+        return Err("SA3 CUDA pin has an unsupported schema or target".into());
+    }
+    if pin.get("releaseReady").and_then(|value| value.as_bool()) != Some(true)
+        || pin
+            .get("gatedArtifactsComplete")
+            .and_then(|value| value.as_bool())
+            != Some(true)
+        || pin
+            .get("releaseBlockers")
+            .and_then(|value| value.as_array())
+            .is_none_or(|blockers| !blockers.is_empty())
+    {
+        return Err("SA3 CUDA candidate is not release-ready; TFLite remains active".into());
+    }
+    let runtime = pin
+        .get("sharedRuntime")
+        .ok_or("SA3 CUDA shared runtime pin is missing")?;
+    let expected_size = runtime
+        .get("requirementsLockSize")
+        .and_then(|value| value.as_u64())
+        .ok_or("SA3 CUDA lock size is missing")?;
+    let expected_hash = runtime
+        .get("requirementsLockSha256")
+        .and_then(|value| value.as_str())
+        .ok_or("SA3 CUDA lock hash is missing")?;
+    if lock.len() as u64 != expected_size || hex::encode(Sha256::digest(lock)) != expected_hash {
+        return Err("SA3 CUDA shared runtime lock does not match its pin".into());
+    }
+    let models = pin
+        .get("models")
+        .and_then(|value| value.as_object())
+        .ok_or("SA3 CUDA model pins are missing")?;
+    for (name, model) in models {
+        let required = model
+            .get("required")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            || model
+                .get("enabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+        if !required {
+            continue;
+        }
+        for artifact_name in ["weight", "config"] {
+            let artifact = model
+                .get(artifact_name)
+                .ok_or_else(|| format!("SA3 CUDA {name} {artifact_name} pin is missing"))?;
+            let hash = artifact
+                .get("sha256")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "SA3 CUDA {name} {artifact_name} SHA-256 is incomplete"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Shared install state: at most one install runs at a time; the running stage's
@@ -3134,6 +3214,33 @@ mod tests {
             .contains("contained regular file"));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(outside);
+    }
+
+    #[test]
+    fn sa3_cuda_pin_is_compiled_in_but_fails_closed_until_every_gate_is_complete() {
+        let error = validate_sa3_cuda_install_gate(SA3_CUDA_PIN_JSON, SA3_CUDA_LOCK.as_bytes())
+            .unwrap_err();
+        assert!(error.contains("not release-ready"));
+
+        let mut pin: serde_json::Value = serde_json::from_str(SA3_CUDA_PIN_JSON).unwrap();
+        pin["releaseReady"] = serde_json::json!(true);
+        pin["gatedArtifactsComplete"] = serde_json::json!(true);
+        pin["releaseBlockers"] = serde_json::json!([]);
+        let error = validate_sa3_cuda_install_gate(
+            &serde_json::to_string(&pin).unwrap(),
+            SA3_CUDA_LOCK.as_bytes(),
+        )
+        .unwrap_err();
+        assert!(error.contains("config SHA-256 is incomplete"));
+
+        for model in ["small-music", "small-sfx"] {
+            pin["models"][model]["config"]["sha256"] = serde_json::json!("0".repeat(64));
+        }
+        validate_sa3_cuda_install_gate(
+            &serde_json::to_string(&pin).unwrap(),
+            SA3_CUDA_LOCK.as_bytes(),
+        )
+        .unwrap();
     }
 
     #[test]
