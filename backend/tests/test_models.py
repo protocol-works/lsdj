@@ -45,7 +45,7 @@ def _checkout(root: pathlib.Path, *, venv: bool, warmed: bool) -> None:
     mlx = root / "optimized" / "mlx"
     mlx.mkdir(parents=True)
     if venv:
-        python = runtime_paths.venv_python(mlx / ".venv")
+        python = runtime_paths.venv_python(mlx / ".venv", platform="darwin")
         python.parent.mkdir(parents=True)
         python.write_text("")
         (mlx / "scripts").mkdir()
@@ -65,7 +65,12 @@ def _checkout(root: pathlib.Path, *, venv: bool, warmed: bool) -> None:
 def test_readiness_classifies_a_checkout(tmp_path, venv, warmed, expected):
     root = tmp_path / "co"
     _checkout(root, venv=venv, warmed=warmed)
-    result = sa3.readiness(env={"SA3_MLX_HOME": str(root)}, home=tmp_path / "home")
+    result = sa3.readiness(
+        env={"SA3_MLX_HOME": str(root)},
+        home=tmp_path / "home",
+        platform_name="darwin",
+        machine="arm64",
+    )
     assert result["state"] == expected
     assert result["checkout"] == str(root)
 

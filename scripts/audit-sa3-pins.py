@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Reproduce the external provenance checks for sa3-pin.json.
+"""Reproduce the external provenance checks for both SA3 manifests.
 
 The default audit downloads and hashes the small source/runtime archives, uses
 the immutable Hugging Face revision's LFS metadata for the eight multi-GB model
-objects, and checks that the dependency lock remains fully hash-pinned. Pass
---include-model-bytes for the stronger (roughly 9 GB) end-to-end model audit.
+objects, and checks that both dependency locks remain fully hash-pinned. Pass
+--include-model-bytes for the stronger (roughly 23 GB) end-to-end model audit.
 """
 
 from __future__ import annotations
@@ -22,7 +22,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 PIN_PATH = ROOT / "sa3-pin.json"
-LOCK_PATH = ROOT / "scripts" / "sa3-requirements.lock"
+TFLITE_PIN_PATH = ROOT / "sa3-tflite-pin.json"
+LOCK_PATHS = (
+    ROOT / "scripts" / "sa3-requirements.lock",
+    ROOT / "scripts" / "sa3-tflite-requirements.lock",
+)
 USER_AGENT = "LSDJ-SA3-pin-audit/1"
 
 
@@ -82,15 +86,29 @@ def hash_url(label: str, artifact: dict[str, Any]) -> None:
     print(f"verified bytes: {label} ({size} bytes, sha256:{actual_hash})")
 
 
-def audit_model_metadata(pin: dict[str, Any]) -> None:
-    models = pin["models"]
+def unique_artifacts(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for artifact in artifacts:
+        path = artifact["path"]
+        prior = unique.get(path)
+        if prior is not None and (
+            prior["size"], prior["sha256"]
+        ) != (artifact["size"], artifact["sha256"]):
+            raise RuntimeError(f"manifest disagrees about duplicate artifact {path}")
+        unique[path] = artifact
+    return list(unique.values())
+
+
+def audit_model_metadata(
+    label: str, models: dict[str, Any], artifacts: list[dict[str, Any]]
+) -> None:
     endpoint = (
         f"https://huggingface.co/api/models/{models['repo']}/revision/"
         f"{models['revision']}?blobs=true"
     )
     document = read_json(endpoint)
     siblings = {item["rfilename"]: item for item in document.get("siblings", [])}
-    for artifact in models["artifacts"]:
+    for artifact in unique_artifacts(artifacts):
         path = artifact["path"]
         sibling = siblings.get(path)
         if sibling is None:
@@ -103,27 +121,27 @@ def audit_model_metadata(pin: dict[str, Any]) -> None:
                 f"{path}: manifest does not match immutable revision LFS metadata"
             )
         print(
-            f"verified LFS object: {path} "
+            f"verified LFS object ({label}): {path} "
             f"({actual_size} bytes, sha256:{actual_hash})"
         )
 
 
-def audit_model_bytes(pin: dict[str, Any]) -> None:
-    models = pin["models"]
-    for artifact in models["artifacts"]:
-        filename = artifact["path"].removeprefix("MLX/")
+def audit_model_bytes(
+    label: str, models: dict[str, Any], artifacts: list[dict[str, Any]]
+) -> None:
+    for artifact in unique_artifacts(artifacts):
         direct = {
             **artifact,
             "url": (
                 f"https://huggingface.co/{models['repo']}/resolve/"
-                f"{models['revision']}/MLX/{filename}?download=true"
+                f"{models['revision']}/{artifact['path']}?download=true"
             ),
         }
-        hash_url(artifact["path"], direct)
+        hash_url(f"{label}: {artifact['path']}", direct)
 
 
-def audit_lock() -> None:
-    lock = LOCK_PATH.read_text(encoding="utf-8")
+def audit_lock(path: Path) -> None:
+    lock = path.read_text(encoding="utf-8")
     packages = re.findall(r"(?m)^[A-Za-z0-9_.-]+==[^ \\\n]+", lock)
     hashes = re.findall(r"--hash=sha256:[0-9a-f]{64}", lock)
     if not packages or not hashes:
@@ -136,7 +154,10 @@ def audit_lock() -> None:
     ]
     if unpinned:
         raise RuntimeError(f"dependency lock entries lack hashes: {', '.join(unpinned)}")
-    print(f"verified lock structure: {len(packages)} packages, {len(hashes)} SHA-256 hashes")
+    print(
+        f"verified lock structure: {path.name}: "
+        f"{len(packages)} packages, {len(hashes)} SHA-256 hashes"
+    )
 
 
 def main() -> int:
@@ -144,10 +165,11 @@ def main() -> int:
     parser.add_argument(
         "--include-model-bytes",
         action="store_true",
-        help="download and hash all eight model objects (roughly 9 GB)",
+        help="download and hash both backends' model objects (roughly 23 GB)",
     )
     args = parser.parse_args()
     pin = json.loads(PIN_PATH.read_text(encoding="utf-8"))
+    tflite_pin = json.loads(TFLITE_PIN_PATH.read_text(encoding="utf-8"))
 
     hash_url("Stable Audio 3 source", pin["source"])
     for runtime in pin["runtime"]["uv"]:
@@ -169,10 +191,22 @@ def main() -> int:
             f"releases/download/{release}/SHA256SUMS",
         )
         hash_url(f"Python {runtime['version']} ({runtime['target']})", runtime)
-    audit_model_metadata(pin)
+    mlx_artifacts = pin["models"]["artifacts"]
+    tflite_artifacts = [
+        *tflite_pin["models"]["shared"],
+        *[
+            artifact
+            for bundle in tflite_pin["models"]["bundles"].values()
+            for artifact in bundle
+        ],
+    ]
+    audit_model_metadata("MLX", pin["models"], mlx_artifacts)
+    audit_model_metadata("TFLite", tflite_pin["models"], tflite_artifacts)
     if args.include_model_bytes:
-        audit_model_bytes(pin)
-    audit_lock()
+        audit_model_bytes("MLX", pin["models"], mlx_artifacts)
+        audit_model_bytes("TFLite", tflite_pin["models"], tflite_artifacts)
+    for lock_path in LOCK_PATHS:
+        audit_lock(lock_path)
     print("SA3 pin audit complete")
     return 0
 

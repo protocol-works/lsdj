@@ -123,6 +123,7 @@ def test_generate_forwards_optional_json_controls(client, monkeypatch):
             cfg=4.5,
             apg=0.75,
             seed=12345,
+            steps=12,
         ),
     )
     assert response.status_code == 200
@@ -137,6 +138,7 @@ def test_generate_forwards_optional_json_controls(client, monkeypatch):
                 "apg": 0.75,
                 "negative_prompt": "vocals",
                 "seed": 12345,
+                "steps": 12,
             },
         )
     ]
@@ -292,6 +294,7 @@ def test_generate_forwards_multipart_init_audio_and_inpaint(
     monkeypatch.setattr(controller.sa3, "generate", fake_generate)
     response = client.post("/api/generate", files=generate_multipart(metadata, source))
     assert response.status_code == 200
+    normalized = sa3.normalize_wav(source).wav
     assert calls == [
         (
             "vinyl spinback",
@@ -301,7 +304,7 @@ def test_generate_forwards_multipart_init_audio_and_inpaint(
                 "init_noise_level": 0.55,
                 "seed": 7,
                 "inpaint_range": (0.0, 3.0),
-                "init_audio": source,
+                "init_audio": normalized,
             },
         )
     ]
@@ -323,6 +326,7 @@ def test_generate_accepts_the_optional_control_boundaries(client, monkeypatch):
             cfg=sa3.MIN_CFG,
             apg=sa3.MIN_APG,
             seed=sa3.MAX_SEED,
+            steps=sa3.MIN_STEPS,
         ),
     )
     assert response.status_code == 200
@@ -333,6 +337,7 @@ def test_generate_accepts_the_optional_control_boundaries(client, monkeypatch):
             "apg": sa3.MIN_APG,
             "negative_prompt": "kick",
             "seed": sa3.MAX_SEED,
+            "steps": sa3.MIN_STEPS,
         }
     ]
 
@@ -353,6 +358,7 @@ def test_generate_accepts_the_optional_control_upper_boundaries(client, monkeypa
             cfg=sa3.MAX_CFG,
             apg=sa3.MAX_APG,
             seed=0,
+            steps=sa3.MAX_STEPS,
         ),
     )
     assert response.status_code == 200
@@ -363,6 +369,7 @@ def test_generate_accepts_the_optional_control_upper_boundaries(client, monkeypa
             "apg": sa3.MAX_APG,
             "negative_prompt": "kick",
             "seed": 0,
+            "steps": sa3.MAX_STEPS,
         }
     ]
 
@@ -455,6 +462,11 @@ def test_generate_rejects_nan_seconds(client, monkeypatch):
         {"seed": 1.5},
         {"seed": -1},
         {"seed": sa3.MAX_SEED + 1},
+        {"steps": None},
+        {"steps": True},
+        {"steps": 1.5},
+        {"steps": sa3.MIN_STEPS - 1},
+        {"steps": sa3.MAX_STEPS + 1},
         {"inpaint_range": None},
         {"inpaint_range": []},
         {"inpaint_range": [0]},
@@ -500,9 +512,6 @@ def test_generate_treats_a_blank_negative_prompt_as_absent(client, monkeypatch):
     [
         b"",
         b"not a wave",
-        pcm16_wav(sample_rate=48_000),
-        pcm16_wav(channels=3),
-        pcm16_wav(sample_width=1),
         pcm16_wav(frames=0),
         pcm16_wav()[:-4],
     ],
@@ -516,6 +525,24 @@ def test_generate_rejects_unsupported_init_wav(client, monkeypatch, audio):
         "/api/generate", files=generate_multipart(generate_request(), audio)
     )
     assert response.status_code == 422
+
+
+def test_generate_normalizes_sample_rate_width_and_channel_layout(client, monkeypatch):
+    calls = []
+    source = pcm16_wav(sample_rate=48_000, channels=3, sample_width=1, frames=48)
+
+    async def fake_generate(prompt, seconds, kind, **options):
+        calls.append(options["init_audio"])
+        return b"RIFFwav"
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post(
+        "/api/generate", files=generate_multipart(generate_request(), source)
+    )
+    assert response.status_code == 200
+    normalized = sa3.inspect_canonical_wav(calls[0])
+    assert normalized.frames == 44
+    assert normalized.seconds == pytest.approx(44 / 44_100)
 
 
 def test_generate_rejects_an_oversized_init_file(client, monkeypatch):
@@ -632,6 +659,22 @@ def test_generate_maps_cli_failure_to_502(client, monkeypatch):
     response = client.post("/api/generate", json=generate_request())
     assert response.status_code == 502
     assert "no DiT weights" in response.json()["detail"]
+
+
+def test_generate_maps_cancellation_to_499(client, monkeypatch):
+    async def fake_generate(prompt, seconds, kind):
+        raise controller.sa3.GenerationCancelled("generation cancelled")
+
+    monkeypatch.setattr(controller.sa3, "generate", fake_generate)
+    response = client.post("/api/generate", json=generate_request())
+    assert response.status_code == 499
+
+
+def test_sa3_status_exposes_the_runtime_contract(client, monkeypatch):
+    monkeypatch.setattr(controller.sa3, "status", lambda: {"backend": "tflite"})
+    response = client.get("/api/sa3/status")
+    assert response.status_code == 200
+    assert response.json() == {"backend": "tflite"}
 
 
 # --- /api/render (M18, the third Magenta engine) --------------------------

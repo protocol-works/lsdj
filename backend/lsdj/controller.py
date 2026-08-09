@@ -10,7 +10,6 @@ the generation RPC: /api/render (the third Magenta engine), /api/generate
 import argparse
 import asyncio
 import contextlib
-import io
 import json
 import logging
 import math
@@ -18,7 +17,6 @@ import multiprocessing as mp
 import os
 import queue
 import time
-import wave
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -234,34 +232,11 @@ def _generation_number(
     return float(value)
 
 
-def _validate_init_wav(data: bytes) -> None:
+def _normalize_init_wav(data: bytes) -> bytes:
     try:
-        with wave.open(io.BytesIO(data), "rb") as source:
-            channels = source.getnchannels()
-            sample_width = source.getsampwidth()
-            sample_rate = source.getframerate()
-            frames = source.getnframes()
-            compression = source.getcomptype()
-            pcm_bytes = source.readframes(frames)
-    except (EOFError, wave.Error):
-        raise HTTPException(
-            status_code=422, detail="'init_audio' must be a valid WAV file"
-        ) from None
-    if (
-        compression != "NONE"
-        or channels not in (1, 2)
-        or sample_width != 2
-        or sample_rate != 44_100
-        or frames == 0
-        or len(pcm_bytes) != frames * channels * sample_width
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "'init_audio' must be non-empty 44.1 kHz 16-bit PCM WAV "
-                "with one or two channels"
-            ),
-        )
+        return sa3.normalize_wav(data).wav
+    except sa3.AudioFormatError as error:
+        raise HTTPException(status_code=422, detail=f"'init_audio' {error}") from None
 
 
 async def _read_init_audio(upload: UploadFile) -> bytes:
@@ -278,8 +253,7 @@ async def _read_init_audio(upload: UploadFile) -> bytes:
             )
         chunks.append(chunk)
     data = b"".join(chunks)
-    _validate_init_wav(data)
-    return data
+    return _normalize_init_wav(data)
 
 
 async def _read_capped_body(request: Request, limit: int, detail: str) -> bytes:
@@ -445,6 +419,19 @@ def _validate_generate_request(
                 status_code=422, detail="'apg' requires 'cfg' other than 1"
             )
         options["apg"] = apg
+
+    if "steps" in parsed:
+        steps = parsed["steps"]
+        if (
+            isinstance(steps, bool)
+            or not isinstance(steps, int)
+            or not sa3.MIN_STEPS <= steps <= sa3.MAX_STEPS
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'steps' must be an integer from {sa3.MIN_STEPS}-{sa3.MAX_STEPS}",
+            )
+        options["steps"] = steps
 
     if "negative_prompt" in parsed:
         negative_prompt = parsed["negative_prompt"]
@@ -675,7 +662,15 @@ async def generate_audio(request: Request) -> Response:
     except sa3.GenerationFailed as error:
         logger.warning("generation failed: %s", error)
         raise HTTPException(status_code=502, detail=str(error)) from None
+    except sa3.GenerationCancelled as error:
+        raise HTTPException(status_code=499, detail=str(error)) from None
     return Response(content=wav, media_type="audio/wav")
+
+
+@app.get("/api/sa3/status")
+def stable_audio_status() -> dict:
+    """Selected runtime, feature matrix, limitations, and active generation."""
+    return sa3.status()
 
 
 @app.get("/api/models")

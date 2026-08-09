@@ -42,7 +42,9 @@ function status(overrides: Partial<ModelStatus> = {}): ModelStatus {
     },
     sa3: {
       state: 'ready',
+      backend: 'mlx',
       sizeBytes: 5_000_000_000,
+      downloadBytes: 9_154_794_562,
       checkout: '/sa3',
       installedSource: null,
       pinnedSource: { repo: 'https://github.com/Stability-AI/stable-audio-3', commit: 'pin' },

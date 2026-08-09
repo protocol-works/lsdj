@@ -103,7 +103,7 @@ impl AppPaths {
         self.legacy_data.as_deref()
     }
 
-    fn backend_env(&self) -> [(OsString, OsString); 8] {
+    fn backend_env(&self) -> [(OsString, OsString); 9] {
         [
             pair("LSDJ_CONFIG_HOME", &self.config),
             pair("LSDJ_DATA_HOME", &self.data),
@@ -113,6 +113,7 @@ impl AppPaths {
             // Compatibility variables consumed by upstream magenta-rt-v2 and
             // the current SA3 entry points. Rust remains their source of truth.
             pair("MAGENTA_HOME", &self.magenta_base),
+            pair("SA3_HOME", &self.sa3_home),
             pair("SA3_MLX_HOME", &self.sa3_home),
             pair("SA3_LORAS_HOME", &self.loras_home),
         ]
@@ -463,6 +464,12 @@ mod tests {
                 .get(std::ffi::OsStr::new("LSDJ_ASSETS_HOME"))
                 .map(OsString::as_os_str),
             Some(roots.assets.as_os_str()),
+        );
+        assert_eq!(
+            values
+                .get(std::ffi::OsStr::new("SA3_HOME"))
+                .map(OsString::as_os_str),
+            Some(roots.sa3_home.as_os_str()),
         );
         assert_eq!(
             values
