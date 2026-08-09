@@ -160,33 +160,38 @@ fn summarize_audio_health(
     main_open_error: Option<String>,
     cue_open_error: Option<String>,
 ) -> AudioOutputHealth {
-    let main_healthy = main.is_some_and(|stream| stream.healthy);
+    // A synchronous failure to open the selected route is authoritative even
+    // when startup kept a healthy default/fallback stream alive. The fallback
+    // preserves sound, but it is not the persisted route the UI displays and
+    // the reconnect command must keep targeting that selection.
+    let main_healthy = main_open_error.is_none() && main.is_some_and(|stream| stream.healthy);
     let main_error = if main_healthy {
         None
-    } else if main.is_some() {
-        Some("The main audio stream stopped after it started.".into())
     } else {
-        main_open_error.or_else(|| Some("No main audio output is running.".into()))
+        main_open_error.or_else(|| {
+            Some(if main.is_some() {
+                "The main audio stream stopped after it started.".into()
+            } else {
+                "No main audio output is running.".into()
+            })
+        })
     };
 
-    let (cue_healthy, cue_error, cue_can_reconnect) = if combined {
+    let (cue_healthy, cue_error, cue_can_reconnect) = if combined && !main_healthy {
+        (
+            false,
+            Some("The cue is unavailable until the selected main output reconnects.".into()),
+            true,
+        )
+    } else if combined {
         match main {
-            Some(stream) if !stream.healthy => (
-                false,
-                Some("The cue stopped with the main audio stream.".into()),
-                true,
-            ),
             Some(stream) if stream.channels < 4 => (
                 false,
                 Some("Phones on main require an output with channels 3/4.".into()),
                 false,
             ),
             Some(_) => (true, None, false),
-            None => (
-                false,
-                Some("The cue is unavailable because no main audio output is running.".into()),
-                true,
-            ),
+            None => unreachable!("a combined cue cannot be healthy without a main stream"),
         }
     } else {
         let healthy = cue.is_some_and(|stream| stream.healthy);
@@ -210,6 +215,11 @@ fn summarize_audio_health(
 }
 
 impl AudioState {
+    fn retain_requested_routes(&self, main_name: String, cue_name: String) {
+        *self.main_name.lock().unwrap_or_else(|p| p.into_inner()) = main_name;
+        *self.cue_name.lock().unwrap_or_else(|p| p.into_inner()) = cue_name;
+    }
+
     fn output_health(&self) -> AudioOutputHealth {
         let main = self
             .main_stream
@@ -569,15 +579,9 @@ fn reopen_main(
         (None, None)
     };
     let stream = engine_device::open_main_stream(selector(main_name), master_consumer, cue_consumer)
-        .map_err(|error| {
-            let error = error.to_string();
-            audio.set_main_error(Some(error.clone()));
-            error
-        })?;
+        .map_err(|error| error.to_string())?;
     if !host.install_master_ring(master_ring) {
-        let error = ENGINE_BUSY.to_string();
-        audio.set_main_error(Some(error.clone()));
-        return Err(error);
+        return Err(ENGINE_BUSY.to_string());
     }
     if let Some(cue_ring) = cue_ring {
         // Combined: the cue now rides the main stream's 3/4 — install its ring
@@ -714,15 +718,11 @@ fn set_cue_device(
 /// Retry failed output streams using the currently selected topology. Transitions
 /// are serialized with device switches, and only unhealthy streams are rebuilt:
 /// a failed split cue never interrupts a healthy audience-facing main output.
-#[tauri::command]
-fn reconnect_audio_outputs(
-    host: tauri::State<'_, Host>,
-    audio: tauri::State<'_, AudioState>,
+fn reconnect_audio_outputs_with(
+    audio: &AudioState,
+    mut reopen_main_route: impl FnMut(&str, &str) -> Result<(), String>,
+    mut reopen_cue_route: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<AudioOutputHealth, String> {
-    let _transition = audio
-        .transition
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let main_name = audio.main_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let cue_name = audio.cue_name.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let combined = is_combined(&main_name, &cue_name);
@@ -730,12 +730,14 @@ fn reconnect_audio_outputs(
     let mut failures = Vec::new();
 
     if retry_main {
-        if let Err(error) = reopen_main(&host, &audio, &main_name, &cue_name) {
+        if let Err(error) = reopen_main_route(&main_name, &cue_name) {
+            audio.set_main_error(Some(error.clone()));
             failures.push(format!("main: {error}"));
         }
     }
     if retry_cue {
-        if let Err(error) = reopen_cue_split(&host, &audio, &cue_name) {
+        if let Err(error) = reopen_cue_route(&cue_name) {
+            audio.set_cue_error(Some(error.clone()));
             failures.push(format!("cue: {error}"));
         }
     }
@@ -745,6 +747,22 @@ fn reconnect_audio_outputs(
     } else {
         Err(format!("Couldn't reconnect audio outputs ({})", failures.join("; ")))
     }
+}
+
+#[tauri::command]
+fn reconnect_audio_outputs(
+    host: tauri::State<'_, Host>,
+    audio: tauri::State<'_, AudioState>,
+) -> Result<AudioOutputHealth, String> {
+    let _transition = audio
+        .transition
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    reconnect_audio_outputs_with(
+        &audio,
+        |main_name, cue_name| reopen_main(&host, &audio, main_name, cue_name),
+        |cue_name| reopen_cue_split(&host, &audio, cue_name),
+    )
 }
 
 /// Set (and persist) the recordings folder — "" = Downloads. The picker's
@@ -788,15 +806,16 @@ pub fn run() {
             if !shell_settings.main_device.is_empty() || !shell_settings.cue_device.is_empty() {
                 let main = &shell_settings.main_device;
                 let cue = &shell_settings.cue_device;
+                // The persisted route is the requested topology even when the
+                // device is currently unplugged. Retain it before attempting the
+                // open so health and explicit reconnect never fall back to the
+                // startup default as their target.
+                audio_state.retain_requested_routes(main.clone(), cue.clone());
                 match reopen_main(&host, &audio_state, main, cue) {
                     Ok(()) => {
-                        *audio_state.main_name.lock().unwrap_or_else(|p| p.into_inner()) =
-                            main.clone();
-                        // Retain the requested route even when its split stream is
-                        // currently unplugged, so live health reports it and the
-                        // explicit reconnect command can retry it later.
-                        *audio_state.cue_name.lock().unwrap_or_else(|p| p.into_inner()) =
-                            cue.clone();
+                        // The cue selection was retained above; if its split
+                        // stream is unplugged, its own open error remains live and
+                        // reconnect keeps targeting the persisted name.
                         if !is_combined(main, cue) {
                             match reopen_cue_split(&host, &audio_state, cue) {
                                 Ok(()) => {}
@@ -806,9 +825,10 @@ pub fn run() {
                             }
                         }
                     }
-                    Err(e) => eprintln!(
-                        "lsdj-app: persisted main device '{main}' not applied: {e}"
-                    ),
+                    Err(e) => {
+                        audio_state.set_main_error(Some(e.clone()));
+                        eprintln!("lsdj-app: persisted main device '{main}' not applied: {e}");
+                    }
                 }
             }
             // The per-deck analysis PCM taps (gap 1): the sidecars tee model PCM
@@ -1137,8 +1157,20 @@ pub fn run() {
 mod tests {
     use super::{
         bundled_backend_path, cue_reselect_is_noop, is_combined, recovery_targets,
-        summarize_audio_health, StreamHealthSnapshot,
+        reconnect_audio_outputs_with, summarize_audio_health, AudioState, StreamHealthSnapshot,
     };
+
+    fn headless_audio_state() -> AudioState {
+        AudioState {
+            transition: std::sync::Mutex::new(()),
+            main_stream: std::sync::Mutex::new(None),
+            cue_stream: std::sync::Mutex::new(None),
+            main_error: std::sync::Mutex::new(None),
+            cue_error: std::sync::Mutex::new(None),
+            main_name: std::sync::Mutex::new(String::new()),
+            cue_name: std::sync::Mutex::new(String::new()),
+        }
+    }
 
     #[test]
     fn bundled_backend_lives_under_the_tauri_resource_dir() {
@@ -1189,6 +1221,56 @@ mod tests {
         assert_eq!(
             health.main_error.as_deref(),
             Some("audio device unavailable: no default output device")
+        );
+    }
+
+    #[test]
+    fn persisted_main_open_error_overrides_a_healthy_fallback_stream() {
+        let health = summarize_audio_health(
+            Some(StreamHealthSnapshot {
+                healthy: true,
+                channels: 4,
+            }),
+            None,
+            true,
+            Some("persisted USB output is unplugged".into()),
+            None,
+        );
+
+        assert!(!health.main_healthy);
+        assert!(!health.cue_healthy);
+        assert!(health.can_reconnect);
+        assert_eq!(
+            health.main_error.as_deref(),
+            Some("persisted USB output is unplugged")
+        );
+    }
+
+    #[test]
+    fn unplugged_persisted_route_is_retained_and_reconnect_retries_that_target() {
+        let audio = headless_audio_state();
+        audio.retain_requested_routes("Persisted USB".into(), "".into());
+        audio.set_main_error(Some("device unplugged".into()));
+        let attempted = std::cell::RefCell::new(None);
+
+        let result = reconnect_audio_outputs_with(
+            &audio,
+            |main_name, cue_name| {
+                attempted.replace(Some((main_name.to_string(), cue_name.to_string())));
+                Ok(())
+            },
+            |_| panic!("combined topology must not open a split cue"),
+        );
+
+        assert!(result.is_ok(), "simulated replug should reopen the route");
+        assert_eq!(
+            attempted.into_inner(),
+            Some(("Persisted USB".into(), "".into()))
+        );
+        assert_eq!(
+            *audio.main_name.lock().unwrap(),
+            "Persisted USB",
+            "failed boot hydration must not fall back to the default target"
         );
     }
 
