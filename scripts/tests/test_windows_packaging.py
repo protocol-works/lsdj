@@ -100,11 +100,23 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertLess(probe_end, preinstall_start)
         self.assertLess(preinstall_start, create_start)
         self.assertNotIn("CreateDirectory", probe)
-        self.assertIn("${If} ${Silent}", probe)
-        self.assertIn("${AndIf} $R0 = -1", probe)
-        self.assertIn("SetErrorLevel 2", probe)
+        preinstall_end = hooks.index("!macroend", preinstall_start)
+        preinstall = hooks[preinstall_start:preinstall_end]
+        self.assertIn("${If} ${Silent}", preinstall)
+        self.assertIn("${AndIf} $UpdateMode != 1", preinstall)
+        self.assertIn(
+            'ReadRegStr $R6 SHCTX "${UNINSTKEY}" "DisplayVersion"',
+            preinstall,
+        )
+        self.assertIn(
+            'nsis_tauri_utils::SemverCompare "${VERSION}" $R6',
+            preinstall,
+        )
+        self.assertIn("${If} $R7 = -1", preinstall)
+        self.assertIn("SetErrorLevel 2", preinstall)
         self.assertLess(
-            probe.index("SetErrorLevel 2"), probe.index("GetFileAttributesW")
+            preinstall.index("SetErrorLevel 2"),
+            preinstall.index("Call LsdjCanonicalDataRootIsValid"),
         )
 
         language = (TAURI_ROOT / "windows/English.nsh").read_text()
