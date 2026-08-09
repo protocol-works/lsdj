@@ -172,6 +172,30 @@ function Require-InstalledVersion {
     }
 }
 
+function Set-DisplayVersionEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Value
+    )
+
+    New-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value $Value `
+        -PropertyType String -Force | Out-Null
+    $actual = (Get-ItemProperty -LiteralPath $registryKey -Name DisplayVersion).DisplayVersion
+    $rawKey = Get-Item -LiteralPath $registryKey -ErrorAction Stop
+    $rawKind = $rawKey.GetValueKind('DisplayVersion')
+    $rawValue = $rawKey.GetValue(
+        'DisplayVersion',
+        $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    )
+    if ($actual -cne $Value -or
+        $rawKind -ne [Microsoft.Win32.RegistryValueKind]::String -or
+        $rawValue -cne $Value) {
+        throw "Could not establish exact DisplayVersion test evidence: $Value"
+    }
+}
+
 function Require-No-Workers {
     $remaining = @(Get-Process -Name 'lsdj-app', 'lsdj_backend' -ErrorAction SilentlyContinue)
     if ($remaining.Count -ne 0) {
@@ -555,7 +579,7 @@ Assert-InstalledStateSnapshotUnchanged -Before $combinedPassiveStateBefore
 # Existing install evidence with empty, malformed, or missing version metadata
 # is unsafe. Each refusal must preserve the exact damaged evidence for repair.
 Start-LifecycleScenario 'reject existing install with empty version metadata'
-Set-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value ''
+Set-DisplayVersionEvidence -Value ''
 $rejectedStateBefore = Get-InstalledStateSnapshot
 Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S') -ExpectedExitCodes @(2) | Out-Null
 Assert-CiInstallerTraceContract -Required @(
@@ -566,10 +590,11 @@ Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
 
 Start-LifecycleScenario 'reject existing install with corrupt version metadata'
 $corruptDisplayVersion = 'not-a-semver'
-Set-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value $corruptDisplayVersion
+Set-DisplayVersionEvidence -Value $corruptDisplayVersion
 $rejectedStateBefore = Get-InstalledStateSnapshot
 Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S') -ExpectedExitCodes @(2) | Out-Null
 Assert-CiInstallerTraceContract -Required @(
+    "preinstall: version evidence installed=$corruptDisplayVersion present=1 existing=1",
     "preinstall: installed version=$corruptDisplayVersion validity=0",
     'abort: installed version invalid'
 ) -Forbidden @(
@@ -591,7 +616,7 @@ Assert-CiInstallerTraceContract -Required @(
 ) -Forbidden $forbiddenPostVersionGuardTrace
 Require-RejectedInstallPreservedState -DisplayVersionMissing
 Assert-InstalledStateSnapshotUnchanged -Before $rejectedStateBefore
-Set-ItemProperty -LiteralPath $registryKey -Name DisplayVersion -Value $NewerVersion
+Set-DisplayVersionEvidence -Value $NewerVersion
 Require-InstalledVersion $NewerVersion
 
 if ($RequireSigned) {
