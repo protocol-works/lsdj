@@ -23,6 +23,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, StreamConfig};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::host::OutputConsumer;
 use crate::{Engine, CHANNELS, SAMPLE_RATE};
@@ -64,16 +66,47 @@ pub struct StreamInfo {
     pub buffer_frames: BufferSize,
 }
 
+/// A cloneable, allocation-free health signal shared with CPAL's error callback.
+/// The signal is deliberately one-way: a failed stream is replaced, never reset.
+#[derive(Clone)]
+struct StreamHealth(Arc<AtomicBool>);
+
+impl StreamHealth {
+    fn healthy() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn mark_failed(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// A running output stream driving an [`Engine`]. The cpal stream stops when this
 /// is dropped; the `Engine` lives inside the callback for the stream's lifetime.
 pub struct AudioStream {
     _stream: cpal::Stream,
     info: StreamInfo,
+    /// CPAL invokes its error callback on a backend-owned thread. Keep that path
+    /// bounded and non-blocking: it flips this preallocated atomic and does no
+    /// logging, allocation, locking, or application IPC. The shell polls the
+    /// value off the real-time path and owns user-facing diagnostics/recovery.
+    healthy: StreamHealth,
 }
 
 impl AudioStream {
     pub fn info(&self) -> &StreamInfo {
         &self.info
+    }
+
+    /// Whether CPAL has reported an asynchronous error since this stream was
+    /// started. A newly opened stream is healthy; recovery replaces the stream
+    /// (and therefore this signal) rather than trying to reset it in place.
+    pub fn is_healthy(&self) -> bool {
+        self.healthy.is_healthy()
     }
 }
 
@@ -723,7 +756,13 @@ fn build_spread_stream<T: DeviceSample>(
         secondary_scratch,
     };
 
-    let err_fn = |e| eprintln!("lsdj-engine: stream error: {e}");
+    let healthy = StreamHealth::healthy();
+    let error_health = healthy.clone();
+    let err_fn = move |_error| {
+        // This may run on an audio-backend thread. Never format/log/lock/send
+        // from here: one atomic store is sufficient for the shell's live poll.
+        error_health.mark_failed();
+    };
 
     let stream = device
         .build_output_stream(
@@ -749,6 +788,7 @@ fn build_spread_stream<T: DeviceSample>(
     Ok(AudioStream {
         _stream: stream,
         info,
+        healthy,
     })
 }
 
@@ -834,7 +874,12 @@ fn build_engine_stream<T: DeviceSample>(
     };
     scratch_reserve(&mut scratch, granted_frames.saturating_mul(4));
 
-    let err_fn = |e| eprintln!("lsdj-engine: stream error: {e}");
+    let healthy = StreamHealth::healthy();
+    let error_health = healthy.clone();
+    let err_fn = move |_error| {
+        // Same non-blocking contract as the production spread-stream path.
+        error_health.mark_failed();
+    };
 
     let stream = device
         .build_output_stream(
@@ -862,6 +907,7 @@ fn build_engine_stream<T: DeviceSample>(
     Ok(AudioStream {
         _stream: stream,
         info,
+        healthy,
     })
 }
 
@@ -910,10 +956,22 @@ pub(crate) fn set_ftz_daz() {
 #[cfg(test)]
 mod tests {
     use super::{
-        write_mapped, DeviceSample, OutputConsumer, OutputResampler, OutputWriter, CHANNELS,
-        SAMPLE_RATE,
+        write_mapped, DeviceSample, OutputConsumer, OutputResampler, OutputWriter, StreamHealth,
+        CHANNELS, SAMPLE_RATE,
     };
     use rubato::Resampler;
+
+    #[test]
+    fn stream_health_is_one_way_and_shared_with_the_error_callback() {
+        let health = StreamHealth::healthy();
+        let callback_view = health.clone();
+        assert!(health.is_healthy());
+
+        callback_view.mark_failed();
+
+        assert!(!health.is_healthy());
+        assert!(!callback_view.is_healthy());
+    }
 
     /// The three supported output types agree at silence and both PCM endpoints;
     /// out-of-domain values clip instead of wrapping, and NaN becomes silence.

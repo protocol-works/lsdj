@@ -38,6 +38,7 @@ import { BeatView } from './mixer/BeatView'
 import { MixerStrip, type ChannelControls } from './mixer/MixerStrip'
 import { RecordControl } from './mixer/RecordControl'
 import { AccentPicker } from './ui/AccentPicker'
+import { AudioOutputHealth } from './ui/AudioOutputHealth'
 import { OutputDevicePicker } from './ui/OutputDevicePicker'
 import { BeatViewPicker } from './ui/BeatViewPicker'
 import { Switch } from './ui/Switch'
@@ -883,6 +884,7 @@ function App() {
               value={cueDevice}
               mainDeviceName={mainDevice}
             />
+            <AudioOutputHealth />
           </div>
         </section>
         {/* Where master-bus recordings are saved. Empty = the OS Downloads

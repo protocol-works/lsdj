@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SAMPLE_RATE } from './types'
 import {
   createNativeEngine,
+  getAudioOutputHealth,
+  reconnectAudioOutputs,
   styleAddTarget,
   styleMoveTarget,
   styleSetCursor,
@@ -381,6 +383,29 @@ describe('createNativeEngine — output device', () => {
 
     const engine = createNativeEngine()
     await expect(engine.setMainDevice('FLX4')).rejects.toThrow('device busy')
+  })
+
+  it('wires live output health and explicit reconnect commands', async () => {
+    const health = {
+      mainHealthy: false,
+      cueHealthy: false,
+      mainError: 'no output',
+      cueError: 'no output',
+      canReconnect: true,
+    }
+    const invoke = vi.fn((cmd: string, args?: unknown) => {
+      calls.push({ cmd, args })
+      if (cmd === 'audio_output_health' || cmd === 'reconnect_audio_outputs') {
+        return Promise.resolve(health)
+      }
+      return Promise.resolve(undefined)
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+
+    await expect(getAudioOutputHealth()).resolves.toEqual(health)
+    await expect(reconnectAudioOutputs()).resolves.toEqual(health)
+    expect(calls).toContainEqual({ cmd: 'audio_output_health', args: undefined })
+    expect(calls).toContainEqual({ cmd: 'reconnect_audio_outputs', args: undefined })
   })
 })
 

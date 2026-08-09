@@ -109,6 +109,33 @@
   color: var(--color-led-danger);
 }
 
+.audio-health {
+  margin: 0;
+  font: 500 var(--text-s) var(--font-ui);
+}
+
+.audio-health--checking {
+  color: var(--color-text-muted);
+}
+
+.audio-health--healthy {
+  color: var(--color-led-ok);
+}
+
+.audio-health--error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  color: var(--color-led-danger);
+}
+
+.audio-health__messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
 /* ---------- record control (top bar) ---------- */
 
 /* A ● dot + REC at rest; the button outline and dot go danger-red while
