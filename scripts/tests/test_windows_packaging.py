@@ -118,6 +118,9 @@ class WindowsPackagingContractTest(unittest.TestCase):
             REPO_ROOT / "scripts/assert-windows-release-rejects-unsigned.ps1"
         ).read_text()
         self.assertIn("Authenticode signature status is NotSigned", rejection)
+        success_exit = rejection.rindex("exit 0")
+        self.assertGreater(success_exit, rejection.index("if ($exitCode -eq 0)"))
+        self.assertGreater(success_exit, rejection.index("if ($rendered -notmatch"))
 
     def test_release_producer_is_required_and_has_no_publish_permission(self):
         workflow = (REPO_ROOT / ".github/workflows/macos-release.yml").read_text()
