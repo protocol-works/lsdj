@@ -206,7 +206,11 @@ describe('createNativeEngine — control contract', () => {
       )
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
-    const fetchMock = vi.fn(async () => ({ ok: true }))
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     await fetchGenerationApi('/api/generate', { method: 'POST' })
