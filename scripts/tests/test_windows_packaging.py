@@ -44,6 +44,21 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("LsdjOwnedDataRootIsSafe", hooks)
         self.assertIn("LsdjTreeIsLinkFree", hooks)
         self.assertIn("LsdjDeleteTreeWithoutLinks", hooks)
+        self.assertIn("IfErrors lsdj_install_tree_empty_candidate", hooks)
+        self.assertIn("IfErrors lsdj_empty_recheck", hooks)
+        self.assertIn("IfErrors lsdj_tree_empty_candidate", hooks)
+        self.assertIn("IfErrors lsdj_delete_empty_candidate", hooks)
+        for empty_recheck in (
+            "lsdj_install_tree_empty_candidate:",
+            "lsdj_empty_recheck:",
+            "lsdj_tree_empty_candidate:",
+            "lsdj_delete_empty_candidate:",
+        ):
+            recheck_start = hooks.index(empty_recheck)
+            recheck = hooks[recheck_start : recheck_start + 700]
+            self.assertIn("GetFileAttributesW", recheck)
+            self.assertIn("LSDJ_FILE_ATTRIBUTE_REPARSE_POINT", recheck)
+            self.assertIn("LSDJ_FILE_ATTRIBUTE_DIRECTORY", recheck)
         self.assertIn("/PURGE-LSDJ-DATA", hooks)
         self.assertIn("${GetSize}", hooks)
         self.assertIn("Location: ${LSDJ_DATA_ROOT}", hooks)
@@ -113,6 +128,11 @@ class WindowsPackagingContractTest(unittest.TestCase):
             "nested directory reparse point",
         ):
             self.assertIn(contract, lifecycle)
+        self.assertIn("function Start-LifecycleScenario", lifecycle)
+        self.assertIn(
+            "adopt recognized markerless legacy layout",
+            lifecycle,
+        )
 
         rejection = (
             REPO_ROOT / "scripts/assert-windows-release-rejects-unsigned.ps1"

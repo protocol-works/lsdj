@@ -281,7 +281,7 @@ Function LsdjInstallTreeIsLinkFree
 
   ClearErrors
   FindFirst $1 $2 "$0\*"
-  IfErrors lsdj_install_tree_unsafe
+  IfErrors lsdj_install_tree_empty_candidate
   lsdj_install_tree_next:
     StrCmp $2 "." lsdj_install_tree_advance
     StrCmp $2 ".." lsdj_install_tree_advance
@@ -313,6 +313,23 @@ Function LsdjInstallTreeIsLinkFree
   lsdj_install_tree_close:
     FindClose $1
     Goto lsdj_install_tree_done
+  ; FindFirst reports an error for a plain empty directory. Re-read the entry
+  ; itself before accepting that error as an empty leaf, so disappearance,
+  ; replacement, and reparse-point races still fail closed.
+  lsdj_install_tree_empty_candidate:
+    System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
+    ${If} $1 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
+      Goto lsdj_install_tree_unsafe
+    ${EndIf}
+    IntOp $3 $1 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
+    ${If} $3 <> 0
+      Goto lsdj_install_tree_unsafe
+    ${EndIf}
+    IntOp $3 $1 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
+    ${If} $3 = 0
+      Goto lsdj_install_tree_unsafe
+    ${EndIf}
+    Goto lsdj_install_tree_done
   lsdj_install_tree_unsafe:
     StrCpy $LsdjTreeSafe 0
   lsdj_install_tree_done:
@@ -328,7 +345,7 @@ Function LsdjDataRootIsEmpty
   StrCpy $LsdjRootEmpty 0
   ClearErrors
   FindFirst $0 $1 "${LSDJ_DATA_ROOT}\*"
-  IfErrors lsdj_empty_done
+  IfErrors lsdj_empty_recheck
   lsdj_empty_next:
     StrCmp $1 "." lsdj_empty_advance
     StrCmp $1 ".." lsdj_empty_advance
@@ -342,6 +359,24 @@ Function LsdjDataRootIsEmpty
     StrCpy $LsdjRootEmpty 1
   lsdj_empty_close:
     FindClose $0
+    Goto lsdj_empty_done
+  ; Tauri's SetOutPath creates a genuinely empty root on first install. Accept
+  ; the failed enumeration only after the root is still the same plain
+  ; directory shape required by the ownership checks.
+  lsdj_empty_recheck:
+    System::Call 'kernel32::GetFileAttributesW(w "${LSDJ_DATA_ROOT}") i .r0'
+    ${If} $0 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
+      Goto lsdj_empty_done
+    ${EndIf}
+    IntOp $1 $0 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
+    ${If} $1 <> 0
+      Goto lsdj_empty_done
+    ${EndIf}
+    IntOp $1 $0 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
+    ${If} $1 = 0
+      Goto lsdj_empty_done
+    ${EndIf}
+    StrCpy $LsdjRootEmpty 1
   lsdj_empty_done:
   Pop $1
   Pop $0
@@ -461,7 +496,7 @@ Function un.LsdjTreeIsLinkFree
 
   ClearErrors
   FindFirst $1 $2 "$0\*"
-  IfErrors lsdj_tree_unsafe
+  IfErrors lsdj_tree_empty_candidate
   lsdj_tree_next:
     StrCmp $2 "." lsdj_tree_advance
     StrCmp $2 ".." lsdj_tree_advance
@@ -492,6 +527,20 @@ Function un.LsdjTreeIsLinkFree
     StrCpy $LsdjTreeSafe 0
   lsdj_tree_close:
     FindClose $1
+    Goto lsdj_tree_done
+  lsdj_tree_empty_candidate:
+    System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
+    ${If} $1 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
+      Goto lsdj_tree_unsafe
+    ${EndIf}
+    IntOp $3 $1 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
+    ${If} $3 <> 0
+      Goto lsdj_tree_unsafe
+    ${EndIf}
+    IntOp $3 $1 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
+    ${If} $3 = 0
+      Goto lsdj_tree_unsafe
+    ${EndIf}
     Goto lsdj_tree_done
   lsdj_tree_unsafe:
     StrCpy $LsdjTreeSafe 0
@@ -530,7 +579,7 @@ Function un.LsdjDeleteTreeWithoutLinks
 
   ClearErrors
   FindFirst $1 $2 "$0\*"
-  IfErrors lsdj_delete_failed
+  IfErrors lsdj_delete_empty_candidate
   lsdj_delete_next:
     StrCmp $2 "." lsdj_delete_advance
     StrCmp $2 ".." lsdj_delete_advance
@@ -570,6 +619,23 @@ Function un.LsdjDeleteTreeWithoutLinks
       RMDir "$0"
       IfErrors lsdj_delete_failed
     ${EndIf}
+    Goto lsdj_delete_done
+  lsdj_delete_empty_candidate:
+    System::Call 'kernel32::GetFileAttributesW(w r0) i .r1'
+    ${If} $1 = ${LSDJ_INVALID_FILE_ATTRIBUTES}
+      Goto lsdj_delete_failed
+    ${EndIf}
+    IntOp $3 $1 & ${LSDJ_FILE_ATTRIBUTE_REPARSE_POINT}
+    ${If} $3 <> 0
+      Goto lsdj_delete_failed
+    ${EndIf}
+    IntOp $3 $1 & ${LSDJ_FILE_ATTRIBUTE_DIRECTORY}
+    ${If} $3 = 0
+      Goto lsdj_delete_failed
+    ${EndIf}
+    ClearErrors
+    RMDir "$0"
+    IfErrors lsdj_delete_failed
     Goto lsdj_delete_done
   lsdj_delete_failed:
     StrCpy $LsdjDeleteFailure 1
