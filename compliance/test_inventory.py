@@ -22,6 +22,9 @@ class InventoryValidationTests(unittest.TestCase):
         root = MANIFEST.parent.parent
         mrt2_pin = json.loads((root / "mrt2-pytorch-pin.json").read_text())
         sa3_pin = json.loads((root / "sa3-pin.json").read_text())
+        sa3_cuda_pin = json.loads(
+            (root / "sa3-pytorch-cuda-pin.json").read_text()
+        )
         assets = {asset["id"]: asset for asset in self.data["assets"]}
 
         self.assertEqual(
@@ -39,6 +42,36 @@ class InventoryValidationTests(unittest.TestCase):
         self.assertEqual(
             assets["stable-audio-3-code"]["revision"]["value"],
             sa3_pin["commit"],
+        )
+        self.assertEqual(
+            assets["stable-audio-3-small-music-cuda-weights"]["revision"]["value"],
+            sa3_cuda_pin["models"]["small-music"]["revision"],
+        )
+        self.assertEqual(
+            assets["stable-audio-3-small-sfx-cuda-weights"]["revision"]["value"],
+            sa3_cuda_pin["models"]["small-sfx"]["revision"],
+        )
+        self.assertEqual(
+            assets["stable-audio-3-small-music-cuda-weights"]["artifact_integrity"][
+                "weight_sha256"
+            ],
+            sa3_cuda_pin["models"]["small-music"]["weight"]["sha256"],
+        )
+        self.assertEqual(
+            assets["stable-audio-3-small-sfx-cuda-weights"]["artifact_integrity"][
+                "weight_sha256"
+            ],
+            sa3_cuda_pin["models"]["small-sfx"]["weight"]["sha256"],
+        )
+        self.assertIsNone(
+            assets["stable-audio-3-small-music-cuda-weights"]["artifact_integrity"][
+                "config_sha256"
+            ]
+        )
+        self.assertIsNone(
+            assets["stable-audio-3-small-sfx-cuda-weights"]["artifact_integrity"][
+                "config_sha256"
+            ]
         )
         self.assertEqual(
             assets["pytorch-mrt2-port-code"]["distribution"]["mode"],

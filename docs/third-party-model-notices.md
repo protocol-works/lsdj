@@ -1,6 +1,6 @@
 # Third-party model and runtime notices
 
-Audit date: 2026-08-08. Inventory version: `2026-08-08.2`.
+Audit date: 2026-08-08. Inventory version: `2026-08-08.4`.
 
 This document is a human-readable projection of
 [`compliance/model-assets.json`](../compliance/model-assets.json). The JSON
@@ -33,6 +33,12 @@ not assert that any project use or redistribution path has been approved.
    Medium source repositories, but does not identify the exact revisions used to
    produce the derivative artifacts. The inventory records those revisions as
    unresolved rather than substituting the repositories' audit-time heads.
+6. **The optional Windows CUDA Small Music and Small SFX snapshots remain
+   gated and incomplete.** Their immutable revisions and root weight hashes are
+   pinned, but authenticated terms review, configuration and nested-component
+   hashes, measured VRAM reservations, and physical Windows/NVIDIA qualification
+   are incomplete. The installer and runtime fail closed; TFLite remains the
+   supported path.
 
 No reviewed third-party model weights belong in installers while their manifest
 entry has `redistribution_confirmed: false`.
@@ -50,6 +56,8 @@ entry has `redistribution_confirmed: false`.
 | PyTorch MusicCoCa processor | `236c488e38aa98643805514996934d705668298b` | Conversion-code treatment pending | CC-BY-4.0 | Native exact download | Confirm notice path |
 | Stable Audio 3 runtime source | `a0b57f5483c4588f827f3552b7d5c6ca2a9687be` | MIT | n/a | Exact source archive download | Carry MIT notice |
 | Stable Audio 3 optimized MLX/TFLite assets | `6736003cb57d06b7b1fdc36fad31b2a3709e4774` | n/a | Stability AI Community License plus Gemma Terms for T5Gemma components | Download, not installer | Runtime pin, owner path, acknowledgement |
+| Stable Audio 3 Small Music PyTorch/CUDA | `0fef1392cd842149a2b6d445e181c97608faac06`; root weight SHA-256 in manifest | n/a | Unresolved pending authenticated gated-model review | Optional gated download, disabled | Config/nested hashes, #108 terms, VRAM, and Windows qualification |
+| Stable Audio 3 Small SFX PyTorch/CUDA | `ae12755283df9d62ca39a9b050a39a0b607b8c20`; root weight SHA-256 in manifest | n/a | Unresolved pending authenticated gated-model review | Optional gated download, disabled | Config/nested hashes, #108 terms, VRAM, and Windows qualification |
 | Google T5Gemma B-B UL2 source model | Exact conversion-source revision unresolved | n/a here | Gemma Terms of Use | Direct source is manually gated; LSDJ consumes Stability's optimized derivative | Identify source revision; owner derivative/notice decision |
 | Stable Audio 3 Medium upstream source family | Exact conversion/training-source revision unresolved | n/a | Stability AI Community License plus Gemma Terms | Provenance reference only; direct source is gated | Identify source revision; base terms follow optimized model/LoRA review |
 | Motif Maqam LoRA | `3e1d9aa6fcb72a619b4ced00a240c5039f76daf0` | n/a | Unresolved (`license: other` only); Stable Audio base terms also relevant | User-directed upstream download | No mirroring/bundling; runtime pin required |
@@ -98,6 +106,14 @@ entry has `redistribution_confirmed: false`.
   the exact revision used for Stability's optimized derivative. That derivative
   is anonymously downloadable, but its pinned repository says T5Gemma is
   redistributed under the Gemma Terms.
+- The optional Windows CUDA path separately pins [Small Music at
+  `0fef139…`](https://huggingface.co/stabilityai/stable-audio-3-small-music/tree/0fef1392cd842149a2b6d445e181c97608faac06)
+  and [Small SFX at
+  `ae12755…`](https://huggingface.co/stabilityai/stable-audio-3-small-sfx/tree/ae12755283df9d62ca39a9b050a39a0b607b8c20).
+  Public metadata supplied each root weight hash, but the authenticated audit
+  has not completed the configuration/nested hashes or exact terms and notices.
+  These are optional fail-closed entries: they are neither installable nor
+  advertised while `releaseReady` or `gatedArtifactsComplete` is false.
 
 ## LoRA inventory and user imports
 

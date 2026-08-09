@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "inventory_revision": "2026-08-08.3",
+  "inventory_revision": "2026-08-08.4",
   "audited_at": "2026-08-08",
   "audit_base_revision": "c9cd822ef6cbb86711e72d35f0f7e50a126d666f",
   "purpose": "Revision-specific technical provenance and notice inputs for LSDJ model and model-runtime assets. This inventory records upstream statements and unresolved owner-review gates; it is not legal advice or a project-use approval.",
@@ -815,6 +815,192 @@
         "https://huggingface.co/stabilityai/stable-audio-3-optimized/tree/6736003cb57d06b7b1fdc36fad31b2a3709e4774",
         "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/optimized/mlx/scripts/weights.py",
         "https://github.com/Stability-AI/stable-audio-3/blob/0385302ea26522f00c80392c4b708df5ebf1adf5/optimized/tflite/scripts/weights.py"
+      ]
+    },
+    {
+      "id": "stable-audio-3-small-music-cuda-weights",
+      "name": "Stable Audio 3 Small Music PyTorch/CUDA weights",
+      "family": "stable-audio-3",
+      "asset_type": "model_weights",
+      "support_status": "optional_fail_closed",
+      "upstream": {
+        "project": "stabilityai/stable-audio-3-small-music",
+        "canonical_url": "https://huggingface.co/stabilityai/stable-audio-3-small-music"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "0fef1392cd842149a2b6d445e181c97608faac06",
+        "url": "https://huggingface.co/stabilityai/stable-audio-3-small-music/tree/0fef1392cd842149a2b6d445e181c97608faac06"
+      },
+      "included_artifacts": [
+        "model.safetensors",
+        "model_config.json"
+      ],
+      "artifact_integrity": {
+        "status": "incomplete",
+        "weight_size": 2270384940,
+        "weight_sha256": "da85866b11b01d0694d990785f6abbd79c8064df1b0e6f8aea52935e0ef84b64",
+        "config_size": 10341,
+        "config_sha256": null,
+        "notes": "Public metadata supplied the root weight hash, but the gated authenticated audit has not supplied the configuration and nested-component SHA-256 set."
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Runtime code is inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "unresolved",
+            "identifier": "NOASSERTION",
+            "name": "Authenticated gated-model terms audit pending",
+            "scope": "Small Music checkpoint, configuration, and any nested model components at the pinned snapshot",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Do not enable acquisition or distribution until the authenticated issue #108 review records the exact terms, notices, and nested component obligations for this snapshot."
+        ],
+        "attribution": [
+          "Stable Audio 3 Small Music by Stability AI"
+        ],
+        "sources": [
+          "https://huggingface.co/stabilityai/stable-audio-3-small-music/tree/0fef1392cd842149a2b6d445e181c97608faac06"
+        ]
+      },
+      "access": {
+        "gated": true,
+        "account_required": true,
+        "credential_required": true,
+        "terms_acceptance_required": true,
+        "privacy_url": "https://huggingface.co/privacy",
+        "acceptable_use_url": "https://stability.ai/use-policy"
+      },
+      "distribution": {
+        "mode": "optional_gated_download",
+        "source_url": "https://huggingface.co/stabilityai/stable-audio-3-small-music/tree/0fef1392cd842149a2b6d445e181c97608faac06",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "The optional Windows CUDA manifest pins this revision and root weight hash, but releaseReady and gatedArtifactsComplete remain false. The native installer rejects the candidate while the config hash, nested artifacts, terms review, VRAM reservation, and hardware qualification are incomplete. TFLite remains the supported path."
+      },
+      "dependencies": [
+        "stable-audio-3-code",
+        "t5gemma-b-b-ul2"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Complete the authenticated terms, notice, nested-artifact, and exact-hash audit for the pinned Small Music snapshot before enabling its optional download.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/stabilityai/stable-audio-3-small-music/tree/0fef1392cd842149a2b6d445e181c97608faac06",
+        "https://huggingface.co/stabilityai/stable-audio-3-small-music/blob/0fef1392cd842149a2b6d445e181c97608faac06/model_config.json"
+      ]
+    },
+    {
+      "id": "stable-audio-3-small-sfx-cuda-weights",
+      "name": "Stable Audio 3 Small SFX PyTorch/CUDA weights",
+      "family": "stable-audio-3",
+      "asset_type": "model_weights",
+      "support_status": "optional_fail_closed",
+      "upstream": {
+        "project": "stabilityai/stable-audio-3-small-sfx",
+        "canonical_url": "https://huggingface.co/stabilityai/stable-audio-3-small-sfx"
+      },
+      "revision": {
+        "kind": "model_snapshot",
+        "value": "ae12755283df9d62ca39a9b050a39a0b607b8c20",
+        "url": "https://huggingface.co/stabilityai/stable-audio-3-small-sfx/tree/ae12755283df9d62ca39a9b050a39a0b607b8c20"
+      },
+      "included_artifacts": [
+        "model.safetensors",
+        "model_config.json"
+      ],
+      "artifact_integrity": {
+        "status": "incomplete",
+        "weight_size": 2270384940,
+        "weight_sha256": "ed9cf1b6172f1a8c2921a9560c21109ff3239524563ced9dce6dcdef41e2f515",
+        "config_size": 10454,
+        "config_sha256": null,
+        "notes": "Public metadata supplied the root weight hash, but the gated authenticated audit has not supplied the configuration and nested-component SHA-256 set."
+      },
+      "licenses": {
+        "code": [
+          {
+            "status": "not_applicable",
+            "identifier": "NONE",
+            "name": "Not applicable",
+            "scope": "Runtime code is inventoried separately",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ],
+        "weights": [
+          {
+            "status": "unresolved",
+            "identifier": "NOASSERTION",
+            "name": "Authenticated gated-model terms audit pending",
+            "scope": "Small SFX checkpoint, configuration, and any nested model components at the pinned snapshot",
+            "terms_url": null,
+            "notice_url": null
+          }
+        ]
+      },
+      "notices": {
+        "required_text": [
+          "Do not enable acquisition or distribution until the authenticated issue #108 review records the exact terms, notices, and nested component obligations for this snapshot."
+        ],
+        "attribution": [
+          "Stable Audio 3 Small SFX by Stability AI"
+        ],
+        "sources": [
+          "https://huggingface.co/stabilityai/stable-audio-3-small-sfx/tree/ae12755283df9d62ca39a9b050a39a0b607b8c20"
+        ]
+      },
+      "access": {
+        "gated": true,
+        "account_required": true,
+        "credential_required": true,
+        "terms_acceptance_required": true,
+        "privacy_url": "https://huggingface.co/privacy",
+        "acceptable_use_url": "https://stability.ai/use-policy"
+      },
+      "distribution": {
+        "mode": "optional_gated_download",
+        "source_url": "https://huggingface.co/stabilityai/stable-audio-3-small-sfx/tree/ae12755283df9d62ca39a9b050a39a0b607b8c20",
+        "installer_contains_asset": false,
+        "installer_contains_weights": false,
+        "redistribution_confirmed": false,
+        "immutable_reference_enforced": true,
+        "release_gate": true,
+        "notes": "The optional Windows CUDA manifest pins this revision and root weight hash, but releaseReady and gatedArtifactsComplete remain false. The native installer rejects the candidate while the config hash, nested artifacts, terms review, VRAM reservation, and hardware qualification are incomplete. TFLite remains the supported path."
+      },
+      "dependencies": [
+        "stable-audio-3-code",
+        "t5gemma-b-b-ul2"
+      ],
+      "owner_review": {
+        "required": true,
+        "status": "pending",
+        "question": "Complete the authenticated terms, notice, nested-artifact, and exact-hash audit for the pinned Small SFX snapshot before enabling its optional download.",
+        "issue": "https://github.com/protocol-works/lsdj/issues/108"
+      },
+      "evidence": [
+        "https://huggingface.co/stabilityai/stable-audio-3-small-sfx/tree/ae12755283df9d62ca39a9b050a39a0b607b8c20",
+        "https://huggingface.co/stabilityai/stable-audio-3-small-sfx/blob/ae12755283df9d62ca39a9b050a39a0b607b8c20/model_config.json"
       ]
     },
     {

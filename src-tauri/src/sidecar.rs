@@ -1027,6 +1027,7 @@ fn accept_authenticated_with_timeout(
 /// manager's installer (issue #43: `--init-resources` / `--download-model`) both
 /// build on this, so the resolution lives in one place — a download is NOT a
 /// deck, so it must not inherit `--deck`/`--model`/`--port`.
+#[cfg_attr(feature = "managed-runtime", allow(dead_code))]
 pub fn sidecar_base_command() -> io::Result<Command> {
     #[cfg(feature = "managed-runtime")]
     {
