@@ -217,6 +217,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("function Get-InstalledStateSnapshot", lifecycle)
         self.assertIn("function Get-UninstallRegistrySnapshot", lifecycle)
         self.assertIn("function Assert-CiInstallerTraceContract", lifecycle)
+        self.assertIn("function Set-DisplayVersionEvidence", lifecycle)
         self.assertIn("$lastRequiredIndex = -1", lifecycle)
         self.assertIn("[StringComparison]::Ordinal", lifecycle)
         self.assertIn(
@@ -253,6 +254,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("validity=1", lifecycle)
         self.assertIn("validity=0", lifecycle)
         self.assertIn("abort: passive install unsupported", lifecycle)
+        self.assertIn("preinstall: version evidence installed=", hooks)
         self.assertIn("Require-No-Workers", lifecycle)
         self.assertIn(
             "adopt recognized markerless legacy layout",

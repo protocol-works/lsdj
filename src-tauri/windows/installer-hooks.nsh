@@ -28,6 +28,7 @@ Var LsdjDeleteFailure
 Var LsdjDataRemovalFailed
 Var LsdjInstallRootState
 Var LsdjInstalledVersion
+Var LsdjInstalledVersionPresent
 Var LsdjInstalledVersionValidity
 Var LsdjExistingInstall
 Var LsdjMarkerSafe
@@ -811,11 +812,13 @@ FunctionEnd
   ${If} ${Silent}
     StrCpy $LsdjExistingInstall 0
     StrCpy $LsdjInstalledVersion ""
+    StrCpy $LsdjInstalledVersionPresent 0
 
     ClearErrors
     ReadRegStr $LsdjInstalledVersion SHCTX "${UNINSTKEY}" "DisplayVersion"
     ${IfNot} ${Errors}
       StrCpy $LsdjExistingInstall 1
+      StrCpy $LsdjInstalledVersionPresent 1
     ${EndIf}
     ClearErrors
     ReadRegStr $LsdjRegistryEvidence SHCTX "${UNINSTKEY}" "UninstallString"
@@ -831,6 +834,7 @@ FunctionEnd
       StrCpy $LsdjExistingInstall 1
     ${EndIf}
     ClearErrors
+    !insertmacro LSDJ_CI_TRACE "preinstall: version evidence installed=$LsdjInstalledVersion present=$LsdjInstalledVersionPresent existing=$LsdjExistingInstall"
 
     ${If} $LsdjExistingInstall = 1
       ${If} $LsdjInstalledVersion = ""
