@@ -502,16 +502,6 @@ FunctionEnd
 ; SetOutPath and immediately revalidates before establishing ownership.
 Section -LsdjProbeDataRootBeforeTauri
   StrCpy $LsdjInstallRootState 0
-  ; Tauri's silent reinstall page has already stored the version comparison in
-  ; R0. Its later downgrade Abort intentionally leaves exit code 0, which is
-  ; indistinguishable from success to unattended automation. Fail earlier with
-  ; an observable nonzero result before touching the install/data root.
-  ${If} ${Silent}
-  ${AndIf} $R0 = -1
-    !insertmacro LSDJ_CI_TRACE "abort: silent downgrade"
-    SetErrorLevel 2
-    Abort "Refusing to downgrade LSDJ from a newer installed version."
-  ${EndIf}
   !insertmacro LSDJ_CI_TRACE "probe: begin root=${LSDJ_DATA_ROOT}"
   Call LsdjCanonicalDataRootIsValid
   !insertmacro LSDJ_CI_TRACE "probe: canonical=$LsdjCanonicalRootSafe"
@@ -785,6 +775,25 @@ Function un.LsdjDeleteTreeWithoutLinks
 FunctionEnd
 
 !macro NSIS_HOOK_PREINSTALL
+  ; Tauri's own silent downgrade check aborts with exit code 0, and its version
+  ; comparison register is not stable by the time sections run. Re-read the
+  ; installed version and compare independently once Tauri's VERSION and
+  ; UNINSTKEY defines are available. /UPDATE retains Tauri's native flow.
+  ${If} ${Silent}
+  ${AndIf} $UpdateMode != 1
+    ReadRegStr $R6 SHCTX "${UNINSTKEY}" "DisplayVersion"
+    ${If} $R6 != ""
+      nsis_tauri_utils::SemverCompare "${VERSION}" $R6
+      Pop $R7
+      !insertmacro LSDJ_CI_TRACE "preinstall: installed version=$R6 compare=$R7"
+      ${If} $R7 = -1
+        !insertmacro LSDJ_CI_TRACE "abort: silent downgrade"
+        SetErrorLevel 2
+        Abort "Refusing to downgrade LSDJ from a newer installed version."
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
   ; SetOutPath has now created a root that the early section proved absent, or
   ; selected an existing root whose ownership/layout the early section proved.
   ; Revalidate that captured state before writing anything into the directory.
