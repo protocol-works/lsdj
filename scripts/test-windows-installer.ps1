@@ -70,6 +70,17 @@ function Get-CiInstallerTrace {
     return '<no CI installer trace was written>'
 }
 
+function Write-CiInstallerTrace {
+    Write-Host 'CI installer trace:'
+    if (Test-Path -LiteralPath $ciInstallerTrace -PathType Leaf) {
+        Get-Content -LiteralPath $ciInstallerTrace | ForEach-Object {
+            Write-Host "  $_"
+        }
+    } else {
+        Write-Host '  <no CI installer trace was written>'
+    }
+}
+
 function Invoke-CheckedProcess {
     param(
         [Parameter(Mandatory = $true)]
@@ -84,6 +95,7 @@ function Invoke-CheckedProcess {
     $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
     if ($process.ExitCode -notin $ExpectedExitCodes) {
         $trace = Get-CiInstallerTrace
+        Write-CiInstallerTrace
         throw "Process exited $($process.ExitCode), expected $($ExpectedExitCodes -join ', '): $FilePath $($ArgumentList -join ' ')`nCI installer trace:`n$trace"
     }
     return $process.ExitCode
@@ -101,6 +113,7 @@ function Invoke-ExpectedFailure {
     $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -Wait -PassThru
     if ($process.ExitCode -eq 0) {
         $trace = Get-CiInstallerTrace
+        Write-CiInstallerTrace
         throw "Process unexpectedly succeeded: $FilePath $($ArgumentList -join ' ')`nCI installer trace:`n$trace"
     }
     return $process.ExitCode

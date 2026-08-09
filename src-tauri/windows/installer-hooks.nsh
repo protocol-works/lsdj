@@ -49,6 +49,10 @@ Var LsdjTreeSafe
     ClearErrors
     FileOpen $R5 "$TEMP\lsdj-ci-installer.trace" a
     ${IfNot} ${Errors}
+      ; NSIS preserves existing contents for mode `a` but still positions the
+      ; file pointer at byte zero. Seek explicitly so checkpoints cannot
+      ; overwrite one another.
+      FileSeek $R5 0 END
       FileWrite $R5 "${MESSAGE}$\r$\n"
       FileClose $R5
     ${EndIf}
@@ -122,10 +126,25 @@ Function ${FUNCTION_NAME}
   Push $R6
   Push $R7
   Push $R8
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    Push $R9
+  !endif
   StrCpy $LsdjMarkerSafe 0
-  System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER}", i ${LSDJ_GENERIC_READ}, i ${LSDJ_FILE_SHARE_READ}, p 0, i ${LSDJ_OPEN_EXISTING}, i ${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6'
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER}", i ${LSDJ_GENERIC_READ}, i ${LSDJ_FILE_SHARE_READ}, p 0, i ${LSDJ_OPEN_EXISTING}, i ${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6 ?e'
+    Pop $R9
+    !insertmacro LSDJ_CI_TRACE "marker-validate: create handle=$R6 error=$R9"
+  !else
+    System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER}", i ${LSDJ_GENERIC_READ}, i ${LSDJ_FILE_SHARE_READ}, p 0, i ${LSDJ_OPEN_EXISTING}, i ${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6'
+  !endif
   StrCmp $R6 ${LSDJ_INVALID_HANDLE_VALUE} lsdj_marker_done
-  System::Call 'kernel32::GetFileInformationByHandle(p R6, *(&i4 .R7, &v48)) i .R8'
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    System::Call 'kernel32::GetFileInformationByHandle(p R6, *(&i4 .R7, &v48)) i .R8 ?e'
+    Pop $R9
+    !insertmacro LSDJ_CI_TRACE "marker-validate: info result=$R8 attrs=$R7 error=$R9"
+  !else
+    System::Call 'kernel32::GetFileInformationByHandle(p R6, *(&i4 .R7, &v48)) i .R8'
+  !endif
   ${If} $R8 = 0
     Goto lsdj_marker_close
   ${EndIf}
@@ -139,15 +158,30 @@ Function ${FUNCTION_NAME}
   ${EndIf}
   ClearErrors
   FileOpen $R5 "${LSDJ_DATA_MARKER}" r
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    ${If} ${Errors}
+      StrCpy $R9 1
+    ${Else}
+      StrCpy $R9 0
+    ${EndIf}
+    !insertmacro LSDJ_CI_TRACE "marker-validate: file-open error=$R9"
+  !endif
   IfErrors lsdj_marker_close
   FileRead $R5 $R8
   FileClose $R5
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    StrLen $R9 $R8
+    !insertmacro LSDJ_CI_TRACE "marker-validate: content length=$R9"
+  !endif
   StrCmp $R8 "${LSDJ_OWNER_ID}" 0 lsdj_marker_close
   StrCpy $LsdjMarkerSafe 1
 
   lsdj_marker_close:
   System::Call 'kernel32::CloseHandle(p R6)'
   lsdj_marker_done:
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    Pop $R9
+  !endif
   Pop $R8
   Pop $R7
   Pop $R6
@@ -164,15 +198,28 @@ Function LsdjCreateDataMarker
   Push $R6
   Push $R7
   Push $R8
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    Push $R9
+  !endif
   StrCpy $LsdjMarkerSafe 0
   StrCpy $R7 0
   !insertmacro LSDJ_CI_TRACE "marker-create: begin"
-  System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER_NEW}", i ${LSDJ_GENERIC_WRITE}, i 0, p 0, i ${LSDJ_CREATE_NEW}, i ${LSDJ_FILE_ATTRIBUTE_NORMAL}|${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6'
-  !insertmacro LSDJ_CI_TRACE "marker-create: create handle=$R6"
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER_NEW}", i ${LSDJ_GENERIC_WRITE}, i 0, p 0, i ${LSDJ_CREATE_NEW}, i ${LSDJ_FILE_ATTRIBUTE_NORMAL}|${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6 ?e'
+    Pop $R9
+    !insertmacro LSDJ_CI_TRACE "marker-create: create handle=$R6 error=$R9"
+  !else
+    System::Call 'kernel32::CreateFileW(w "${LSDJ_DATA_MARKER_NEW}", i ${LSDJ_GENERIC_WRITE}, i 0, p 0, i ${LSDJ_CREATE_NEW}, i ${LSDJ_FILE_ATTRIBUTE_NORMAL}|${LSDJ_FILE_FLAG_OPEN_REPARSE_POINT}, p 0) p .R6'
+  !endif
   StrCmp $R6 ${LSDJ_INVALID_HANDLE_VALUE} lsdj_marker_create_done
-  System::Call 'kernel32::WriteFile(p R6, m "${LSDJ_OWNER_ID}", i ${LSDJ_OWNER_ID_BYTES}, *i .R8, p 0) i .R7'
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    System::Call 'kernel32::WriteFile(p R6, m "${LSDJ_OWNER_ID}", i ${LSDJ_OWNER_ID_BYTES}, *i .R8, p 0) i .R7 ?e'
+    Pop $R9
+    !insertmacro LSDJ_CI_TRACE "marker-create: write result=$R7 bytes=$R8 error=$R9"
+  !else
+    System::Call 'kernel32::WriteFile(p R6, m "${LSDJ_OWNER_ID}", i ${LSDJ_OWNER_ID_BYTES}, *i .R8, p 0) i .R7'
+  !endif
   System::Call 'kernel32::CloseHandle(p R6)'
-  !insertmacro LSDJ_CI_TRACE "marker-create: write result=$R7 bytes=$R8"
   ${If} $R7 = 0
   ${OrIf} $R8 != ${LSDJ_OWNER_ID_BYTES}
     Goto lsdj_marker_done
@@ -180,8 +227,20 @@ Function LsdjCreateDataMarker
   StrCpy $R7 0
   ClearErrors
   Rename "${LSDJ_DATA_MARKER_NEW}" "${LSDJ_DATA_MARKER}"
-  !insertmacro LSDJ_CI_TRACE "marker-create: rename returned"
-  IfErrors lsdj_marker_create_done
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    ${If} ${Errors}
+      StrCpy $R8 1
+    ${Else}
+      StrCpy $R8 0
+    ${EndIf}
+    System::Call 'kernel32::GetLastError() i .R9'
+    !insertmacro LSDJ_CI_TRACE "marker-create: rename error-flag=$R8 native-error=$R9"
+    ${If} $R8 = 1
+      Goto lsdj_marker_create_done
+    ${EndIf}
+  !else
+    IfErrors lsdj_marker_create_done
+  !endif
   !insertmacro LSDJ_CI_TRACE "marker-create: rename succeeded"
   StrCpy $R7 1
   Call LsdjDataMarkerIsValid
@@ -200,6 +259,9 @@ Function LsdjCreateDataMarker
       Delete "${LSDJ_DATA_MARKER}"
     ${EndIf}
   ${EndIf}
+  !ifdef LSDJ_CI_ADVERSARIAL_TESTS
+    Pop $R9
+  !endif
   Pop $R8
   Pop $R7
   Pop $R6

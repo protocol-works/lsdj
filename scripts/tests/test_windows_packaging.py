@@ -120,6 +120,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("LSDJ_CI_ADVERSARIAL_TESTS", build)
         self.assertIn("if ($UnsignedDevelopment)", build)
         self.assertIn('FileOpen $R5 "$TEMP\\lsdj-ci-installer.trace" a', hooks)
+        self.assertIn("FileSeek $R5 0 END", hooks)
         self.assertIn("Var LsdjCiTraceHadErrors", hooks)
         trace_else = hooks.index("!else", hooks.index("!macro LSDJ_CI_TRACE MESSAGE"))
         trace_end = hooks.index("!endif", trace_else)
@@ -129,6 +130,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
             "Production trace macro must expand to no file operations.",
         )
         self.assertIn("Get-CiInstallerTrace", lifecycle)
+        self.assertIn("Write-CiInstallerTrace", lifecycle)
         self.assertIn("CI installer trace:", lifecycle)
         for contract in (
             "pre-existing empty LocalAppData root",
