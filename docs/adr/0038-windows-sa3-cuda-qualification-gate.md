@@ -70,6 +70,40 @@ reservation, provenance, and model path facts before importing a model. A
 reported free-memory value is only an admission snapshot; the process boundary
 is still the recovery mechanism for unrelated VRAM pressure and CUDA failure.
 
+## Qualification no-go: resident MRT2 ownership
+
+Commit `5cbe842` is approved as broker safety behavior. On Windows it prunes a
+lease only when the owner is positively known to have exited; access or query
+uncertainty retains the record and fails closed. This approval is not NVIDIA
+hardware or VRAM evidence.
+
+Commit `7fdbb32` deliberately acquires one shared, process-lifetime MRT2 lease
+before CUDA availability is queried or any model is loaded. Keeping that lease
+through model-load failure and for the lifetime of the worker is fail-closed:
+SA3 cannot treat VRAM owned by a resident MRT2 model as free. The ordering must
+remain until a measured replacement is available.
+
+The current single-level lease consequently prevents SA3 admission while the
+MRT2 worker is alive, so it cannot satisfy the coexistence and dual-deck tests
+required by issue #114. Releasing the lease between MRT2 generations would not
+be safe because the model remains resident. It would also undercount ownership
+when multiple models or workers are present.
+
+Issue #114 is a no-go until one of these paths is completed:
+
+1. Measure resident and active-generation VRAM on Windows NVIDIA hardware, then
+   implement a two-level broker. Long-lived reservations must account for every
+   resident model and worker; short active-generation priority leases must let
+   realtime MRT2 work interrupt or defer background SA3 work.
+2. Obtain explicit product acceptance that MRT2 will unload before SA3 starts,
+   then re-load and warm up afterward, and qualify that lifecycle instead of
+   coexistence.
+
+The required VRAM and hardware evidence does not yet exist. Auto selection,
+public SA3 CUDA availability, `HARDWARE_QUALIFIED`, and the release manifest
+gate remain disabled. This record does not change runtime code, dependency
+pins, qualification gates, or make a release-support claim.
+
 ## Consequences
 
 The design and model-free failure behavior can merge without delaying the
