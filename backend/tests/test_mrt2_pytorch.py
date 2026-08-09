@@ -1,7 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
-from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -13,15 +12,44 @@ from lsdj.mrt2 import (
     RuntimeSelection,
     RuntimeUnavailable,
 )
-from lsdj.mrt2_pytorch import PytorchBindings, PytorchMrt2Engine
-from lsdj.gpu_broker import Priority
+from lsdj.mrt2_pytorch import (
+    GPU_ADMISSION_TIMEOUT_SECONDS,
+    PytorchBindings,
+    PytorchMrt2Engine,
+)
+from lsdj.gpu_broker import BrokerCancelled, Priority
+
+
+class RecordingBroker:
+    def __init__(self, events=None, *, error=None):
+        self.events = events if events is not None else []
+        self.error = error
+        self.calls = []
+        self.releases = []
+        self.lease = object()
+
+    def acquire(self, service, **kwargs):
+        self.events.append("broker_acquire")
+        self.calls.append((service, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.lease
+
+    def release(self, lease):
+        self.events.append("broker_release")
+        self.releases.append(lease)
+
+
+DEFAULT_TEST_BROKER = object()
 
 
 class FakeCuda:
-    def __init__(self, available=True):
+    def __init__(self, available=True, events=None):
         self.available = available
+        self.events = events if events is not None else []
 
     def is_available(self):
+        self.events.append("cuda_available")
         return self.available
 
     def current_device(self):
@@ -37,8 +65,8 @@ class FakeCuda:
 class FakeTorch:
     bfloat16 = "bf16"
 
-    def __init__(self, available=True):
-        self.cuda = FakeCuda(available)
+    def __init__(self, available=True, events=None):
+        self.cuda = FakeCuda(available, events)
         self.version = SimpleNamespace(cuda="13.0")
         self._C = SimpleNamespace(_cuda_getDriverVersion=lambda: 13020)
 
@@ -60,20 +88,26 @@ class FakeProcessor:
 
 
 class FakeModel:
-    def __init__(self):
+    def __init__(self, events=None, *, fail_cuda_load=False):
         self.processor = FakeProcessor()
         self.calls = []
         self.processor_path = None
         self.bad_shape = False
+        self.events = events if events is not None else []
+        self.fail_cuda_load = fail_cuda_load
 
     def to(self, device):
         assert device == "cuda"
+        self.events.append("model_to_cuda")
+        if self.fail_cuda_load:
+            raise RuntimeError("injected CUDA allocation failure")
         return self
 
     def eval(self):
         return self
 
     def load_processor(self, path, *, device):
+        self.events.append("processor_to_cuda")
         self.processor_path = (path, device)
 
     def generate(self, **kwargs):
@@ -86,20 +120,25 @@ class FakeModel:
 
 
 class FakeAutoModel:
-    def __init__(self, model):
+    def __init__(self, model, events=None):
         self.model = model
         self.calls = []
+        self.events = events if events is not None else []
 
     def from_pretrained(self, path, **kwargs):
+        self.events.append("from_pretrained")
         self.calls.append((path, kwargs))
         return self.model
 
 
-def make_engine(*, cuda=True, gpu_broker=None):
-    model = FakeModel()
-    auto_model = FakeAutoModel(model)
+def make_engine(*, cuda=True, gpu_broker=DEFAULT_TEST_BROKER, events=None, model=None):
+    events = events if events is not None else []
+    if gpu_broker is DEFAULT_TEST_BROKER:
+        gpu_broker = RecordingBroker(events)
+    model = model if model is not None else FakeModel(events)
+    auto_model = FakeAutoModel(model, events)
     bindings = PytorchBindings(
-        torch=FakeTorch(cuda),
+        torch=FakeTorch(cuda, events),
         auto_model=auto_model,
         versions={
             "torch": "2.12.1",
@@ -147,6 +186,16 @@ def test_loads_only_pinned_local_snapshots():
 def test_cuda_is_mandatory_and_never_falls_back_to_cpu():
     with pytest.raises(RuntimeUnavailable, match="no CPU fallback"):
         make_engine(cuda=False)
+
+
+def test_missing_broker_root_fails_before_cuda_is_touched(monkeypatch):
+    events = []
+    monkeypatch.delenv("LSDJ_CACHE_HOME", raising=False)
+
+    with pytest.raises(RuntimeUnavailable, match="shared GPU broker"):
+        make_engine(gpu_broker=None, events=events)
+
+    assert events == []
 
 
 def test_weighted_style_and_controls_map_to_upstream_generate():
@@ -213,6 +262,7 @@ def test_shared_deck_reuses_one_model_with_independent_continuation_state():
     assert first._system is second._system
     assert first._model_lock is second._model_lock
     assert first._gpu_broker is second._gpu_broker
+    assert first._gpu_lease is second._gpu_lease
 
     first.generate_chunk()
     second.generate_chunk()
@@ -248,27 +298,64 @@ def test_diagnostics_disclose_unqualified_runtime_and_cuda_versions():
     assert diagnostics["capabilities"]["negative_prompt"] is False
 
 
-def test_mrt2_generation_takes_realtime_priority_over_background_sa3():
-    class FakeBroker:
-        def __init__(self):
-            self.calls = []
-
-        @contextmanager
-        def hold(self, service, **kwargs):
-            self.calls.append((service, kwargs))
-            yield object()
-
-    broker = FakeBroker()
+def test_mrt2_model_lifetime_takes_realtime_priority_over_background_sa3():
+    broker = RecordingBroker()
     engine, _, _, _ = make_engine(gpu_broker=broker)
     engine.generate_chunk()
 
-    service, values = broker.calls[-1]
+    assert len(broker.calls) == 1, "generation must reuse the model-lifetime lease"
+    service, values = broker.calls[0]
     assert service == "mrt2"
     assert values["priority"] is Priority.MRT2_REALTIME
     assert values["reservation_bytes"] == 0
-    assert values["capacity_bytes"] == 12 * 1024**3
+    assert values["capacity_bytes"] == 0
+    assert values["timeout_seconds"] == GPU_ADMISSION_TIMEOUT_SECONDS
+    assert broker.releases == [], "only worker-process exit may release CUDA ownership"
     assert engine.diagnostics()["gpu_broker"] == {
         "enabled": True,
         "priority": 100,
         "preempts": "sa3-background",
     }
+
+
+def test_gpu_lease_is_acquired_before_any_cuda_or_model_allocation():
+    events = []
+    broker = RecordingBroker(events)
+
+    make_engine(gpu_broker=broker, events=events)
+
+    assert events == [
+        "broker_acquire",
+        "cuda_available",
+        "from_pretrained",
+        "model_to_cuda",
+        "processor_to_cuda",
+    ]
+
+
+def test_cancelled_gpu_admission_never_touches_cuda_or_the_model():
+    events = []
+    broker = RecordingBroker(events, error=BrokerCancelled("injected cancellation"))
+
+    with pytest.raises(BrokerCancelled, match="injected cancellation"):
+        make_engine(gpu_broker=broker, events=events)
+
+    assert events == ["broker_acquire"]
+    assert broker.releases == []
+
+
+def test_cuda_load_failure_keeps_the_lease_until_process_cleanup():
+    events = []
+    broker = RecordingBroker(events)
+    model = FakeModel(events, fail_cuda_load=True)
+
+    with pytest.raises(RuntimeUnavailable, match="could not initialize on CUDA"):
+        make_engine(gpu_broker=broker, events=events, model=model)
+
+    assert events == [
+        "broker_acquire",
+        "cuda_available",
+        "from_pretrained",
+        "model_to_cuda",
+    ]
+    assert broker.releases == [], "failed CUDA teardown is safe only at process exit"
