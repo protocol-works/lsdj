@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -164,6 +164,7 @@ impl ProcessTree for ManagedProcess {
 struct ManagedRenderWorker {
     stream: TcpStream,
     process: Box<dyn ProcessTree>,
+    next_sequence: u64,
 }
 
 impl ManagedRenderWorker {
@@ -228,7 +229,6 @@ impl WorkerFactory for ManagedWorkerFactory {
 struct GatewayCore {
     worker: Mutex<Option<ManagedRenderWorker>>,
     factory: Arc<dyn WorkerFactory>,
-    next_sequence: AtomicU64,
     lifecycle: Mutex<Arc<AtomicBool>>,
     quiescing: AtomicBool,
 }
@@ -238,7 +238,6 @@ impl GatewayCore {
         Self {
             worker: Mutex::new(None),
             factory,
-            next_sequence: AtomicU64::new(1),
             lifecycle: Mutex::new(Arc::new(AtomicBool::new(false))),
             quiescing: AtomicBool::new(false),
         }
@@ -255,14 +254,6 @@ impl GatewayCore {
         }
     }
 
-    fn sequence(&self) -> Result<u64, RenderFailure> {
-        self.next_sequence
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                (value < u64::MAX).then_some(value + 1)
-            })
-            .map_err(|_| RenderFailure::protocol("Magenta render sequence is exhausted"))
-    }
-
     fn render(
         &self,
         prompt: String,
@@ -276,14 +267,6 @@ impl GatewayCore {
         if cancellation.cancelled() {
             return Err(RenderFailure::cancelled());
         }
-        let sequence = self.sequence()?;
-        let request = WorkerRenderRequest {
-            schema_version: RENDER_SCHEMA_VERSION,
-            job_id: format!("render-{:032x}", rand::random::<u128>()),
-            sequence,
-            prompt,
-            frames,
-        };
         let mut worker = self
             .worker
             .lock()
@@ -294,21 +277,31 @@ impl GatewayCore {
         if worker.is_none() {
             *worker = Some(self.factory.spawn(&cancellation)?);
         }
+        let sequence = worker.as_ref().expect("worker was installed").next_sequence;
+        let request = WorkerRenderRequest {
+            schema_version: RENDER_SCHEMA_VERSION,
+            job_id: format!("render-{:032x}", rand::random::<u128>()),
+            sequence,
+            prompt,
+            frames,
+        };
         let result = worker
             .as_mut()
             .expect("worker was installed")
             .render(&request, &cancellation);
-        if result.is_err() {
-            if let Some(mut failed) = worker.take() {
-                if failed.shutdown().is_err() {
-                    // Keep ownership so a later quiesce can retry and, most
-                    // importantly, an installer cannot mistake an uncertain
-                    // process-tree state for "reaped" before a Windows rename.
-                    *worker = Some(failed);
-                    return Err(RenderFailure::protocol(
-                        "Magenta render worker could not be reaped",
-                    ));
-                }
+        if result.is_ok() && sequence < u64::MAX {
+            worker.as_mut().expect("worker was installed").next_sequence = sequence + 1;
+            return result;
+        }
+        if let Some(mut finished) = worker.take() {
+            if finished.shutdown().is_err() {
+                // Keep ownership so a later quiesce can retry and, most
+                // importantly, an installer cannot mistake an uncertain
+                // process-tree state for "reaped" before a Windows rename.
+                *worker = Some(finished);
+                return Err(RenderFailure::protocol(
+                    "Magenta render worker could not be reaped",
+                ));
             }
         }
         result
@@ -473,6 +466,7 @@ struct RenderReady {
     event: String,
     model: String,
     runtime: String,
+    next_sequence: u64,
 }
 
 #[derive(Deserialize)]
@@ -642,41 +636,59 @@ fn spawn_managed_worker(
     let result =
         accept_worker(&listener, &mut child, &token, cancellation).and_then(|mut stream| {
             stream.set_nodelay(true).ok();
-            let ready_deadline = Instant::now() + READY_TIMEOUT;
-            let (frame_type, payload) = read_bounded_frame(
+            let next_sequence = read_worker_ready(
                 &mut stream,
-                &[FRAME_STATUS, FRAME_RENDER_ERROR],
-                MAX_RENDER_METADATA_BYTES,
+                crate::DEFAULT_MODEL,
+                "pytorch-cuda",
                 cancellation,
-                ready_deadline,
+                Instant::now() + READY_TIMEOUT,
             )?;
-            if frame_type == FRAME_RENDER_ERROR {
-                validate_startup_error(&payload)?;
-                return Err(RenderFailure::unavailable());
-            }
-            let ready: RenderReady = serde_json::from_slice(&payload)
-                .map_err(|_| RenderFailure::protocol("Magenta worker readiness is invalid"))?;
-            if ready.schema_version != RENDER_SCHEMA_VERSION
-                || ready.event != "render_ready"
-                || ready.model != crate::DEFAULT_MODEL
-                || ready.runtime != "pytorch-cuda"
-            {
-                return Err(RenderFailure::protocol(
-                    "Magenta worker readiness is invalid",
-                ));
-            }
-            Ok(stream)
+            Ok((stream, next_sequence))
         });
     match result {
-        Ok(stream) => Ok(ManagedRenderWorker {
+        Ok((stream, next_sequence)) => Ok(ManagedRenderWorker {
             stream,
             process: Box::new(ManagedProcess { child }),
+            next_sequence,
         }),
         Err(error) => {
             let _ = child.force_kill();
             Err(error)
         }
     }
+}
+
+fn read_worker_ready(
+    stream: &mut TcpStream,
+    model: &str,
+    runtime: &str,
+    cancellation: &RequestCancellation,
+    deadline: Instant,
+) -> Result<u64, RenderFailure> {
+    let (frame_type, payload) = read_bounded_frame(
+        stream,
+        &[FRAME_STATUS, FRAME_RENDER_ERROR],
+        MAX_RENDER_METADATA_BYTES,
+        cancellation,
+        deadline,
+    )?;
+    if frame_type == FRAME_RENDER_ERROR {
+        validate_startup_error(&payload)?;
+        return Err(RenderFailure::unavailable());
+    }
+    let ready: RenderReady = serde_json::from_slice(&payload)
+        .map_err(|_| RenderFailure::protocol("Magenta worker readiness is invalid"))?;
+    if ready.schema_version != RENDER_SCHEMA_VERSION
+        || ready.event != "render_ready"
+        || ready.model != model
+        || ready.runtime != runtime
+        || ready.next_sequence != 1
+    {
+        return Err(RenderFailure::protocol(
+            "Magenta worker readiness is invalid",
+        ));
+    }
+    Ok(ready.next_sequence)
 }
 
 fn accept_worker(
@@ -1137,6 +1149,7 @@ mod tests {
         spawns: Arc<AtomicUsize>,
         shutdowns: Arc<AtomicUsize>,
         shutdown_failures: Arc<AtomicUsize>,
+        sequences: Arc<Mutex<Vec<u64>>>,
     }
 
     impl FakeFactory {
@@ -1146,6 +1159,7 @@ mod tests {
                 spawns: Arc::new(AtomicUsize::new(0)),
                 shutdowns: Arc::new(AtomicUsize::new(0)),
                 shutdown_failures: Arc::new(AtomicUsize::new(0)),
+                sequences: Arc::new(Mutex::new(Vec::new())),
             })
         }
 
@@ -1176,13 +1190,15 @@ mod tests {
                 .set_read_timeout(Some(IO_POLL))
                 .map_err(RenderFailure::from)?;
             let (server, _) = listener.accept().map_err(RenderFailure::from)?;
-            thread::spawn(move || serve_scenario(server, scenario));
+            let sequences = self.sequences.clone();
+            thread::spawn(move || serve_scenario(server, scenario, sequences));
             Ok(ManagedRenderWorker {
                 stream: client,
                 process: Box::new(FakeProcess {
                     shutdowns: self.shutdowns.clone(),
                     shutdown_failures: self.shutdown_failures.clone(),
                 }),
+                next_sequence: 1,
             })
         }
     }
@@ -1196,12 +1212,16 @@ mod tests {
         (header[0], payload)
     }
 
-    fn serve_scenario(mut stream: TcpStream, scenario: Scenario) {
+    fn serve_scenario(mut stream: TcpStream, scenario: Scenario, sequences: Arc<Mutex<Vec<u64>>>) {
         let (frame_type, payload) = read_test_frame(&mut stream);
         assert_eq!(frame_type, FRAME_RENDER_REQUEST);
         let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         let job_id = request["jobId"].as_str().unwrap();
         let sequence = request["sequence"].as_u64().unwrap();
+        sequences
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(sequence);
         let frames = request["frames"].as_u64().unwrap();
         if matches!(scenario, Scenario::Stall) {
             thread::sleep(Duration::from_millis(250));
@@ -1338,6 +1358,7 @@ mod tests {
         assert!(render_with(&core, Arc::new(AtomicBool::new(false))).is_err());
         assert!(render_with(&core, Arc::new(AtomicBool::new(false))).is_ok());
         assert_eq!(factory.spawns.load(Ordering::Acquire), 2);
+        assert_eq!(*factory.sequences.lock().unwrap(), [1, 1]);
         assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
         assert_eq!(core.quiesce(), Ok(true));
         assert_eq!(factory.shutdowns.load(Ordering::Acquire), 2);
@@ -1401,5 +1422,147 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind, FailureKind::Deadline);
+    }
+
+    fn protocol_test_python() -> Option<std::path::PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(configured) = std::env::var_os("LSDJ_TEST_PYTHON") {
+            candidates.push(configured.into());
+        }
+        candidates.push("/opt/homebrew/bin/python3".into());
+        candidates.push("python3".into());
+        candidates.push("python".into());
+        candidates.into_iter().find(|candidate| {
+            let Ok(output) = std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+            else {
+                return false;
+            };
+            let version = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let Some(version) = version.split_whitespace().nth(1) else {
+                return false;
+            };
+            let mut parts = version
+                .split('.')
+                .filter_map(|part| part.parse::<u32>().ok());
+            matches!(
+                (parts.next(), parts.next()),
+                (Some(major), Some(minor)) if major > 3 || (major == 3 && minor >= 11)
+            )
+        })
+    }
+
+    #[test]
+    fn rust_gateway_round_trips_two_requests_with_the_real_python_protocol() {
+        let Some(python) = protocol_test_python() else {
+            eprintln!("skipping Python protocol compatibility test: Python 3.11+ unavailable");
+            return;
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = crate::local_auth::generate_capability();
+        let sidecar =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend/lsdj/sidecar.py");
+        let harness = r#"
+import importlib.util
+import socket
+import sys
+import types
+
+package = types.ModuleType("lsdj")
+package.__path__ = []
+sys.modules["lsdj"] = package
+mrt2 = types.ModuleType("lsdj.mrt2")
+mrt2.AUTO_RUNTIME = "auto"
+mrt2.PYTORCH_CUDA_RUNTIME = "pytorch-cuda"
+mrt2.RUNTIME_CHOICES = ("auto", "mlx", "pytorch-cuda")
+mrt2.create_engine = lambda **kwargs: None
+mrt2.public_startup_error = lambda error: str(error)
+mrt2.runtime_manifest = lambda: {}
+sys.modules["lsdj.mrt2"] = mrt2
+worker = types.ModuleType("lsdj.worker")
+worker.run_deck_worker = lambda *args, **kwargs: None
+sys.modules["lsdj.worker"] = worker
+spec = importlib.util.spec_from_file_location("lsdj.sidecar", sys.argv[3])
+sidecar = importlib.util.module_from_spec(spec)
+sys.modules["lsdj.sidecar"] = sidecar
+spec.loader.exec_module(sidecar)
+
+class Engine:
+    def warm_up(self):
+        pass
+    def render_clip(self, prompt, seconds):
+        frames = int(seconds * sidecar.RENDER_SAMPLE_RATE + 0.5)
+        return b"\0" * (frames * sidecar.RENDER_BYTES_PER_FRAME)
+
+sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+sidecar.write_frame(sock, sidecar.FRAME_AUTH, sys.argv[2].encode())
+sidecar.run_render_worker(
+    sock,
+    "mrt2_small",
+    runtime="pytorch-cuda",
+    engine_factory=lambda model: Engine(),
+)
+"#;
+        let mut command = std::process::Command::new(python);
+        command
+            .arg("-c")
+            .arg(harness)
+            .arg(port.to_string())
+            .arg(&token)
+            .arg(&sidecar);
+        let mut child = crate::child_process::spawn_grouped(&mut command).unwrap();
+        let cancellation = RequestCancellation {
+            request: Arc::new(AtomicBool::new(false)),
+            lifecycle: Arc::new(AtomicBool::new(false)),
+        };
+        let mut stream = accept_worker(&listener, &mut child, &token, &cancellation).unwrap();
+        let next_sequence = read_worker_ready(
+            &mut stream,
+            "mrt2_small",
+            "pytorch-cuda",
+            &cancellation,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(next_sequence, 1);
+
+        let core = GatewayCore::new(FakeFactory::new(std::iter::empty()));
+        *core.worker.lock().unwrap() = Some(ManagedRenderWorker {
+            stream,
+            process: Box::new(ManagedProcess { child }),
+            next_sequence,
+        });
+        let first = core
+            .render(
+                "first compatibility render".to_string(),
+                MIN_RENDER_FRAMES,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        let second = core
+            .render(
+                "second compatibility render".to_string(),
+                MIN_RENDER_FRAMES,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(
+            first.len(),
+            MIN_RENDER_FRAMES as usize * RENDER_BYTES_PER_FRAME as usize
+        );
+        assert_eq!(second.len(), first.len());
+        assert_eq!(
+            core.worker.lock().unwrap().as_ref().unwrap().next_sequence,
+            3
+        );
+        assert_eq!(core.quiesce(), Ok(true));
     }
 }
