@@ -67,7 +67,7 @@ Start-Sleep -Milliseconds 500
 if (Test-Path -LiteralPath $dataRoot) {
     throw 'Explicit release data removal did not remove the app-owned data root.'
 }
-$workers = @(Get-Process -Name 'lsdj-app', 'lsdj_backend' -ErrorAction SilentlyContinue)
+$workers = @(Get-Process -Name 'lsdj-app' -ErrorAction SilentlyContinue)
 if ($workers.Count -ne 0) {
     throw "Release install/uninstall left worker processes running: $($workers.Name -join ', ')"
 }

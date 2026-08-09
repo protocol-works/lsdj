@@ -290,14 +290,23 @@ class WindowsPackagingContractTest(unittest.TestCase):
         lib = (TAURI_ROOT / "src/lib.rs").read_text()
         sidecar = (TAURI_ROOT / "src/sidecar.rs").read_text()
         generation = (TAURI_ROOT / "src/generation.rs").read_text()
+        diagnostics = (TAURI_ROOT / "src/platform_diagnostics.rs").read_text()
 
         self.assertRegex(cargo, r"(?m)^managed-runtime = \[\]$")
-        self.assertIn('.join("backend")', lib)
-        self.assertIn('.join("current")', lib)
-        self.assertIn("LSDJ_MANAGED_BACKEND_REQUIRED", sidecar)
-        self.assertIn("LSDJ_MANAGED_BACKEND_REQUIRED", generation)
-        self.assertIn("app-managed backend runtime is not installed", sidecar)
-        self.assertIn("app-managed backend runtime is not installed", generation)
+        self.assertIn("crate::managed_runtime::Service::Mrt2,", sidecar)
+        self.assertIn("crate::managed_runtime::Service::Sa3,", generation)
+        self.assertIn("crate::managed_runtime::resolve", sidecar)
+        self.assertIn("crate::managed_runtime::resolve", generation)
+        self.assertIn('mode: "managed"', diagnostics)
+        self.assertIn("developer_fallback_allowed: false", diagnostics)
+
+        combined = "\n".join((lib, sidecar, generation, diagnostics))
+        for stale_single_launcher_symbol in (
+            "LSDJ_MANAGED_BACKEND_REQUIRED",
+            "managed_backend_path",
+            "runtime_launch",
+        ):
+            self.assertNotIn(stale_single_launcher_symbol, combined)
 
 
 if __name__ == "__main__":

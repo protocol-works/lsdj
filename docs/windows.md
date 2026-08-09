@@ -22,16 +22,15 @@ work when Windows long-path support is disabled:
 - `data` — generated songs, samples, and user registries;
 - `cache` — reproducible cache data;
 - `assets` — verified model weights and managed runtimes;
-- `staging` — interrupted candidates on the same filesystem as `assets`;
-- `backend\current\lsdj_backend.exe` — the stable launcher atomically promoted
-  by the #110/#111 runtime work.
+- `staging` — interrupted candidates on the same filesystem as `assets`.
 
 The packaged shell enables the `managed-runtime` feature. If the verified
-launcher is absent, decks and generation report that the managed runtime is not
-installed. They never fall through to a system Python, `uv`, Git, a CUDA toolkit,
-WSL, or a shell command. The launcher is a narrow packaging seam; #110 and #111
-remain responsible for installing and selecting the PyTorch MRT2 and TFLite
-Stable Audio implementations behind it.
+MRT2 or Stable Audio service manifest is absent or invalid, that service remains
+unavailable. The services are independently installed, resolved, and verified;
+one service cannot redirect the other to its executable or dependency tree.
+Managed builds never fall through to a system Python, `uv`, Git, a CUDA toolkit,
+WSL, or a shell command. #110 and #111 remain responsible for their respective
+PyTorch MRT2 and TFLite Stable Audio implementations.
 
 ## Upgrade and uninstall
 

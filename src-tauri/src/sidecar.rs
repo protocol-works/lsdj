@@ -1154,12 +1154,6 @@ pub fn sidecar_base_command() -> io::Result<Command> {
     if let Some(program) = std::env::var_os("LSDJ_BACKEND_BIN") {
         return Ok(Command::new(program));
     }
-    if std::env::var_os("LSDJ_MANAGED_BACKEND_REQUIRED").is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "the verified app-managed backend runtime is not installed",
-        ));
-    }
 
     #[cfg(not(feature = "managed-runtime"))]
     {
@@ -1789,9 +1783,6 @@ while True:
         std::fs::set_permissions(&wrapper, permissions).unwrap();
         // SAFETY-ish: no other test reads LSDJ_SIDECAR_CMD or calls
         // Sidecar::spawn, so this process-global is uncontended; removed at the end.
-        #[cfg(feature = "managed-runtime")]
-        std::env::set_var("LSDJ_BACKEND_BIN", wrapper.as_os_str());
-        #[cfg(not(feature = "managed-runtime"))]
         std::env::set_var("LSDJ_SIDECAR_CMD", wrapper.as_os_str());
 
         let mut engine = Engine::new();
@@ -1898,9 +1889,6 @@ while True:
                 "Python sidecar child {pid} survived process-group teardown"
             );
         }
-        #[cfg(feature = "managed-runtime")]
-        std::env::remove_var("LSDJ_BACKEND_BIN");
-        #[cfg(not(feature = "managed-runtime"))]
         std::env::remove_var("LSDJ_SIDECAR_CMD");
         let _ = std::fs::remove_dir_all(&tmp);
     }

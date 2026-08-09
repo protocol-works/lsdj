@@ -79,22 +79,6 @@ fn bundled_backend_path(resource_dir: &std::path::Path) -> std::path::PathBuf {
     resource_dir.join("lsdj_backend").join("lsdj_backend")
 }
 
-/// Stable launcher seam for app-managed platform runtimes.  The launcher is an
-/// ordinary native executable promoted atomically by the model/runtime manager;
-/// it may host PyTorch MRT2, TFLite SA3, or both without packaging knowing the
-/// Python environment's internal layout.
-#[cfg(any(feature = "managed-runtime", test))]
-fn managed_backend_path(assets_dir: &std::path::Path) -> std::path::PathBuf {
-    assets_dir
-        .join("backend")
-        .join("current")
-        .join(if cfg!(windows) {
-            "lsdj_backend.exe"
-        } else {
-            "lsdj_backend"
-        })
-}
-
 /// Point every Python-backed service at the signed runtime inside the app.
 /// Developer builds deliberately omit the feature/resource and retain their
 /// source-tree `uv run` defaults. A release build fails during setup rather than
@@ -115,15 +99,12 @@ fn configure_bundled_backend(app: &tauri::App) -> Result<(), Box<dyn std::error:
 
 #[cfg(all(not(feature = "bundled-backend"), feature = "managed-runtime"))]
 fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let backend = managed_backend_path(platform_paths::get().assets());
-    // A packaged build must never inherit a developer override or fall through
-    // to a system `uv`/Python.  The marker makes the command builders fail with
-    // an actionable first-run error while #110/#111 install the verified runtime.
+    // Managed releases resolve MRT2 and SA3 independently from verified
+    // manifests. Clear all developer launch seams before either service starts;
+    // the managed command builders are compile-time isolated from PATH fallback.
     std::env::remove_var("LSDJ_BACKEND_BIN");
-    std::env::set_var("LSDJ_MANAGED_BACKEND_REQUIRED", "1");
-    if backend.is_file() {
-        std::env::set_var("LSDJ_BACKEND_BIN", backend);
-    }
+    std::env::remove_var("LSDJ_SIDECAR_CMD");
+    std::env::remove_var("LSDJ_GENERATION_CMD");
     Ok(())
 }
 
@@ -608,14 +589,11 @@ pub fn run() {
         // webview can't download, so songs are written to disk and opened natively.
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            configure_bundled_backend(app)?;
             // Resolve every filesystem root once and pass the contract to Python
             // through inherited environment variables. This also performs the
             // restart-safe macOS model migration. MUST precede every service.
             platform_paths::configure(app)?;
-            // Release backends are resolved only after the host-owned asset root
-            // exists. macOS points at a bundled executable; Windows/Linux point
-            // at the atomically promoted managed-runtime launcher.
-            configure_bundled_backend(app)?;
             // Start the audio host (engine + render thread + device), then spawn
             // the per-deck inference sidecars fed by the deck handles. Everything
             // is held in managed state for the app's lifetime.
@@ -988,7 +966,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_backend_path, is_combined, managed_backend_path};
+    use super::{bundled_backend_path, is_combined};
 
     #[test]
     fn bundled_backend_lives_under_the_tauri_resource_dir() {
@@ -999,21 +977,6 @@ mod tests {
             std::path::Path::new(
                 "/Applications/LSDJ.app/Contents/Resources/lsdj_backend/lsdj_backend"
             )
-        );
-    }
-
-    #[test]
-    fn managed_backend_has_one_stable_promoted_launcher_path() {
-        let expected_name = if cfg!(windows) {
-            "lsdj_backend.exe"
-        } else {
-            "lsdj_backend"
-        };
-        assert_eq!(
-            managed_backend_path(std::path::Path::new("/profile with spaces/资产")),
-            std::path::Path::new("/profile with spaces/资产")
-                .join("backend/current")
-                .join(expected_name)
         );
     }
 

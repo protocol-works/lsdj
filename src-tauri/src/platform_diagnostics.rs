@@ -48,6 +48,43 @@ struct LinuxDiagnostics {
     advisories: Vec<&'static str>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePolicy {
+    mode: &'static str,
+    developer_fallback_allowed: bool,
+}
+
+/// Pure release-policy table. The feature pair is kept explicit so tests cover
+/// every supported build shape without pretending the current host is macOS,
+/// Windows, or Linux. The mutually-exclusive feature guard in `lib.rs` rejects
+/// the otherwise ambiguous `(true, true)` build before this value is observed.
+const fn runtime_policy(bundled_backend: bool, managed_runtime: bool) -> RuntimePolicy {
+    if bundled_backend {
+        RuntimePolicy {
+            mode: "bundled",
+            developer_fallback_allowed: false,
+        }
+    } else if managed_runtime {
+        RuntimePolicy {
+            mode: "managed",
+            developer_fallback_allowed: false,
+        }
+    } else {
+        RuntimePolicy {
+            mode: "developer",
+            developer_fallback_allowed: true,
+        }
+    }
+}
+
+const fn compiled_runtime_policy() -> RuntimePolicy {
+    runtime_policy(
+        cfg!(feature = "bundled-backend"),
+        cfg!(feature = "managed-runtime"),
+    )
+}
+
 #[cfg(any(target_os = "linux", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LinuxEvidence {
@@ -81,6 +118,7 @@ impl MidiSequencerAccess {
 #[tauri::command]
 pub fn platform_diagnostics() -> PlatformDiagnostics {
     let paths = crate::platform_paths::get();
+    let runtime = compiled_runtime_policy();
     let roots = RootDiagnostics {
         config: display(paths.config()),
         data: display(paths.data()),
@@ -91,8 +129,8 @@ pub fn platform_diagnostics() -> PlatformDiagnostics {
     PlatformDiagnostics {
         platform: std::env::consts::OS,
         architecture: std::env::consts::ARCH,
-        runtime_mode: crate::runtime_launch::mode(),
-        developer_fallback_allowed: crate::runtime_launch::developer_fallback_allowed(),
+        runtime_mode: runtime.mode,
+        developer_fallback_allowed: runtime.developer_fallback_allowed,
         roots,
         linux: collect_linux(),
     }
@@ -108,10 +146,8 @@ fn collect_linux() -> Option<LinuxDiagnostics> {
     let distribution = parse_os_release(&os_release);
     let distribution_id = distribution.get("ID").cloned();
     let distribution_version = distribution.get("VERSION_ID").cloned();
-    let distribution_support = distribution_support(
-        distribution_id.as_deref(),
-        distribution_version.as_deref(),
-    );
+    let distribution_support =
+        distribution_support(distribution_id.as_deref(), distribution_version.as_deref());
     let session_type = session_type(|name| std::env::var(name).ok());
 
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
@@ -181,7 +217,9 @@ fn parse_os_release(content: &str) -> HashMap<String, String> {
             }
             let (key, value) = line.split_once('=')?;
             if key.is_empty()
-                || !key.bytes().all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
             {
                 return None;
             }
@@ -286,13 +324,22 @@ mod tests {
 
     #[test]
     fn ubuntu_2204_and_newer_are_the_only_supported_distribution_contract() {
-        assert_eq!(distribution_support(Some("ubuntu"), Some("22.04")), "supported");
-        assert_eq!(distribution_support(Some("Ubuntu"), Some("24.04")), "supported");
+        assert_eq!(
+            distribution_support(Some("ubuntu"), Some("22.04")),
+            "supported"
+        );
+        assert_eq!(
+            distribution_support(Some("Ubuntu"), Some("24.04")),
+            "supported"
+        );
         assert_eq!(
             distribution_support(Some("ubuntu"), Some("20.04")),
             "unsupportedVersion"
         );
-        assert_eq!(distribution_support(Some("fedora"), Some("42")), "community");
+        assert_eq!(
+            distribution_support(Some("fedora"), Some("42")),
+            "community"
+        );
         assert_eq!(distribution_support(None, None), "unknown");
     }
 
@@ -345,5 +392,71 @@ mod tests {
                 "linux.midi.sequencerPermissionDenied"
             ]
         );
+    }
+
+    #[test]
+    fn runtime_policy_table_allows_fallback_only_for_featureless_development() {
+        assert_eq!(
+            runtime_policy(true, false),
+            RuntimePolicy {
+                mode: "bundled",
+                developer_fallback_allowed: false,
+            }
+        );
+        assert_eq!(
+            runtime_policy(false, true),
+            RuntimePolicy {
+                mode: "managed",
+                developer_fallback_allowed: false,
+            }
+        );
+        assert_eq!(
+            runtime_policy(false, false),
+            RuntimePolicy {
+                mode: "developer",
+                developer_fallback_allowed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn compiled_runtime_policy_matches_the_selected_release_feature() {
+        let expected = runtime_policy(
+            cfg!(feature = "bundled-backend"),
+            cfg!(feature = "managed-runtime"),
+        );
+        assert_eq!(compiled_runtime_policy(), expected);
+        if cfg!(feature = "bundled-backend") || cfg!(feature = "managed-runtime") {
+            assert!(!expected.developer_fallback_allowed);
+        } else {
+            assert_eq!(expected.mode, "developer");
+            assert!(expected.developer_fallback_allowed);
+        }
+    }
+
+    #[test]
+    fn diagnostics_serialization_exposes_the_compiled_runtime_policy() {
+        let runtime = compiled_runtime_policy();
+        let value = serde_json::to_value(PlatformDiagnostics {
+            platform: "test",
+            architecture: "test-arch",
+            runtime_mode: runtime.mode,
+            developer_fallback_allowed: runtime.developer_fallback_allowed,
+            roots: RootDiagnostics {
+                config: "/config".into(),
+                data: "/data".into(),
+                cache: "/cache".into(),
+                assets: "/assets".into(),
+                staging: "/staging".into(),
+            },
+            linux: None,
+        })
+        .unwrap();
+        assert_eq!(value["runtimeMode"], runtime.mode);
+        assert_eq!(
+            value["developerFallbackAllowed"],
+            runtime.developer_fallback_allowed
+        );
+        assert!(value.get("runtime_mode").is_none());
     }
 }

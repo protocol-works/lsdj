@@ -307,7 +307,8 @@ jobs:
         shell: bash
         run: >-
           cargo test --locked --workspace --features managed-runtime
-          --manifest-path src-tauri/Cargo.toml runtime_launch
+          --manifest-path src-tauri/Cargo.toml
+          platform_diagnostics::tests::compiled_runtime_policy_matches_the_selected_release_feature
 
       - name: Build and audit AppImage
         env:

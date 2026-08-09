@@ -34,12 +34,11 @@ The application package does not invoke or require a system Python, `uv`, Git,
 a shell, or a CUDA toolkit. Model adapters are installed into app-owned storage
 from pinned, checksum-verified artifacts. If a managed adapter is absent or
 invalid, the corresponding service reports unavailable instead of falling back
-to a command from `PATH`. Missing adapters use the stable diagnostic identifiers
-`runtime.unavailable.mrt2` and `runtime.unavailable.stableAudio`; user-facing
-surfaces must localize those identifiers rather than displaying them verbatim.
-A compatible NVIDIA **driver** is still required for MRT2; the minimum version
-and VRAM floor remain unset until the #110 hardware qualification records
-measured results.
+to a command from `PATH`. MRT2 and Stable Audio are resolved independently from
+their own verified service manifests, so one missing runtime does not redirect
+or downgrade the other service. A compatible NVIDIA **driver** is still
+required for MRT2; the minimum version and VRAM floor remain unset until the
+#110 hardware qualification records measured results.
 
 If FUSE is unavailable, AppImage's standard extract-and-run mode is a useful
 diagnostic fallback:

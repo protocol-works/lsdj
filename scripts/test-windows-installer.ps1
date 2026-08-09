@@ -197,7 +197,10 @@ function Set-DisplayVersionEvidence {
 }
 
 function Require-No-Workers {
-    $remaining = @(Get-Process -Name 'lsdj-app', 'lsdj_backend' -ErrorAction SilentlyContinue)
+    # Runtime programs are independently declared by the MRT2 and SA3 service
+    # manifests and do not have one stable process name. The installer lifecycle
+    # never launches the app, so observing the shell is the authoritative leak.
+    $remaining = @(Get-Process -Name 'lsdj-app' -ErrorAction SilentlyContinue)
     if ($remaining.Count -ne 0) {
         throw "Installer lifecycle left LSDJ processes running: $($remaining.Name -join ', ')"
     }
