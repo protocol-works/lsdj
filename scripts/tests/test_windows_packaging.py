@@ -2,7 +2,6 @@ import json
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).parents[2]
 TAURI_ROOT = REPO_ROOT / "src-tauri"
 
@@ -28,7 +27,23 @@ class WindowsPackagingContractTest(unittest.TestCase):
 
         self.assertIn('!define LSDJ_DATA_ROOT "$LOCALAPPDATA\\LSDJ"', hooks)
         self.assertIn(".lsdj-data-root", hooks)
-        self.assertIn('StrCmp $R8 "works.protocol.lsdj"', hooks)
+        self.assertIn('!define LSDJ_OWNER_ID "works.protocol.lsdj"', hooks)
+        self.assertIn("NSIS_HOOK_PREINSTALL", hooks)
+        self.assertIn("GetFullPathNameW", hooks)
+        self.assertIn("CreateFileW", hooks)
+        self.assertIn("LSDJ_FILE_FLAG_OPEN_REPARSE_POINT", hooks)
+        self.assertIn("!define LSDJ_OWNER_ID_BYTES 19", hooks)
+        self.assertEqual(len("works.protocol.lsdj".encode("ascii")), 19)
+        self.assertIn("LSDJ_FILE_ATTRIBUTE_REPARSE_POINT", hooks)
+        self.assertIn("LsdjExistingLayoutIsRecognized", hooks)
+        self.assertIn("Section -LsdjProbeDataRootBeforeTauri", hooks)
+        self.assertIn("StrCpy $LsdjInstallRootState 1", hooks)
+        self.assertIn("LsdjDataRootIsEmpty", hooks)
+        self.assertIn("LsdjInstallTreeIsLinkFree", hooks)
+        self.assertIn('CreateDirectory "${LSDJ_DATA_ROOT}"', hooks)
+        self.assertIn("LsdjOwnedDataRootIsSafe", hooks)
+        self.assertIn("LsdjTreeIsLinkFree", hooks)
+        self.assertIn("LsdjDeleteTreeWithoutLinks", hooks)
         self.assertIn("/PURGE-LSDJ-DATA", hooks)
         self.assertIn("${GetSize}", hooks)
         self.assertIn("Location: ${LSDJ_DATA_ROOT}", hooks)
@@ -37,8 +52,17 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("StrCpy $DeleteAppDataCheckboxState 0", hooks)
         self.assertIn("${If} $LsdjDeleteData = 1", hooks)
         self.assertIn('DeleteRegKey SHCTX "${MANUPRODUCTKEY}"', hooks)
-        self.assertIn('RMDir /r "${LSDJ_DATA_ROOT}"', hooks)
+        self.assertNotIn("RMDir /r", hooks)
         self.assertNotIn('RMDir /r "$LOCALAPPDATA"', hooks)
+
+        probe_start = hooks.index("Section -LsdjProbeDataRootBeforeTauri")
+        probe_end = hooks.index("SectionEnd", probe_start)
+        preinstall_start = hooks.index("!macro NSIS_HOOK_PREINSTALL")
+        create_start = hooks.index('CreateDirectory "${LSDJ_DATA_ROOT}"')
+        self.assertLess(probe_start, probe_end)
+        self.assertLess(probe_end, preinstall_start)
+        self.assertLess(preinstall_start, create_start)
+        self.assertNotIn("CreateDirectory", hooks[probe_start:probe_end])
 
         language = (TAURI_ROOT / "windows/English.nsh").read_text()
         self.assertIn("path and size will be confirmed", language)
@@ -69,11 +93,26 @@ class WindowsPackagingContractTest(unittest.TestCase):
 
     def test_hosted_ci_builds_unsigned_but_exercises_release_rejection(self):
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+        build = (REPO_ROOT / "scripts/build-windows-installer.ps1").read_text()
+        lifecycle = (REPO_ROOT / "scripts/test-windows-installer.ps1").read_text()
 
         self.assertIn("-UnsignedDevelopment", workflow)
         self.assertIn("assert-windows-release-rejects-unsigned.ps1", workflow)
         self.assertIn("test-windows-installer.ps1", workflow)
         self.assertIn("windows-x64-unsigned-development", workflow)
+        self.assertIn("cargo install tauri-cli --version '=2.11.2' --locked", workflow)
+        self.assertIn("LSDJ_CI_ADVERSARIAL_TESTS", build)
+        self.assertIn("if ($UnsignedDevelopment)", build)
+        for contract in (
+            "pre-existing empty LocalAppData root",
+            "foreign LocalAppData root",
+            "root junction",
+            "purge-time root junction",
+            "marker reparse point",
+            "marker-replacement test",
+            "nested directory reparse point",
+        ):
+            self.assertIn(contract, lifecycle)
 
         rejection = (
             REPO_ROOT / "scripts/assert-windows-release-rejects-unsigned.ps1"
