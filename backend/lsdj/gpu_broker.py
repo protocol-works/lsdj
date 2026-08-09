@@ -30,6 +30,9 @@ from typing import Any
 SCHEMA_VERSION = 1
 MAX_RECORDS = 32
 DEFAULT_POLL_SECONDS = 0.05
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+ERROR_INVALID_PARAMETER = 87
+STILL_ACTIVE = 259
 
 
 class Priority(enum.IntEnum):
@@ -58,20 +61,57 @@ class Lease:
     pid: int
 
 
+def _windows_pid_alive(pid: int) -> bool:
+    """Query one Windows process without treating signal emulation as truth.
+
+    ``os.kill(pid, 0)`` is not a portable liveness probe on Windows.  Open the
+    process with the least query privilege instead, and retain an indeterminate
+    broker record whenever access is denied or a query fails.  False is safe
+    only when Windows positively reports an invalid PID or a completed process.
+    """
+
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        get_exit_code.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    except (AttributeError, OSError):
+        return True
+    if not handle:
+        return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
+    exit_code = wintypes.DWORD()
+    try:
+        try:
+            queried = get_exit_code(handle, ctypes.byref(exit_code))
+        except OSError:
+            return True
+        return not queried or exit_code.value == STILL_ACTIVE
+    finally:
+        close_handle(handle)
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if pid == os.getpid():
         return True
+    if os.name == "nt":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        return True
-    except OSError:
-        # Windows can reject signal 0 for an otherwise-live process.  Retaining
-        # the record is safer than admitting overlapping GPU work.
+    except (PermissionError, OSError):
         return True
     return True
 
