@@ -220,6 +220,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
         build = (REPO_ROOT / "scripts/build-windows-installer.ps1").read_text()
         lifecycle = (REPO_ROOT / "scripts/test-windows-installer.ps1").read_text()
+        windows_doc = (REPO_ROOT / "docs/windows.md").read_text()
         hooks = (TAURI_ROOT / "windows/installer-hooks.nsh").read_text()
 
         self.assertIn("-UnsignedDevelopment", workflow)
@@ -249,21 +250,34 @@ class WindowsPackagingContractTest(unittest.TestCase):
         self.assertIn("function Assert-CiInstallerTraceContract", lifecycle)
         self.assertIn("function Set-DisplayVersionEvidence", lifecycle)
         self.assertIn("function New-UninstallerWorkerCopy", lifecycle)
+        self.assertIn("function Stop-UninstallerWorker", lifecycle)
         self.assertIn("function Invoke-ExpectedUninstallFailure", lifecycle)
         self.assertNotIn("Invoke-ExpectedFailure $uninstaller", lifecycle)
+        copy_helper_start = lifecycle.index("function New-UninstallerWorkerCopy")
+        stop_helper_start = lifecycle.index(
+            "function Stop-UninstallerWorker", copy_helper_start
+        )
         worker_helper_start = lifecycle.index(
             "function Invoke-ExpectedUninstallFailure"
         )
+        copy_helper = lifecycle[copy_helper_start:stop_helper_start]
+        stop_helper = lifecycle[stop_helper_start:worker_helper_start]
         worker_helper_end = lifecycle.index(
             "function Require-InstalledVersion", worker_helper_start
         )
         worker_helper = lifecycle[worker_helper_start:worker_helper_end]
+        self.assertIn("} catch {", copy_helper)
+        self.assertIn("Remove-Item -LiteralPath $workerPath", copy_helper)
+        self.assertIn("$Process.Kill($true)", stop_helper)
+        self.assertIn("$Process.WaitForExit($TimeoutMilliseconds)", stop_helper)
         self.assertIn(
             '-ArgumentList (@($ArgumentList) + "_?=$InstallDirectory")',
             worker_helper,
         )
-        self.assertIn("-ExpectedExitCodes @(2)", worker_helper)
+        self.assertIn("$worker.WaitForExit(30000)", worker_helper)
+        self.assertIn("$worker.ExitCode -ne 2", worker_helper)
         self.assertIn("} finally {", worker_helper)
+        self.assertIn("Stop-UninstallerWorker -Process $worker", worker_helper)
         self.assertIn(
             "Remove-Item -LiteralPath $workerPath",
             worker_helper,
@@ -278,12 +292,30 @@ class WindowsPackagingContractTest(unittest.TestCase):
         race = lifecycle[race_start:race_end]
         self.assertIn('"_?=$dataRoot"\n        )', race)
         self.assertIn("$racedPurge.ExitCode -ne 2", race)
+        self.assertIn("$racedPurge.WaitForExit(30000)", race)
         self.assertIn("} finally {", race)
-        self.assertIn("$racedPurge.WaitForExit()", race)
+        self.assertIn("Stop-UninstallerWorker -Process $racedPurge", race)
+        self.assertGreaterEqual(race.count("} finally {"), 2)
         self.assertIn(
             "Remove-Item -LiteralPath $racedPurgeWorker",
             race,
         )
+        unicode_worker_start = lifecycle.index(
+            "Start-LifecycleScenario 'reject purge worker with spaces and Unicode"
+        )
+        unicode_worker_end = lifecycle.index(
+            "Invoke-CheckedProcess $unicodeUninstaller @('/S')", unicode_worker_start
+        )
+        unicode_worker = lifecycle[unicode_worker_start:unicode_worker_end]
+        self.assertIn("-FilePath $unicodeUninstaller", unicode_worker)
+        self.assertIn("-InstallDirectory $unicodeInstall", unicode_worker)
+        self.assertIn("Invoke-ExpectedUninstallFailure", unicode_worker)
+        self.assertNotIn(".WaitForExit()", race)
+        self.assertIn(
+            "NSIS installed uninstallers are self-copy launchers", windows_doc
+        )
+        self.assertIn("final unquoted `_?=<install-directory>`", windows_doc)
+        self.assertIn("fail-closed refusal (`2`)", windows_doc)
         self.assertIn("$lastRequiredIndex = -1", lifecycle)
         self.assertIn("[StringComparison]::Ordinal", lifecycle)
         self.assertIn(
