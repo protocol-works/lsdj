@@ -931,21 +931,11 @@ impl McpHandler {
             #[cfg(not(feature = "managed-runtime"))]
             {
                 let generation = self.app.state::<GenerationServer>();
-                (
-                    generation.port().ok_or("the generation server is not running")?,
-                    generation
-                        .capability()
-                        .ok_or("the generation server authentication capability is unavailable")?,
-                )
+                generation.connection().ok_or("the generation server is not running")?
             }
         } else {
             let generation = self.app.state::<GenerationServer>();
-            (
-                generation.port().ok_or("the generation server is not running")?,
-                generation
-                    .capability()
-                    .ok_or("the generation server authentication capability is unavailable")?,
-            )
+            generation.connection().ok_or("the generation server is not running")?
         };
         // sa3 generation is serialised; a full track (medium model) can take minutes,
         // so allow generous headroom but never wait forever for a wedged worker.

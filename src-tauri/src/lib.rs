@@ -325,20 +325,23 @@ fn app_info(
     generation: tauri::State<'_, generation::GenerationServer>,
     mcp: tauri::State<'_, mcp::McpServer>,
 ) -> AppInfo {
+    let generation_connection = generation.connection();
     #[cfg(feature = "managed-runtime")]
     let (magenta_port, magenta_capability) = {
         let gateway = app.state::<magenta_gateway::MagentaGateway>();
         (gateway.port(), gateway.capability())
     };
     #[cfg(not(feature = "managed-runtime"))]
-    let (magenta_port, magenta_capability) = (generation.port(), generation.capability());
+    let (magenta_port, magenta_capability) = generation_connection
+        .clone()
+        .map_or((None, None), |(port, capability)| (Some(port), Some(capability)));
     #[cfg(not(feature = "managed-runtime"))]
     let _ = app;
     AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         audio_device_started: state.device_started,
-        generation_port: generation.port(),
-        generation_capability: generation.capability(),
+        generation_port: generation_connection.as_ref().map(|(port, _)| *port),
+        generation_capability: generation_connection.map(|(_, capability)| capability),
         magenta_port,
         magenta_capability,
         mcp_port: mcp.port(),

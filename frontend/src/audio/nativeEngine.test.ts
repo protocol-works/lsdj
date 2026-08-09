@@ -194,6 +194,36 @@ describe('createNativeEngine — control contract', () => {
     expect((init.headers as Headers).get('x-lsdj-capability')).toBe('n'.repeat(64))
   })
 
+  it('uses the promoted SA3 connection on the next request without retrying either POST', async () => {
+    let appInfoCalls = 0
+    const invoke = vi.fn((cmd: string) => {
+      if (cmd !== 'app_info') return Promise.resolve(undefined)
+      appInfoCalls += 1
+      return Promise.resolve(
+        appInfoCalls === 1
+          ? { generationPort: 1111, generationCapability: 'o'.repeat(64) }
+          : { generationPort: 2222, generationCapability: 'n'.repeat(64) },
+      )
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async () => ({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+    await fetchGenerationApi('/api/generate', { method: 'POST' })
+
+    expect(appInfoCalls).toBe(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:1111/api/generate')
+    expect((fetchMock.mock.calls[0][1]?.headers as Headers).get('x-lsdj-capability')).toBe(
+      'o'.repeat(64),
+    )
+    expect(fetchMock.mock.calls[1][0]).toBe('http://127.0.0.1:2222/api/generate')
+    expect((fetchMock.mock.calls[1][1]?.headers as Headers).get('x-lsdj-capability')).toBe(
+      'n'.repeat(64),
+    )
+  })
+
   it('createDeckChannel replays NO mixer config — the shell hydrates (phase C)', async () => {
     const engine = createNativeEngine()
     await engine.createDeckChannel(

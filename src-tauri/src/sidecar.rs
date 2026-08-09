@@ -278,9 +278,29 @@ struct SharedReaderExit {
 
 struct SharedReaderParts {
     control: Arc<Mutex<Option<TcpStream>>>,
-    child: Arc<Mutex<Option<SupervisedChild>>>,
+    process: Arc<Mutex<SharedProcessState>>,
     stop: Arc<AtomicBool>,
     reader: JoinHandle<SharedReaderExit>,
+}
+
+trait SharedProcess: Send {
+    fn shutdown(&mut self) -> io::Result<()>;
+}
+
+impl SharedProcess for SupervisedChild {
+    fn shutdown(&mut self) -> io::Result<()> {
+        let report = SupervisedChild::shutdown(self, Duration::from_millis(500))?;
+        crate::child_process::log_shutdown("shared sidecar", Ok(report));
+        Ok(())
+    }
+}
+
+enum SharedProcessState {
+    Stopped,
+    Running(Box<dyn SharedProcess>),
+    /// Teardown did not positively reap the process tree. Ownership is retained
+    /// and promotion remains blocked until a later retry reaches `Stopped`.
+    Uncertain(Box<dyn SharedProcess>),
 }
 
 /// One supervised deck sidecar: the spawned Python process, the control writer
@@ -487,7 +507,7 @@ fn start_shared_reader(
         .expect("failed to spawn shared LSDJ sidecar reader thread");
     SharedReaderParts {
         control,
-        child: Arc::new(Mutex::new(Some(child))),
+        process: Arc::new(Mutex::new(SharedProcessState::Running(Box::new(child)))),
         stop,
         reader,
     }
@@ -648,7 +668,7 @@ pub struct SharedSidecar {
     feed: AnalysisFeed,
     on_status: SharedStatusSinks,
     control: Arc<Mutex<Option<TcpStream>>>,
-    child: Arc<Mutex<Option<SupervisedChild>>>,
+    process: Arc<Mutex<SharedProcessState>>,
     stop: Arc<AtomicBool>,
     reader: Option<JoinHandle<SharedReaderExit>>,
     /// Reclaimed ring producers parked after a replacement launch failure. A
@@ -673,7 +693,7 @@ impl SharedSidecar {
             feed,
             on_status: on_status.map(|sink| Arc::new(Mutex::new(sink))),
             control: Arc::new(Mutex::new(None)),
-            child: Arc::new(Mutex::new(None)),
+            process: Arc::new(Mutex::new(SharedProcessState::Stopped)),
             stop: Arc::new(AtomicBool::new(true)),
             reader: None,
             parked: Some(SharedReaderExit { handles }),
@@ -704,8 +724,14 @@ impl SharedSidecar {
     /// occur inside `bind_and_launch_shared` immediately before spawn, so an
     /// install that completed after app startup becomes usable without restart.
     pub fn activate(&mut self) -> io::Result<()> {
-        if self.reader.is_some() {
-            return Ok(());
+        match &*self.process.lock().unwrap_or_else(|p| p.into_inner()) {
+            SharedProcessState::Running(_) => return Ok(()),
+            SharedProcessState::Uncertain(_) => {
+                return Err(io::Error::other(
+                    "shared sidecar process reap is still uncertain",
+                ))
+            }
+            SharedProcessState::Stopped => {}
         }
         if self.parked.is_none() {
             return Err(io::Error::other(
@@ -730,7 +756,7 @@ impl SharedSidecar {
             on_pcm,
         );
         self.control = parts.control;
-        self.child = parts.child;
+        self.process = parts.process;
         self.stop = parts.stop;
         self.reader = Some(parts.reader);
         Ok(())
@@ -741,9 +767,6 @@ impl SharedSidecar {
     /// succeeds (notably on Windows, where a live Python process holds DLLs).
     #[cfg(feature = "managed-runtime")]
     pub fn quiesce(&mut self) -> io::Result<()> {
-        if self.reader.is_none() {
-            return Ok(());
-        }
         let exit = self.stop_and_reclaim()?;
         self.parked = Some(exit);
         Ok(())
@@ -839,17 +862,13 @@ impl SharedSidecar {
         );
         self.models = models;
         self.control = parts.control;
-        self.child = parts.child;
+        self.process = parts.process;
         self.stop = parts.stop;
         self.reader = Some(parts.reader);
         Ok(())
     }
 
     fn stop_and_reclaim(&mut self) -> io::Result<SharedReaderExit> {
-        if let Some(exit) = self.parked.take() {
-            return Ok(exit);
-        }
-
         self.stop.store(true, Ordering::Release);
         if let Some(writer) = self
             .control
@@ -859,32 +878,37 @@ impl SharedSidecar {
         {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
-        let mut shutdown_error = None;
-        if let Some(mut old) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            match old.shutdown(Duration::from_millis(500)) {
-                Ok(report) => {
-                    crate::child_process::log_shutdown("shared sidecar restart", Ok(report))
-                }
-                Err(error) => {
-                    if let Err(force_error) = old.force_kill() {
-                        shutdown_error = Some(io::Error::other(format!(
-                            "cannot reap old shared CUDA worker ({error}); forced teardown also failed ({force_error})"
-                        )));
-                    }
-                }
-            }
-        }
-        let exit = self
-            .reader
-            .take()
-            .ok_or_else(|| io::Error::other("shared sidecar has no reader to reclaim"))?
-            .join()
-            .map_err(|_| io::Error::other("shared sidecar reader thread panicked"))?;
-        if let Some(error) = shutdown_error {
+        let shutdown_result =
+            stop_shared_process(&mut self.process.lock().unwrap_or_else(|p| p.into_inner()));
+        let exit = if let Some(reader) = self.reader.take() {
+            reader
+                .join()
+                .map_err(|_| io::Error::other("shared sidecar reader thread panicked"))?
+        } else {
+            self.parked
+                .take()
+                .ok_or_else(|| io::Error::other("shared sidecar has no deck handles to reclaim"))?
+        };
+        if let Err(error) = shutdown_result {
             self.parked = Some(exit);
             return Err(error);
         }
         Ok(exit)
+    }
+}
+
+fn stop_shared_process(state: &mut SharedProcessState) -> io::Result<()> {
+    let previous = std::mem::replace(state, SharedProcessState::Stopped);
+    let mut process = match previous {
+        SharedProcessState::Stopped => return Ok(()),
+        SharedProcessState::Running(process) | SharedProcessState::Uncertain(process) => process,
+    };
+    match process.shutdown() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *state = SharedProcessState::Uncertain(process);
+            Err(error)
+        }
     }
 }
 
@@ -899,11 +923,10 @@ impl Drop for SharedSidecar {
         {
             let _ = writer.shutdown(std::net::Shutdown::Both);
         }
-        if let Some(mut child) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
-            crate::child_process::log_shutdown(
-                "shared sidecar",
-                child.shutdown(Duration::from_millis(500)),
-            );
+        if let Err(error) =
+            stop_shared_process(&mut self.process.lock().unwrap_or_else(|p| p.into_inner()))
+        {
+            crate::child_process::log_shutdown("shared sidecar", Err(error));
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -1321,6 +1344,7 @@ mod tests {
     use std::net::TcpStream;
     #[cfg(all(unix, not(feature = "managed-runtime")))]
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicUsize;
 
     #[cfg(all(unix, not(feature = "managed-runtime")))]
     static SIDECAR_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -1342,7 +1366,7 @@ mod tests {
         let sinks: DeckStatusSinks = std::array::from_fn(|_| {
             Box::new(|_message| {}) as StatusSink
         });
-        let shared = SharedSidecar::parked(
+        let mut shared = SharedSidecar::parked(
             ["mrt2_small".into(), "mrt2_small".into()],
             handles,
             sinks,
@@ -1352,12 +1376,53 @@ mod tests {
 
         assert!(shared.reader.is_none());
         assert!(shared.parked.is_some());
-        assert!(shared
-            .child
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_none());
+        assert!(matches!(
+            &*shared
+                .process
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            SharedProcessState::Stopped
+        ));
         assert!(shared.stop.load(Ordering::Acquire));
+
+        let shutdowns = Arc::new(AtomicUsize::new(1));
+        *shared.process.lock().unwrap() =
+            SharedProcessState::Uncertain(Box::new(RetrySharedProcess {
+                shutdowns: shutdowns.clone(),
+            }));
+        assert!(shared.reader.is_none());
+        assert!(shared.activate().is_err());
+        assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+    }
+
+    struct RetrySharedProcess {
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl SharedProcess for RetrySharedProcess {
+        fn shutdown(&mut self) -> io::Result<()> {
+            if self.shutdowns.fetch_add(1, Ordering::AcqRel) == 0 {
+                Err(io::Error::other("first reap is uncertain"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn failed_shared_reap_retains_supervisor_until_a_positive_retry() {
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let mut state = SharedProcessState::Running(Box::new(RetrySharedProcess {
+            shutdowns: shutdowns.clone(),
+        }));
+
+        assert!(stop_shared_process(&mut state).is_err());
+        assert!(matches!(state, SharedProcessState::Uncertain(_)));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+
+        assert!(stop_shared_process(&mut state).is_ok());
+        assert!(matches!(state, SharedProcessState::Stopped));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 2);
     }
 
     #[test]

@@ -201,18 +201,33 @@ impl ManagedRenderWorker {
             result => result,
         }
     }
-
-    fn shutdown(&mut self) -> io::Result<()> {
-        let _ = self.stream.shutdown(Shutdown::Both);
-        self.process.shutdown()
-    }
 }
 
 trait WorkerFactory: Send + Sync {
     fn spawn(
         &self,
         cancellation: &RequestCancellation,
-    ) -> Result<ManagedRenderWorker, RenderFailure>;
+    ) -> Result<ManagedRenderWorker, WorkerSpawnFailure>;
+}
+
+struct WorkerSpawnFailure {
+    failure: RenderFailure,
+    uncertain_process: Option<Box<dyn ProcessTree>>,
+}
+
+impl WorkerSpawnFailure {
+    fn reaped(failure: RenderFailure) -> Self {
+        Self {
+            failure,
+            uncertain_process: None,
+        }
+    }
+}
+
+impl From<RenderFailure> for WorkerSpawnFailure {
+    fn from(failure: RenderFailure) -> Self {
+        Self::reaped(failure)
+    }
 }
 
 struct ManagedWorkerFactory;
@@ -221,13 +236,24 @@ impl WorkerFactory for ManagedWorkerFactory {
     fn spawn(
         &self,
         cancellation: &RequestCancellation,
-    ) -> Result<ManagedRenderWorker, RenderFailure> {
+    ) -> Result<ManagedRenderWorker, WorkerSpawnFailure> {
         spawn_managed_worker(cancellation)
     }
 }
 
+enum WorkerState {
+    Stopped,
+    Running(ManagedRenderWorker),
+    /// A failed teardown left process-tree ownership uncertain. No new worker
+    /// may launch, and promotion may not rename, until shutdown later succeeds.
+    Uncertain {
+        process: Box<dyn ProcessTree>,
+        was_warm: bool,
+    },
+}
+
 struct GatewayCore {
-    worker: Mutex<Option<ManagedRenderWorker>>,
+    worker: Mutex<WorkerState>,
     factory: Arc<dyn WorkerFactory>,
     lifecycle: Mutex<Arc<AtomicBool>>,
     quiescing: AtomicBool,
@@ -236,7 +262,7 @@ struct GatewayCore {
 impl GatewayCore {
     fn new(factory: Arc<dyn WorkerFactory>) -> Self {
         Self {
-            worker: Mutex::new(None),
+            worker: Mutex::new(WorkerState::Stopped),
             factory,
             lifecycle: Mutex::new(Arc::new(AtomicBool::new(false))),
             quiescing: AtomicBool::new(false),
@@ -274,10 +300,30 @@ impl GatewayCore {
         if cancellation.cancelled() || self.quiescing.load(Ordering::Acquire) {
             return Err(RenderFailure::cancelled());
         }
-        if worker.is_none() {
-            *worker = Some(self.factory.spawn(&cancellation)?);
+        if matches!(&*worker, WorkerState::Stopped) {
+            match self.factory.spawn(&cancellation) {
+                Ok(spawned) => *worker = WorkerState::Running(spawned),
+                Err(spawn) => {
+                    if let Some(process) = spawn.uncertain_process {
+                        *worker = WorkerState::Uncertain {
+                            process,
+                            was_warm: false,
+                        };
+                    }
+                    return Err(spawn.failure);
+                }
+            }
         }
-        let sequence = worker.as_ref().expect("worker was installed").next_sequence;
+        let resident = match &mut *worker {
+            WorkerState::Running(resident) => resident,
+            WorkerState::Uncertain { .. } => {
+                return Err(RenderFailure::protocol(
+                    "Magenta render worker could not be reaped",
+                ))
+            }
+            WorkerState::Stopped => unreachable!("worker spawn installed a running state"),
+        };
+        let sequence = resident.next_sequence;
         let request = WorkerRenderRequest {
             schema_version: RENDER_SCHEMA_VERSION,
             job_id: format!("render-{:032x}", rand::random::<u128>()),
@@ -285,24 +331,25 @@ impl GatewayCore {
             prompt,
             frames,
         };
-        let result = worker
-            .as_mut()
-            .expect("worker was installed")
-            .render(&request, &cancellation);
+        let result = resident.render(&request, &cancellation);
         if result.is_ok() && sequence < u64::MAX {
-            worker.as_mut().expect("worker was installed").next_sequence = sequence + 1;
+            resident.next_sequence = sequence + 1;
             return result;
         }
-        if let Some(mut finished) = worker.take() {
-            if finished.shutdown().is_err() {
-                // Keep ownership so a later quiesce can retry and, most
-                // importantly, an installer cannot mistake an uncertain
-                // process-tree state for "reaped" before a Windows rename.
-                *worker = Some(finished);
-                return Err(RenderFailure::protocol(
-                    "Magenta render worker could not be reaped",
-                ));
-            }
+        let WorkerState::Running(mut finished) =
+            std::mem::replace(&mut *worker, WorkerState::Stopped)
+        else {
+            unreachable!("render state stayed running while its lock was held")
+        };
+        let _ = finished.stream.shutdown(Shutdown::Both);
+        if finished.process.shutdown().is_err() {
+            *worker = WorkerState::Uncertain {
+                process: finished.process,
+                was_warm: true,
+            };
+            return Err(RenderFailure::protocol(
+                "Magenta render worker could not be reaped",
+            ));
         }
         result
     }
@@ -319,13 +366,19 @@ impl GatewayCore {
             .worker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(mut resident) = worker.take() else {
-            return Ok(false);
+        let previous = std::mem::replace(&mut *worker, WorkerState::Stopped);
+        let (mut process, was_warm) = match previous {
+            WorkerState::Stopped => return Ok(false),
+            WorkerState::Running(resident) => {
+                let _ = resident.stream.shutdown(Shutdown::Both);
+                (resident.process, true)
+            }
+            WorkerState::Uncertain { process, was_warm } => (process, was_warm),
         };
-        match resident.shutdown() {
-            Ok(()) => Ok(true),
+        match process.shutdown() {
+            Ok(()) => Ok(was_warm),
             Err(_) => {
-                *worker = Some(resident);
+                *worker = WorkerState::Uncertain { process, was_warm };
                 Err("Magenta render worker could not be reaped".to_string())
             }
         }
@@ -347,12 +400,24 @@ impl GatewayCore {
             .worker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if worker.is_none() {
-            *worker = Some(
-                self.factory
-                    .spawn(&cancellation)
-                    .map_err(|error| error.detail.to_string())?,
-            );
+        match &*worker {
+            WorkerState::Running(_) => return Ok(()),
+            WorkerState::Uncertain { .. } => {
+                return Err("Magenta render worker could not be reaped".to_string())
+            }
+            WorkerState::Stopped => {}
+        }
+        match self.factory.spawn(&cancellation) {
+            Ok(spawned) => *worker = WorkerState::Running(spawned),
+            Err(spawn) => {
+                if let Some(process) = spawn.uncertain_process {
+                    *worker = WorkerState::Uncertain {
+                        process,
+                        was_warm: false,
+                    };
+                }
+                return Err(spawn.failure.detail.to_string());
+            }
         }
         Ok(())
     }
@@ -617,21 +682,22 @@ fn float32_wav(pcm: &[u8]) -> Result<Vec<u8>, ()> {
 
 fn spawn_managed_worker(
     cancellation: &RequestCancellation,
-) -> Result<ManagedRenderWorker, RenderFailure> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| RenderFailure::unavailable())?;
+) -> Result<ManagedRenderWorker, WorkerSpawnFailure> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|_| WorkerSpawnFailure::reaped(RenderFailure::unavailable()))?;
     listener
         .set_nonblocking(true)
-        .map_err(|_| RenderFailure::unavailable())?;
+        .map_err(|_| WorkerSpawnFailure::reaped(RenderFailure::unavailable()))?;
     let port = listener
         .local_addr()
-        .map_err(|_| RenderFailure::unavailable())?
+        .map_err(|_| WorkerSpawnFailure::reaped(RenderFailure::unavailable()))?
         .port();
     let token = crate::local_auth::generate_capability();
     let mut command =
         crate::sidecar::authenticated_render_worker_command(crate::DEFAULT_MODEL, port, &token)
-            .map_err(|_| RenderFailure::unavailable())?;
+            .map_err(|_| WorkerSpawnFailure::reaped(RenderFailure::unavailable()))?;
     let mut child = crate::child_process::spawn_grouped(&mut command)
-        .map_err(|_| RenderFailure::unavailable())?;
+        .map_err(|_| WorkerSpawnFailure::reaped(RenderFailure::unavailable()))?;
 
     let result =
         accept_worker(&listener, &mut child, &token, cancellation).and_then(|mut stream| {
@@ -652,8 +718,16 @@ fn spawn_managed_worker(
             next_sequence,
         }),
         Err(error) => {
-            let _ = child.force_kill();
-            Err(error)
+            let mut process: Box<dyn ProcessTree> = Box::new(ManagedProcess { child });
+            match process.shutdown() {
+                Ok(()) => Err(WorkerSpawnFailure::reaped(error)),
+                Err(_) => Err(WorkerSpawnFailure {
+                    failure: RenderFailure::protocol(
+                        "Magenta render worker startup failed and could not be reaped",
+                    ),
+                    uncertain_process: Some(process),
+                }),
+            }
         }
     }
 }
@@ -963,15 +1037,7 @@ fn serve(
     capability: &str,
     core: Arc<GatewayCore>,
 ) -> CancellationToken {
-    let auth = AuthState {
-        capability: Arc::from(capability),
-    };
-    let router = Router::new()
-        .route("/api/render", post(render_clip).options(preflight))
-        .route("/api/models", get(model_info).options(preflight))
-        .layer(DefaultBodyLimit::max(MAX_RENDER_REQUEST_BYTES))
-        .layer(axum::middleware::from_fn_with_state(auth, authenticate))
-        .with_state(HttpState { core });
+    let router = gateway_router(capability, core);
     let cancel = CancellationToken::new();
     let serve_cancel = cancel.clone();
     tauri::async_runtime::spawn(async move {
@@ -991,6 +1057,18 @@ fn serve(
         }
     });
     cancel
+}
+
+fn gateway_router(capability: &str, core: Arc<GatewayCore>) -> Router {
+    let auth = AuthState {
+        capability: Arc::from(capability),
+    };
+    Router::new()
+        .route("/api/render", post(render_clip).options(preflight))
+        .route("/api/models", get(model_info).options(preflight))
+        .layer(DefaultBodyLimit::max(MAX_RENDER_REQUEST_BYTES))
+        .layer(axum::middleware::from_fn_with_state(auth, authenticate))
+        .with_state(HttpState { core })
 }
 
 async fn preflight() -> StatusCode {
@@ -1121,6 +1199,7 @@ mod tests {
         OversizeEnd,
         MisalignedChunk,
         Stall,
+        LongStall,
     }
 
     struct FakeProcess {
@@ -1172,7 +1251,7 @@ mod tests {
         fn spawn(
             &self,
             _cancellation: &RequestCancellation,
-        ) -> Result<ManagedRenderWorker, RenderFailure> {
+        ) -> Result<ManagedRenderWorker, WorkerSpawnFailure> {
             let scenario = self
                 .scenarios
                 .lock()
@@ -1223,8 +1302,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(sequence);
         let frames = request["frames"].as_u64().unwrap();
-        if matches!(scenario, Scenario::Stall) {
-            thread::sleep(Duration::from_millis(250));
+        if matches!(scenario, Scenario::Stall | Scenario::LongStall) {
+            let delay = if matches!(scenario, Scenario::LongStall) {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(250)
+            };
+            thread::sleep(delay);
             return;
         }
         if matches!(scenario, Scenario::OutOfOrder) {
@@ -1347,7 +1431,10 @@ mod tests {
             let error = render_with(&core, Arc::new(AtomicBool::new(false))).unwrap_err();
             assert_eq!(error.kind, FailureKind::Protocol);
             assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
-            assert!(core.worker.lock().unwrap().is_none());
+            assert!(matches!(
+                &*core.worker.lock().unwrap(),
+                WorkerState::Stopped
+            ));
         }
     }
 
@@ -1372,12 +1459,212 @@ mod tests {
         factory.fail_shutdowns(1);
 
         assert!(core.quiesce().is_err());
-        assert!(core.worker.lock().unwrap().is_some());
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Uncertain { .. }
+        ));
         assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
 
         assert_eq!(core.quiesce(), Ok(true));
-        assert!(core.worker.lock().unwrap().is_none());
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Stopped
+        ));
         assert_eq!(factory.shutdowns.load(Ordering::Acquire), 2);
+    }
+
+    struct FailedStartupFactory {
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl WorkerFactory for FailedStartupFactory {
+        fn spawn(
+            &self,
+            _cancellation: &RequestCancellation,
+        ) -> Result<ManagedRenderWorker, WorkerSpawnFailure> {
+            // The production factory reaches this shape only after failed
+            // accept/readiness cleanup. Count that first failed reap here; the
+            // retained process succeeds when quiesce retries it.
+            self.shutdowns.store(1, Ordering::Release);
+            Err(WorkerSpawnFailure {
+                failure: RenderFailure::protocol(
+                    "Magenta render worker startup failed and could not be reaped",
+                ),
+                uncertain_process: Some(Box::new(FakeProcess {
+                    shutdowns: self.shutdowns.clone(),
+                    shutdown_failures: Arc::new(AtomicUsize::new(0)),
+                })),
+            })
+        }
+    }
+
+    #[test]
+    fn failed_startup_cleanup_retains_process_until_positive_reap() {
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let core = GatewayCore::new(Arc::new(FailedStartupFactory {
+            shutdowns: shutdowns.clone(),
+        }));
+
+        assert!(render_with(&core, Arc::new(AtomicBool::new(false))).is_err());
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Uncertain { .. }
+        ));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+
+        assert_eq!(core.quiesce(), Ok(false));
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Stopped
+        ));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 2);
+    }
+
+    async fn host_test_router(
+        core: Arc<GatewayCore>,
+        capability: &str,
+    ) -> (std::net::SocketAddr, CancellationToken) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let serve_cancel = cancel.clone();
+        let router = gateway_router(capability, core);
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move { serve_cancel.cancelled().await })
+                .await
+                .unwrap();
+        });
+        (address, cancel)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn router_enforces_auth_cors_body_and_request_bounds() {
+        let capability = "c".repeat(64);
+        let core = Arc::new(GatewayCore::new(FakeFactory::new([])));
+        let (address, cancel) = host_test_router(core, &capability).await;
+        let client = reqwest::Client::new();
+        let render = format!("http://{address}/api/render");
+
+        assert_eq!(
+            client.get(&render).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .get(&render)
+                .header("x-lsdj-capability", "wrong")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            client
+                .get(&render)
+                .header("x-lsdj-capability", &capability)
+                .header(header::ORIGIN, "https://hostile.example")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let allowed = client
+            .get(&render)
+            .header("x-lsdj-capability", &capability)
+            .header(header::ORIGIN, SAFE_ORIGINS[0])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            allowed.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("tauri://localhost"))
+        );
+
+        let preflight = client
+            .request(Method::OPTIONS, &render)
+            .header(header::ORIGIN, SAFE_ORIGINS[0])
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "content-type, x-lsdj-capability",
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            preflight.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("tauri://localhost"))
+        );
+
+        let oversized = client
+            .post(&render)
+            .header("x-lsdj-capability", &capability)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(vec![b'x'; MAX_RENDER_REQUEST_BYTES + 1])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        for invalid in [
+            serde_json::json!({"prompt": "ok", "seconds": 2.0, "extra": true}),
+            serde_json::json!({"prompt": "   ", "seconds": 2.0}),
+            serde_json::json!({"prompt": "x".repeat(MAX_RENDER_PROMPT_CHARS + 1), "seconds": 2.0}),
+            serde_json::json!({"prompt": "ok", "seconds": 0.49}),
+            serde_json::json!({"prompt": "ok", "seconds": 180.01}),
+        ] {
+            let response = client
+                .post(&render)
+                .header("x-lsdj-capability", &capability)
+                .json(&invalid)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        cancel.cancel();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn real_http_disconnect_cancels_kills_and_reaps_worker() {
+        let capability = "d".repeat(64);
+        let factory = FakeFactory::new([Scenario::LongStall]);
+        let core = Arc::new(GatewayCore::new(factory.clone()));
+        let (address, cancel) = host_test_router(core.clone(), &capability).await;
+        let body = br#"{"prompt":"disconnect me","seconds":2.0}"#;
+        let mut stream = TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "POST /api/render HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nx-lsdj-capability: {capability}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+
+        let spawn_deadline = Instant::now() + Duration::from_secs(1);
+        while factory.spawns.load(Ordering::Acquire) == 0 && Instant::now() < spawn_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(factory.spawns.load(Ordering::Acquire), 1);
+        drop(stream);
+
+        let reap_deadline = Instant::now() + Duration::from_secs(1);
+        while factory.shutdowns.load(Ordering::Acquire) == 0 && Instant::now() < reap_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Stopped
+        ));
+        cancel.cancel();
     }
 
     #[test]
@@ -1393,7 +1680,10 @@ mod tests {
         let error = render_with(&core, cancellation).unwrap_err();
         assert_eq!(error.kind, FailureKind::Cancelled);
         assert_eq!(factory.shutdowns.load(Ordering::Acquire), 1);
-        assert!(core.worker.lock().unwrap().is_none());
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Stopped
+        ));
     }
 
     #[test]
@@ -1535,7 +1825,7 @@ sidecar.run_render_worker(
         assert_eq!(next_sequence, 1);
 
         let core = GatewayCore::new(FakeFactory::new(std::iter::empty()));
-        *core.worker.lock().unwrap() = Some(ManagedRenderWorker {
+        *core.worker.lock().unwrap() = WorkerState::Running(ManagedRenderWorker {
             stream,
             process: Box::new(ManagedProcess { child }),
             next_sequence,
@@ -1559,10 +1849,13 @@ sidecar.run_render_worker(
             MIN_RENDER_FRAMES as usize * RENDER_BYTES_PER_FRAME as usize
         );
         assert_eq!(second.len(), first.len());
-        assert_eq!(
-            core.worker.lock().unwrap().as_ref().unwrap().next_sequence,
-            3
-        );
+        assert!(matches!(
+            &*core.worker.lock().unwrap(),
+            WorkerState::Running(ManagedRenderWorker {
+                next_sequence: 3,
+                ..
+            })
+        ));
         assert_eq!(core.quiesce(), Ok(true));
     }
 }

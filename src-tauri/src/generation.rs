@@ -16,7 +16,7 @@ use std::io;
 use std::net::{TcpListener, TcpStream};
 #[cfg(not(feature = "managed-runtime"))]
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -26,13 +26,40 @@ use crate::child_process::{Readiness, SupervisedChild};
 /// webview via `app_info`) and the child process. Held in Tauri managed state;
 /// dropping it kills the child.
 pub struct GenerationServer {
-    state: Mutex<GenerationState>,
+    state: Mutex<GenerationProcessState>,
 }
 
-struct GenerationState {
-    port: Option<u16>,
-    capability: Option<String>,
-    child: Option<SupervisedChild>,
+trait GenerationProcess: Send {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn shutdown(&mut self) -> io::Result<()>;
+}
+
+impl GenerationProcess for SupervisedChild {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        SupervisedChild::try_wait(self)
+    }
+
+    fn shutdown(&mut self) -> io::Result<()> {
+        let report = SupervisedChild::shutdown(self, Duration::from_millis(500))?;
+        crate::child_process::log_shutdown("generation server", Ok(report));
+        Ok(())
+    }
+}
+
+enum GenerationProcessState {
+    Stopped,
+    Running {
+        port: u16,
+        capability: String,
+        process: Box<dyn GenerationProcess>,
+    },
+    /// Shutdown was requested, but the supervisor could not prove that the
+    /// complete process tree was reaped. The handle stays owned here so every
+    /// later quiesce/resume can retry; an installer must not rename through it.
+    Uncertain {
+        process: Box<dyn GenerationProcess>,
+        was_running: bool,
+    },
 }
 
 impl GenerationServer {
@@ -41,11 +68,7 @@ impl GenerationServer {
     /// webview surfaces that as fetch errors).
     pub fn start() -> GenerationServer {
         let server = GenerationServer {
-            state: Mutex::new(GenerationState {
-                port: None,
-                capability: None,
-                child: None,
-            }),
+            state: Mutex::new(GenerationProcessState::Stopped),
         };
         if let Err(error) = server.resume() {
             // A fresh managed install intentionally has no runtime yet. The
@@ -55,7 +78,7 @@ impl GenerationServer {
         server
     }
 
-    fn spawn(capability: &str) -> io::Result<(u16, SupervisedChild)> {
+    fn spawn(capability: &str) -> io::Result<(u16, Box<dyn GenerationProcess>)> {
         // Pick a free loopback port, then hand it to the child (uvicorn binds it).
         // The brief drop→rebind window on loopback is benign.
         let port = {
@@ -77,7 +100,7 @@ impl GenerationServer {
             Readiness::Ready | Readiness::TimedOut => {
                 // Preserve the existing macOS contract: a slow-but-running
                 // service is advertised optimistically after the bounded wait.
-                Ok((port, child))
+                Ok((port, Box::new(child)))
             }
             Readiness::Exited(status) => Err(io::Error::other(format!(
                 "generation server exited before binding ({status})"
@@ -85,22 +108,19 @@ impl GenerationServer {
         }
     }
 
-    /// The loopback port the generation server bound, or `None` if disabled / not
-    /// running. The webview reads this through `app_info` to build the API base URL.
-    pub fn port(&self) -> Option<u16> {
-        self.state
+    /// Return the port and capability from one lock acquisition. Neither half is
+    /// ever observable without the other across promotion/resume transitions.
+    pub fn connection(&self) -> Option<(u16, String)> {
+        match &*self
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .port
-    }
-
-    /// The in-memory capability paired with [`port`](Self::port). Never persisted.
-    pub fn capability(&self) -> Option<String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .capability
-            .clone()
+        {
+            GenerationProcessState::Running {
+                port, capability, ..
+            } => Some((*port, capability.clone())),
+            GenerationProcessState::Stopped | GenerationProcessState::Uncertain { .. } => None,
+        }
     }
 
     /// Start (or recover) the service from the currently promoted verified
@@ -111,20 +131,52 @@ impl GenerationServer {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(child) = state.child.as_mut() {
-            if child.try_wait()?.is_none() {
-                return Ok(());
+        let previous = std::mem::replace(&mut *state, GenerationProcessState::Stopped);
+        match previous {
+            GenerationProcessState::Stopped => {}
+            GenerationProcessState::Running {
+                port,
+                capability,
+                mut process,
+            } => match process.try_wait() {
+                Ok(None) => {
+                    *state = GenerationProcessState::Running {
+                        port,
+                        capability,
+                        process,
+                    };
+                    return Ok(());
+                }
+                Ok(Some(_)) => {}
+                Err(error) => {
+                    *state = GenerationProcessState::Uncertain {
+                        process,
+                        was_running: true,
+                    };
+                    return Err(error);
+                }
+            },
+            GenerationProcessState::Uncertain {
+                mut process,
+                was_running,
+            } => {
+                if let Err(error) = process.shutdown() {
+                    *state = GenerationProcessState::Uncertain {
+                        process,
+                        was_running,
+                    };
+                    return Err(error);
+                }
             }
-            state.child = None;
-            state.port = None;
-            state.capability = None;
         }
         let capability = crate::local_auth::generate_capability();
-        let (port, child) = Self::spawn(&capability)?;
+        let (port, process) = Self::spawn(&capability)?;
         println!("lsdj-app: generation server on 127.0.0.1:{port}");
-        state.port = Some(port);
-        state.capability = Some(capability);
-        state.child = Some(child);
+        *state = GenerationProcessState::Running {
+            port,
+            capability,
+            process,
+        };
         Ok(())
     }
 
@@ -136,14 +188,25 @@ impl GenerationServer {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.port = None;
-        state.capability = None;
-        let Some(mut child) = state.child.take() else {
-            return Ok(false);
+        let previous = std::mem::replace(&mut *state, GenerationProcessState::Stopped);
+        let (mut process, was_running) = match previous {
+            GenerationProcessState::Stopped => return Ok(false),
+            GenerationProcessState::Running { process, .. } => (process, true),
+            GenerationProcessState::Uncertain {
+                process,
+                was_running,
+            } => (process, was_running),
         };
-        let report = child.shutdown(Duration::from_millis(500))?;
-        crate::child_process::log_shutdown("generation server", Ok(report));
-        Ok(true)
+        match process.shutdown() {
+            Ok(()) => Ok(was_running),
+            Err(error) => {
+                *state = GenerationProcessState::Uncertain {
+                    process,
+                    was_running,
+                };
+                Err(error)
+            }
+        }
     }
 
     /// Kill the generation server child. Called explicitly from the app's
@@ -254,8 +317,63 @@ mod tests {
         // Now-always-on `start()` never fails the app: a command that exits without
         // binding the port (echo) degrades to no advertised port.
         let server = GenerationServer::start();
-        assert_eq!(server.port(), None);
+        assert_eq!(server.connection(), None);
 
         std::env::remove_var("LSDJ_GENERATION_CMD");
+    }
+}
+
+#[cfg(test)]
+mod process_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+
+    struct RetryProcess {
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    impl GenerationProcess for RetryProcess {
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            Ok(None)
+        }
+
+        fn shutdown(&mut self) -> io::Result<()> {
+            if self.shutdowns.fetch_add(1, Ordering::AcqRel) == 0 {
+                Err(io::Error::other("first reap is uncertain"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn failed_sa3_reap_retains_ownership_until_a_positive_retry() {
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let server = GenerationServer {
+            state: Mutex::new(GenerationProcessState::Running {
+                port: 4321,
+                capability: "capability".to_string(),
+                process: Box::new(RetryProcess {
+                    shutdowns: shutdowns.clone(),
+                }),
+            }),
+        };
+
+        assert!(server.quiesce().is_err());
+        assert_eq!(server.connection(), None);
+        assert!(matches!(
+            &*server.state.lock().unwrap(),
+            GenerationProcessState::Uncertain { .. }
+        ));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+
+        assert!(matches!(server.quiesce(), Ok(true)));
+        assert!(matches!(
+            &*server.state.lock().unwrap(),
+            GenerationProcessState::Stopped
+        ));
+        assert_eq!(shutdowns.load(Ordering::Acquire), 2);
     }
 }

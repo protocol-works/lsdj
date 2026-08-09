@@ -115,15 +115,20 @@ function isMagentaPath(path: string): boolean {
 }
 
 async function getApiConnection(path: string): Promise<ApiConnection> {
+  const magenta = isMagentaPath(path)
+  // SA3 is deliberately replaced during managed promotion, including both its
+  // port and capability. Resolve one fresh atomic app_info snapshot before each
+  // request; a POST is never retried against either the old or new process.
+  if (isTauri() && !magenta) apiConnectionPromise = null
   let connections = await loadApiConnections()
-  let connection = isMagentaPath(path) ? connections.magenta : connections.sa3
+  let connection = magenta ? connections.magenta : connections.sa3
   // A fresh managed install legitimately starts without SA3. Do not pin that
   // absence for the webview lifetime: the first request after promotion
   // re-reads app_info and reaches the newly started generation server.
   if (isTauri() && !connection.baseUrl) {
     apiConnectionPromise = null
     connections = await loadApiConnections()
-    connection = isMagentaPath(path) ? connections.magenta : connections.sa3
+    connection = magenta ? connections.magenta : connections.sa3
   }
   return connection
 }
@@ -131,8 +136,8 @@ async function getApiConnection(path: string): Promise<ApiConnection> {
 /** Base URL for the backend `/api/*` generation endpoints (sa3/Magenta pad+track
  * render). FastAPI no longer serves the UI, so the Rust shell runs a generation
  * server on a loopback port it reports via `app_info`; the webview fetches
- * `http://127.0.0.1:<port>/api/...`. Resolved once and cached; falls back to ''
- * (relative) if the port can't be resolved. */
+ * `http://127.0.0.1:<port>/api/...`. SA3 is resolved fresh because promotion
+ * replaces both the port and capability; missing connections fall back to ''. */
 export function getApiBaseUrl(): Promise<string> {
   return getApiConnection('/api/generate').then((connection) => connection.baseUrl)
 }

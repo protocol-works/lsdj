@@ -1327,12 +1327,25 @@ fn quiesce_mrt2_services(app: &AppHandle) -> Result<Mrt2Lifecycle, String> {
     if let Err(error) = app.state::<crate::sidecar::Sidecars>().quiesce_shared() {
         // No rename has happened. Restore the still-current verified render
         // generation before returning the deck teardown error.
-        let _ = gateway.resume(render_was_warm);
-        return Err(format!(
-            "cannot quiesce realtime MRT2 decks before promotion: {error}"
+        return Err(mrt2_quiesce_recovery_error(
+            error,
+            gateway.resume(render_was_warm),
         ));
     }
     Ok(Mrt2Lifecycle { render_was_warm })
+}
+
+#[cfg(feature = "managed-runtime")]
+fn mrt2_quiesce_recovery_error(shared_error: String, gateway_resume: Result<(), String>) -> String {
+    let primary = format!(
+        "cannot quiesce realtime MRT2 decks before promotion: {shared_error}"
+    );
+    match gateway_resume {
+        Ok(()) => primary,
+        Err(resume_error) => format!(
+            "{primary}; the Magenta renderer also could not resume: {resume_error}"
+        ),
+    }
 }
 
 #[cfg(feature = "managed-runtime")]
@@ -3545,6 +3558,54 @@ mod tests {
         );
         assert_eq!(result.unwrap_err(), "worker could not be reaped");
         assert_eq!(*events.borrow(), ["quiesce"]);
+    }
+
+    #[cfg(feature = "managed-runtime")]
+    #[test]
+    fn promotion_waits_for_a_second_positive_reap_before_rename() {
+        use std::cell::{Cell, RefCell};
+
+        let attempts = Cell::new(0usize);
+        let events = RefCell::new(Vec::new());
+        let run = || {
+            run_promotion_lifecycle(
+                "fake runtime",
+                || {
+                    events.borrow_mut().push("quiesce");
+                    let attempt = attempts.get();
+                    attempts.set(attempt + 1);
+                    if attempt == 0 {
+                        Err("process reap is uncertain".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    events.borrow_mut().push("promote");
+                    Ok(())
+                },
+                |_| {
+                    events.borrow_mut().push("resume");
+                    Ok(())
+                },
+            )
+        };
+
+        assert!(run().is_err());
+        assert_eq!(*events.borrow(), ["quiesce"]);
+        assert!(run().is_ok());
+        assert_eq!(*events.borrow(), ["quiesce", "quiesce", "promote", "resume"]);
+    }
+
+    #[cfg(feature = "managed-runtime")]
+    #[test]
+    fn shared_quiesce_and_gateway_recovery_errors_are_both_reported() {
+        let error = mrt2_quiesce_recovery_error(
+            "shared process is not reaped".to_string(),
+            Err("gateway spawn failed".to_string()),
+        );
+        assert!(error.contains("shared process is not reaped"));
+        assert!(error.contains("gateway spawn failed"));
     }
 
     #[test]
