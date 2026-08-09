@@ -53,6 +53,7 @@ mod managed_runtime;
 mod mcp;
 mod midi;
 mod models;
+mod platform_diagnostics;
 mod platform_paths;
 mod runtime_installer;
 mod samples;
@@ -96,7 +97,18 @@ fn configure_bundled_backend(app: &tauri::App) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[cfg(not(feature = "bundled-backend"))]
+#[cfg(all(not(feature = "bundled-backend"), feature = "managed-runtime"))]
+fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    // Managed releases resolve MRT2 and SA3 independently from verified
+    // manifests. Clear all developer launch seams before either service starts;
+    // the managed command builders are compile-time isolated from PATH fallback.
+    std::env::remove_var("LSDJ_BACKEND_BIN");
+    std::env::remove_var("LSDJ_SIDECAR_CMD");
+    std::env::remove_var("LSDJ_GENERATION_CMD");
+    Ok(())
+}
+
+#[cfg(not(any(feature = "bundled-backend", feature = "managed-runtime")))]
 fn configure_bundled_backend(_app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
@@ -1070,6 +1082,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             audio_output_health,
+            platform_diagnostics::platform_diagnostics,
             rotate_mcp_token,
             set_mcp_port,
             list_output_devices,

@@ -4,6 +4,17 @@
 /justfile @protocol-works/engineering
 /scripts/create-release.sh @protocol-works/engineering
 /scripts/build-macos-release.sh @protocol-works/engineering
+/scripts/build-linux-appimage.sh @protocol-works/engineering
+/scripts/assert-windows-release-rejects-unsigned.ps1 @protocol-works/engineering
+/scripts/build-windows-installer.ps1 @protocol-works/engineering
 /scripts/freeze-sidecar.sh @protocol-works/engineering
+/scripts/release_artifact.py @protocol-works/engineering
+/scripts/sign-windows.ps1 @protocol-works/engineering
+/scripts/test-windows-installer.ps1 @protocol-works/engineering
+/scripts/verify-windows-release-install.ps1 @protocol-works/engineering
+/scripts/verify-windows-signatures.ps1 @protocol-works/engineering
+/scripts/verify_linux_appimage.py @protocol-works/engineering
 /src-tauri/entitlements.plist @protocol-works/engineering
 /src-tauri/tauri*.conf.json @protocol-works/engineering
+/src-tauri/windows/English.nsh @protocol-works/engineering
+/src-tauri/windows/installer-hooks.nsh @protocol-works/engineering

@@ -72,7 +72,12 @@ build:
 # default `uv run` sidecar/generation commands use the backend project dir;
 # override each command in dev, or point both at a freeze with LSDJ_BACKEND_BIN.
 tauri-dev: build
-    cd src-tauri && cargo tauri dev
+    cd src-tauri && cargo tauri dev --config tauri.macos.conf.json
+
+# Linux developer shell. Model services use source-tree overrides in dev; the
+# distributable AppImage instead compiles the fail-closed managed-runtime seam.
+tauri-linux-dev: build
+    cd src-tauri && cargo tauri dev --config tauri.linux.conf.json
 
 # Freeze the shared Python backend into an ONEDIR binary for bundling
 # (src-tauri/sidecar-dist/lsdj_backend). It serves deck inference, model tooling,
@@ -97,7 +102,7 @@ lock-mrt2-pytorch:
 # useful for local testing only; use `just tauri-release` for anything sent to
 # another Mac.
 tauri-build: build
-    cd src-tauri && cargo tauri build
+    cd src-tauri && cargo tauri build --config tauri.macos.conf.json
 
 # Distributable macOS build. Fails closed unless a Developer ID Application
 # identity and Apple notarization credentials are configured, then verifies the
@@ -105,9 +110,17 @@ tauri-build: build
 tauri-release:
     ./scripts/build-macos-release.sh
 
+# Linux x86_64 AppImage built on an Ubuntu 22.04-compatible host. Model
+# runtimes remain app-managed and fail closed until their verified #110/#111
+# adapters supply explicit executables; no packaged path invokes developer
+# Python/uv/Git/shell tooling.
+tauri-linux-release:
+    ./scripts/build-linux-appimage.sh
+
 # Create and push the next protected vYYYY.MM.N tag from a clean, current main.
 # Remote calendar-version tags are the ledger; no version file or bump is needed.
-# The tag starts the macOS signing workflow and its Engineering approval gate.
+# The tag starts the three-platform release workflow; macOS and Windows signing
+# remain behind their protected Engineering approval gates.
 release:
     ./scripts/create-release.sh
 

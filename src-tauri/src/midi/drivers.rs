@@ -45,11 +45,25 @@ pub const DRIVERS: [Driver; 2] = [
     },
 ];
 
-/// The first registry driver whose fragment the port name contains, or `None`
-/// for a non-controller port (which the service attaches as a keyboard-note
-/// source instead).
+/// Normalize the display punctuation ALSA/CoreMIDI/WinMM may add around a USB
+/// product name while retaining only identity-bearing alphanumerics. The raw
+/// name is still used to open and persist the exact port.
+fn identity(name: &str) -> String {
+    name.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// The first registry driver whose normalized fragment occurs in the normalized
+/// port name, or `None` for a non-controller port. ALSA commonly reports names
+/// such as `DDJ-FLX4:DDJ-FLX4 MIDI 1 24:0`; punctuation/case must not make that
+/// class-compliant controller disappear.
 pub fn driver_for_name(name: &str) -> Option<&'static Driver> {
-    DRIVERS.iter().find(|d| name.contains(d.name_fragment))
+    let name = identity(name);
+    DRIVERS
+        .iter()
+        .find(|driver| name.contains(&identity(driver.name_fragment)))
 }
 
 #[cfg(test)]
@@ -60,6 +74,14 @@ mod tests {
     fn matches_ports_by_fragment_in_registry_order() {
         assert_eq!(driver_for_name("DDJ-FLX4").map(|d| d.id), Some("flx4"));
         assert_eq!(driver_for_name("Pioneer DDJ-FLX4 MIDI 1").map(|d| d.id), Some("flx4"));
+        assert_eq!(
+            driver_for_name("ddj-flx4:ddj-flx4 midi 1 24:0").map(|d| d.id),
+            Some("flx4")
+        );
+        assert_eq!(
+            driver_for_name("AlphaTheta  DDJ FLX4  MIDI 1").map(|d| d.id),
+            Some("flx4")
+        );
         assert_eq!(driver_for_name("DDJ-400").map(|d| d.id), Some("ddj400"));
         assert_eq!(driver_for_name("IAC Driver Bus 1").map(|d| d.id), None);
         assert_eq!(driver_for_name("KeyLab 61").map(|d| d.id), None);

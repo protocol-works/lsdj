@@ -14,8 +14,6 @@
         "title": "LSDJ",
         "width": 1280,
         "height": 800,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
         "backgroundColor": "#050507"
       }
     ],
@@ -25,7 +23,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
     "category": "Music",
     "icon": [
       "icons/32x32.png",
@@ -33,11 +30,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "macOS": {
-      "minimumSystemVersion": "11.0",
-      "signingIdentity": "-",
-      "entitlements": "entitlements.plist"
-    }
+    ]
   }
 }
