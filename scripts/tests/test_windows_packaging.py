@@ -48,6 +48,13 @@ class WindowsPackagingContractTest(unittest.TestCase):
         )
         self.assertNotIn("GetFileInformationByHandle(p R6, *(", hooks)
         self.assertNotIn('FileOpen $R5 "${LSDJ_DATA_MARKER}" r', hooks)
+        marker_validator_start = hooks.index("!macro LSDJ_DEFINE_MARKER_VALIDATOR")
+        marker_validator_end = hooks.index("!macroend", marker_validator_start)
+        marker_validator = hooks[marker_validator_start:marker_validator_end]
+        self.assertIn(
+            "${OrIf} $R7 != ${LSDJ_OWNER_ID_BYTES}",
+            marker_validator,
+        )
         self.assertIn("LSDJ_FILE_ATTRIBUTE_REPARSE_POINT", hooks)
         self.assertIn("LsdjExistingLayoutIsRecognized", hooks)
         self.assertIn("Section -LsdjProbeDataRootBeforeTauri", hooks)
@@ -152,6 +159,7 @@ class WindowsPackagingContractTest(unittest.TestCase):
             "root junction",
             "purge-time root junction",
             "marker reparse point",
+            "NUL-extended ownership marker",
             "marker-replacement test",
             "nested directory reparse point",
         ):
