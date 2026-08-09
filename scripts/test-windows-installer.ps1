@@ -97,14 +97,21 @@ function Assert-CiInstallerTraceContract {
     }
 
     $trace = Get-CiInstallerTrace
+    $lastRequiredIndex = -1
     foreach ($needle in $Required) {
-        if (-not $trace.Contains($needle)) {
+        $requiredIndex = $trace.IndexOf(
+            $needle,
+            $lastRequiredIndex + 1,
+            [StringComparison]::Ordinal
+        )
+        if ($requiredIndex -lt 0) {
             Write-CiInstallerTrace
-            throw "CI installer trace is missing required checkpoint: $needle"
+            throw "CI installer trace is missing or misorders required checkpoint: $needle"
         }
+        $lastRequiredIndex = $requiredIndex
     }
     foreach ($needle in $Forbidden) {
-        if ($trace.Contains($needle)) {
+        if ($trace.IndexOf($needle, [StringComparison]::Ordinal) -ge 0) {
             Write-CiInstallerTrace
             throw "CI installer trace reached forbidden checkpoint: $needle"
         }
@@ -202,10 +209,33 @@ function Get-InstalledStateSnapshot {
             throw "Cannot snapshot missing installed state: $path"
         }
     }
+
+    $markerEntry = Get-Item -LiteralPath $marker -Force -ErrorAction Stop
+    if (($markerEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Cannot snapshot a reparse-point ownership marker: $marker"
+    }
+    $markerLinkTypeProperty = $markerEntry.PSObject.Properties['LinkType']
+    $markerLinkType = if ($null -eq $markerLinkTypeProperty) {
+        ''
+    } else {
+        [string] $markerLinkTypeProperty.Value
+    }
+    $markerTargetProperty = $markerEntry.PSObject.Properties['Target']
+    $markerTarget = if ($null -eq $markerTargetProperty -or $null -eq $markerTargetProperty.Value) {
+        ''
+    } elseif ($markerTargetProperty.Value -is [string[]]) {
+        $markerTargetProperty.Value -join "`0"
+    } else {
+        [string] $markerTargetProperty.Value
+    }
+
     return [ordered]@{
         App = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash
         Uninstaller = (Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash
         Marker = (Get-FileHash -LiteralPath $marker -Algorithm SHA256).Hash
+        MarkerAttributes = [int64] $markerEntry.Attributes
+        MarkerLinkType = $markerLinkType
+        MarkerTarget = $markerTarget
         Settings = (Get-FileHash -LiteralPath $settingsSentinel -Algorithm SHA256).Hash
         Model = (Get-FileHash -LiteralPath $modelSentinel -Algorithm SHA256).Hash
         Registry = (Get-UninstallRegistrySnapshot)
@@ -390,12 +420,19 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $modelSentinel) -Force | 
 # replaced and registry metadata follows the newer calendar version.
 Start-LifecycleScenario 'upgrade in place and preserve app-managed data'
 Invoke-CheckedProcess $newer.FullName @('/S', '/UPDATE')
+Assert-CiInstallerTraceContract -Required @(
+    "preinstall: installed version=$OlderVersion validity=1",
+    'preinstall: version compare=1',
+    'preinstall: ready',
+    'postinstall: begin'
+) -Forbidden @('abort:')
 Require-InstalledVersion $NewerVersion
 foreach ($sentinel in @($settingsSentinel, $modelSentinel)) {
     if (-not (Test-Path -LiteralPath $sentinel -PathType Leaf)) {
         throw "Upgrade removed preserved data: $sentinel"
     }
 }
+Require-No-Workers
 
 $registrySentinelName = 'LsdjCiPreserve'
 $registrySentinelValue = 'preserve registry metadata'
@@ -502,6 +539,18 @@ Assert-CiInstallerTraceContract -Required @(
 ) -Forbidden @('probe:', 'preinstall:', 'postinstall:')
 Require-RejectedInstallPreservedState
 Assert-InstalledStateSnapshotUnchanged -Before $passiveStateBefore
+
+# NSIS silent mode suppresses GUI initialization, so a combined /S /P reaches
+# the repeated PREINSTALL policy check only after the read-only ownership probe.
+Start-LifecycleScenario 'reject combined silent and passive mode'
+$combinedPassiveStateBefore = Get-InstalledStateSnapshot
+Invoke-CheckedProcess -FilePath $older.FullName -ArgumentList @('/S', '/P') `
+    -ExpectedExitCodes @(2) | Out-Null
+Assert-CiInstallerTraceContract -Required @(
+    'abort: passive install unsupported'
+) -Forbidden @('preinstall: begin', 'preinstall: ready', 'postinstall:')
+Require-RejectedInstallPreservedState
+Assert-InstalledStateSnapshotUnchanged -Before $combinedPassiveStateBefore
 
 # Existing install evidence with empty, malformed, or missing version metadata
 # is unsafe. Each refusal must preserve the exact damaged evidence for repair.
