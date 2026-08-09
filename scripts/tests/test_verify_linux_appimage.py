@@ -57,24 +57,26 @@ class AppImageLayoutTest(unittest.TestCase):
         ):
             verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
 
-    def test_exec_is_parsed_as_an_exact_program_and_supported_field_code(self):
-        desktop = self.root / "lsdj-app.desktop"
-        for value in ('"lsdj-app"', "lsdj-app %U"):
-            with self.subTest(value=value):
-                desktop.write_text(
-                    "[Desktop Entry]\n"
-                    "Type=Application\nName=LSDJ\n"
-                    f"Exec={value}\nCategories=Audio;\n"
-                )
-                verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
+    def test_canonical_exec_value_is_accepted(self):
+        verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
 
-    def test_misleading_or_extended_exec_values_fail_closed(self):
+    def test_noncanonical_exec_values_fail_closed_without_normalization(self):
         desktop = self.root / "lsdj-app.desktop"
         for value in (
+            "'lsdj-app'",
+            "l'sdj-'app",
+            r"lsdj\-app",
+            'lsdj-app "%U"',
             "malicious-lsdj-app",
             "sh -c lsdj-app",
             "lsdj-app --unsafe",
+            "lsdj-app %U",
             "lsdj-app %U extra",
+            '"lsdj-app',
+            " lsdj-app",
+            "lsdj-app ",
+            "lsdj-app\t",
+            "",
         ):
             with self.subTest(value=value):
                 desktop.write_text(
@@ -84,21 +86,9 @@ class AppImageLayoutTest(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(
                     verify_linux_appimage.AppImageError,
-                    "desktop Exec must launch exactly",
+                    "desktop Exec must be the canonical value",
                 ):
                     verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
-
-    def test_malformed_exec_quoting_fails_closed(self):
-        (self.root / "lsdj-app.desktop").write_text(
-            "[Desktop Entry]\n"
-            "Type=Application\nName=LSDJ\n"
-            'Exec="lsdj-app\nCategories=Audio;\n'
-        )
-
-        with self.assertRaisesRegex(
-            verify_linux_appimage.AppImageError, "desktop Exec is malformed"
-        ):
-            verify_linux_appimage.verify_extracted(self.root, ["libc.so.6"])
 
     def test_duplicate_desktop_keys_fail_closed(self):
         (self.root / "lsdj-app.desktop").write_text(

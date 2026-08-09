@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -43,40 +42,32 @@ def desktop_entries(root: Path, path: Path) -> dict[str, str]:
     path = safe_packaged_file(root, path, "desktop entry")
     entries: dict[str, str] = {}
     section = ""
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1]
             continue
-        if section != "Desktop Entry" or "=" not in line:
+        if section != "Desktop Entry" or "=" not in raw_line:
             continue
-        key, value = line.split("=", 1)
+        # Preserve the raw value. In particular, do not normalize quotes,
+        # escapes, or surrounding whitespace in the security-sensitive Exec
+        # field before the canonical policy below sees it.
+        key, value = raw_line.split("=", 1)
         if key in entries:
             raise AppImageError(f"duplicate desktop key: {key}")
         entries[key] = value
     return entries
 
 
-def desktop_exec(value: str) -> list[str]:
-    """Parse the desktop Exec field and allow only LSDJ's declared launch form."""
-    try:
-        argv = shlex.split(value, comments=False, posix=True)
-    except ValueError as error:
-        raise AppImageError(f"desktop Exec is malformed: {error}") from None
-    supported = {
-        ("lsdj-app",),
-        ("lsdj-app", "%f"),
-        ("lsdj-app", "%F"),
-        ("lsdj-app", "%u"),
-        ("lsdj-app", "%U"),
-    }
+def desktop_exec(value: str) -> str:
+    """Require the exact launcher emitted by this Tauri bundle configuration."""
     require(
-        tuple(argv) in supported,
-        "desktop Exec must launch exactly lsdj-app with at most one supported field code",
+        value == "lsdj-app",
+        "desktop Exec must be the canonical value lsdj-app",
     )
-    return argv
+    return value
 
 
 def needed_libraries(binary: Path) -> list[str]:
