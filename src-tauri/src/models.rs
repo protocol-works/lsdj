@@ -3560,6 +3560,37 @@ mod tests {
         assert_eq!(*events.borrow(), ["quiesce"]);
     }
 
+    #[cfg(all(feature = "managed-runtime", windows))]
+    #[test]
+    fn windows_uncertain_reap_leaves_active_and_candidate_generations_unrenamed() {
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-windows-uncertain-reap-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("active generation");
+        let candidate = root.join("candidate generation");
+        let backup = root.join("old generation");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(home.join("active.marker"), b"active").unwrap();
+        std::fs::write(candidate.join("candidate.marker"), b"candidate").unwrap();
+
+        let result = run_promotion_lifecycle(
+            "Windows managed runtime",
+            || Err::<(), _>("process-tree reap is uncertain".to_string()),
+            || crate::runtime_installer::promotion::promote(&candidate, &home, &backup, |_| Ok(())),
+            |_| Ok(()),
+        );
+
+        assert_eq!(result.unwrap_err(), "process-tree reap is uncertain");
+        assert!(home.join("active.marker").is_file());
+        assert!(candidate.join("candidate.marker").is_file());
+        assert!(!backup.exists(), "rename window must remain unopened");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(feature = "managed-runtime")]
     #[test]
     fn promotion_waits_for_a_second_positive_reap_before_rename() {

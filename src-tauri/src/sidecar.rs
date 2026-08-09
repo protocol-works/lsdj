@@ -1622,6 +1622,118 @@ mod tests {
         );
     }
 
+    #[cfg(all(windows, feature = "managed-runtime"))]
+    fn windows_python() -> std::path::PathBuf {
+        let search = std::env::var_os("PATH").expect("Python is available on CI PATH");
+        for directory in std::env::split_paths(&search) {
+            for name in ["python.exe", "python3.exe"] {
+                let candidate = directory.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+        panic!("Python executable is unavailable for Windows protocol qualification");
+    }
+
+    /// Native Windows qualification for the real Rust/Python wire boundary.
+    /// The stand-in is stdlib-only and model-free, but the socket, authenticated
+    /// handshake, bidirectional framing, structured argv, and supervised Python
+    /// process are the same primitives used by the packaged sidecar.
+    #[cfg(all(windows, feature = "managed-runtime"))]
+    #[test]
+    fn windows_python_round_trips_authenticated_control_status_and_pcm() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = "windows-protocol-token-0123456789abcdef";
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-windows-python-protocol-{}-{port}-资产",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("sidecar stand-in.py");
+        std::fs::write(
+            &script,
+            r#"import json
+import os
+import socket
+import struct
+import sys
+
+def receive_exact(sock, length):
+    payload = b""
+    while len(payload) < length:
+        chunk = sock.recv(length - len(payload))
+        if not chunk:
+            raise RuntimeError("truncated frame")
+        payload += chunk
+    return payload
+
+def receive_frame(sock):
+    header = receive_exact(sock, 5)
+    frame_type, length = struct.unpack("<BI", header)
+    return frame_type, receive_exact(sock, length)
+
+def send_frame(sock, frame_type, payload):
+    sock.sendall(struct.pack("<BI", frame_type, len(payload)) + payload)
+
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10) as sock:
+    sock.settimeout(10)
+    send_frame(sock, 5, os.environ["LSDJ_WORKER_LAUNCH_TOKEN"].encode("utf-8"))
+    frame_type, payload = receive_frame(sock)
+    assert frame_type == 3
+    assert json.loads(payload) == {"command": "play", "deck": "a"}
+    send_frame(sock, 2, json.dumps({"event": "ready", "runtime": "python"}).encode("utf-8"))
+    send_frame(sock, 1, struct.pack("<ff", 0.25, -0.5))
+"#,
+        )
+        .unwrap();
+
+        let mut command = Command::new(windows_python());
+        command
+            .arg(&script)
+            .arg(port.to_string())
+            .env("LSDJ_WORKER_LAUNCH_TOKEN", token);
+        let mut child = crate::child_process::spawn_grouped(&mut command).unwrap();
+        let stop = AtomicBool::new(false);
+        let mut stream = accept_authenticated_with_timeout(
+            &listener,
+            &stop,
+            Duration::from_secs(10),
+            token.as_bytes(),
+        )
+        .expect("Python authenticated over loopback");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            FRAME_CONTROL,
+            br#"{"command":"play","deck":"a"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_frame(&mut stream).unwrap(),
+            Some((
+                FRAME_STATUS,
+                br#"{"event": "ready", "runtime": "python"}"#.to_vec()
+            ))
+        );
+        let pcm = [0.25f32, -0.5f32]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(read_frame(&mut stream).unwrap(), Some((FRAME_PCM, pcm)));
+        drop(stream);
+        let status = child.wait().unwrap();
+        assert!(
+            status.success(),
+            "Python protocol stand-in failed: {status}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// In-process model switch: `restart` respawns the sidecar with a new model,
     /// reusing the deck's permanent ring producer, and suppresses a false
     /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only

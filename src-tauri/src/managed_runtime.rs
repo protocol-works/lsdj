@@ -676,6 +676,234 @@ mod tests {
         (root, home)
     }
 
+    #[cfg(windows)]
+    const WINDOWS_HELPER_ROLE: &str = "LSDJ_API_CAPABILITY";
+    #[cfg(windows)]
+    const WINDOWS_HELPER_PID_FILE: &str = "LSDJ_STAGING_HOME";
+
+    #[cfg(windows)]
+    fn windows_helper_command(role: &str, pid_file: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "managed_runtime::tests::windows_managed_runtime_process_helper",
+                "--nocapture",
+            ])
+            .env(WINDOWS_HELPER_ROLE, role)
+            .env(WINDOWS_HELPER_PID_FILE, pid_file);
+        command
+    }
+
+    #[cfg(windows)]
+    fn install_windows_spawnable(root: &Path, revision: &str) {
+        let program = root.join("runtime/bin/managed helper.exe");
+        fs::create_dir_all(program.parent().unwrap()).unwrap();
+        fs::copy(std::env::current_exe().unwrap(), &program).unwrap();
+        fs::write(
+            root.join("runtime").join(format!("{revision}.marker")),
+            revision,
+        )
+        .unwrap();
+        let spec = CommandSpec {
+            program: "runtime/bin/managed helper.exe".into(),
+            argv: vec![
+                "--ignored".into(),
+                "--exact".into(),
+                "managed_runtime::tests::windows_managed_runtime_process_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: "runtime".into(),
+            environment: BTreeMap::new(),
+            ephemeral_environment: [
+                WINDOWS_HELPER_ROLE,
+                WINDOWS_HELPER_PID_FILE,
+                "SYSTEMROOT",
+                "WINDIR",
+                "TEMP",
+                "TMP",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        };
+        seal_candidate(
+            root,
+            &host_target(),
+            BTreeMap::from([("sourceRevision".into(), revision.into())]),
+            BTreeMap::from([("mrt2".into(), spec)]),
+        )
+        .unwrap();
+    }
+
+    #[cfg(windows)]
+    fn wait_for_windows_pids(path: &Path) -> (u32, u32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(contents) = fs::read_to_string(path) {
+                let pids = contents
+                    .split_whitespace()
+                    .filter_map(|value| value.parse::<u32>().ok())
+                    .collect::<Vec<_>>();
+                if pids.len() == 2 {
+                    return (pids[0], pids[1]);
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "managed runtime helper did not report its process tree"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(windows)]
+    fn windows_process_is_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+        // SAFETY: this opens a read-only liveness handle for a test-owned pid.
+        let process = unsafe {
+            OpenProcess(
+                SYNCHRONIZE_ACCESS | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if process.is_null() {
+            return false;
+        }
+        // SAFETY: `process` is a live handle and the zero timeout cannot block.
+        let result = unsafe { WaitForSingleObject(process, 0) };
+        // SAFETY: close exactly the handle opened above.
+        unsafe { CloseHandle(process) };
+        result == WAIT_TIMEOUT
+    }
+
+    #[cfg(windows)]
+    fn wait_until_windows_process_is_gone(pid: u32) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if !windows_process_is_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// Process-tree stand-in copied into a sealed generation. The service role
+    /// launches a descendant from the same locked executable so promotion is
+    /// qualified against the real Windows Job Object and filesystem semantics.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    #[allow(clippy::zombie_processes)]
+    fn windows_managed_runtime_process_helper() {
+        let role = std::env::var(WINDOWS_HELPER_ROLE).expect("helper role");
+        let pid_file =
+            PathBuf::from(std::env::var_os(WINDOWS_HELPER_PID_FILE).expect("helper pid file"));
+        match role.as_str() {
+            "service" => {
+                let grandchild = windows_helper_command("grandchild", &pid_file)
+                    .spawn()
+                    .expect("spawn managed runtime grandchild");
+                fs::write(
+                    &pid_file,
+                    format!("{} {}", std::process::id(), grandchild.id()),
+                )
+                .expect("write managed runtime pid file");
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                }
+            }
+            "grandchild" => loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            },
+            other => panic!("unknown managed runtime helper role {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reaps_active_managed_tree_before_promoting_and_removing_old_generation() {
+        let root = root("windows locked promotion 资产");
+        let first_candidate = root.join("first candidate");
+        let next_candidate = root.join("next candidate");
+        let home = root.join("active generation");
+        let backup = root.join("old generation");
+        let pid_file = root.join("managed process ids");
+
+        install_windows_spawnable(&first_candidate, "old-revision");
+        crate::runtime_installer::promotion::promote(&first_candidate, &home, &backup, |path| {
+            resolve_at(path, "mrt2", &host_target()).map(|_| ())
+        })
+        .unwrap();
+        let old_generation = resolve_at(&home, "mrt2", &host_target())
+            .unwrap()
+            .generation()
+            .to_string();
+        install_windows_spawnable(&next_candidate, "new-revision");
+
+        let mut ephemeral = vec![
+            (
+                OsString::from(WINDOWS_HELPER_ROLE),
+                OsString::from("service"),
+            ),
+            (
+                OsString::from(WINDOWS_HELPER_PID_FILE),
+                pid_file.as_os_str().to_owned(),
+            ),
+        ];
+        ephemeral.extend(
+            ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
+                .into_iter()
+                .filter_map(|name| {
+                    std::env::var_os(name).map(|value| (OsString::from(name), value))
+                }),
+        );
+        let mut command = resolve_at(&home, "mrt2", &host_target())
+            .unwrap()
+            .into_command([], ephemeral)
+            .unwrap();
+        let mut process = crate::child_process::spawn_grouped(&mut command).unwrap();
+        let (service_pid, grandchild_pid) = wait_for_windows_pids(&pid_file);
+        assert!(windows_process_is_alive(service_pid));
+        assert!(windows_process_is_alive(grandchild_pid));
+
+        let report = process
+            .shutdown(std::time::Duration::from_millis(100))
+            .unwrap();
+        assert!(
+            report.forced,
+            "live managed tree should require Job teardown"
+        );
+        assert!(report.status.is_some(), "service leader was not reaped");
+        assert!(
+            wait_until_windows_process_is_gone(service_pid),
+            "managed service survived quiesce"
+        );
+        assert!(
+            wait_until_windows_process_is_gone(grandchild_pid),
+            "managed descendant survived quiesce"
+        );
+
+        crate::runtime_installer::promotion::promote(&next_candidate, &home, &backup, |path| {
+            resolve_at(path, "mrt2", &host_target()).map(|_| ())
+        })
+        .unwrap();
+        let promoted = resolve_at(&home, "mrt2", &host_target()).unwrap();
+        assert_ne!(promoted.generation(), old_generation);
+        assert!(home.join("runtime/new-revision.marker").is_file());
+        assert!(!home.join("runtime/old-revision.marker").exists());
+        assert!(!next_candidate.exists(), "candidate should be promoted");
+        assert!(!backup.exists(), "old generation should be removed");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn clean_host_fails_closed_and_install_produces_structured_commands() {
         let root = root("clean host with spaces 资产");
