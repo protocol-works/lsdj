@@ -16,6 +16,15 @@ export type Mrt2RuntimeDiagnostics = {
   cuda_device?: string
   cuda_capability?: number[]
   cuda_total_memory_bytes?: number
+  capabilities?: {
+    weighted_prompts?: boolean
+    audio_style?: boolean
+    notes?: boolean
+    drums?: boolean
+    negative_prompt?: boolean
+    explicit_seed?: boolean
+    reset_to_reseed?: boolean
+  }
 }
 
 export type ServerEvent =

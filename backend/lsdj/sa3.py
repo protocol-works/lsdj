@@ -575,15 +575,118 @@ def _safe_failure_tail(output: str, backend: BackendName) -> str:
     return tail or f"the {backend.value} Stable Audio process failed"
 
 
-async def _stop_process(process: asyncio.subprocess.Process) -> None:
+class _WindowsJob:
+    """Per-generation Job Object so cancellation tears down the whole CLI tree."""
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        info = ExtendedLimitInformation()
+        info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job, 9, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(job)
+            raise error
+        process = kernel32.OpenProcess(0x0001 | 0x0100 | 0x1000, False, pid)
+        if not process:
+            error = ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(job)
+            raise error
+        try:
+            if not kernel32.AssignProcessToJobObject(job, process):
+                raise ctypes.WinError(ctypes.get_last_error())
+        except Exception:
+            kernel32.CloseHandle(job)
+            raise
+        finally:
+            kernel32.CloseHandle(process)
+        self._kernel32 = kernel32
+        self._handle = job
+
+    def terminate(self) -> None:
+        if self._handle:
+            self._kernel32.TerminateJobObject(self._handle, 1)
+
+    def close(self) -> None:
+        if self._handle:
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
+async def _stop_process(
+    process: asyncio.subprocess.Process, process_tree: _WindowsJob | None = None
+) -> None:
     if process.returncode is not None:
         return
     if os.name == "posix":
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
     else:
-        with contextlib.suppress(ProcessLookupError):
-            process.terminate()
+        if process_tree is not None:
+            process_tree.terminate()
+        else:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
     try:
         await asyncio.wait_for(process.wait(), timeout=1.0)
         return
@@ -593,8 +696,11 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
     else:
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
+        if process_tree is not None:
+            process_tree.terminate()
+        else:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
     await process.wait()
 
 
@@ -641,6 +747,15 @@ async def _run_cli(
             flags |= subprocess.BELOW_NORMAL_PRIORITY_CLASS
         spawn_options["creationflags"] = flags
     process = await asyncio.create_subprocess_exec(*argv, **spawn_options)
+    try:
+        process_tree = _WindowsJob(process.pid) if os.name == "nt" else None
+    except Exception:
+        # A process that escaped Job Object assignment could outlive cancellation
+        # or app exit. Fail closed and reap it before surfacing the setup error.
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        raise
     if selection.backend is BackendName.TFLITE and hasattr(os, "setpriority"):
         with contextlib.suppress(OSError):
             os.setpriority(os.PRIO_PROCESS, process.pid, 10)
@@ -658,17 +773,17 @@ async def _run_cli(
             watched, timeout=timeout_for(seconds), return_when=asyncio.FIRST_COMPLETED
         )
         if not done:
-            await _stop_process(process)
+            await _stop_process(process, process_tree)
             raise GenerationFailed(
                 f"generation timed out after {timeout_for(seconds):g}s"
             )
         if cancel is not None and cancel in done and cancel.result():
-            await _stop_process(process)
+            await _stop_process(process, process_tree)
             raise GenerationCancelled("generation cancelled")
         return_code = await wait
         return return_code, await drain
     except asyncio.CancelledError:
-        await _stop_process(process)
+        await _stop_process(process, process_tree)
         raise
     finally:
         if cancel is not None:
@@ -677,6 +792,8 @@ async def _run_cli(
             drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
+        if process_tree is not None:
+            process_tree.close()
 
 
 _generation_lock = asyncio.Semaphore(1)
@@ -699,6 +816,7 @@ async def generate(
     lora_strengths: Sequence[float] | None = None,
     cancel_event: asyncio.Event | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,
+    on_state: Callable[[str], None] | None = None,
 ) -> bytes:
     """Generate one validated WAV through the platform-selected backend."""
     request = GenerationRequest(
@@ -793,6 +911,8 @@ async def generate(
         mode=mode.value,
         progress=None,
     )
+    if on_state is not None:
+        on_state("queued")
 
     def report(event: ProgressEvent) -> None:
         _generation_state["progress"] = event.as_dict()
@@ -801,10 +921,14 @@ async def generate(
 
     async with _generation_lock:
         _generation_state["state"] = "running"
+        if on_state is not None:
+            on_state("running")
         staging = runtime_paths.staging_home()
         if staging is not None:
             staging.mkdir(parents=True, exist_ok=True)
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled("generation cancelled while queued")
             with tempfile.TemporaryDirectory(prefix="sa3-", dir=staging) as tmp:
                 tmp_path = pathlib.Path(tmp)
                 out_path = tmp_path / "out.wav"

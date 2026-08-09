@@ -2623,7 +2623,7 @@ fn seal_mrt2_candidate(candidate: &Path, pin: &Mrt2Pin, python: &PythonPin) -> R
     .map(|(key, value)| (key.to_string(), value.to_string()))
     .collect();
     let ephemeral_environment = [
-        "LSDJ_API_CAPABILITY",
+        "LSDJ_WORKER_LAUNCH_TOKEN",
         "LSDJ_ASSETS_HOME",
         "LSDJ_CACHE_HOME",
         "LSDJ_CONFIG_HOME",

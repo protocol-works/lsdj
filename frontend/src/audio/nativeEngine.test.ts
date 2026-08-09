@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SAMPLE_RATE } from './types'
 import {
   createNativeEngine,
+  fetchGenerationApi,
   styleAddTarget,
   styleMoveTarget,
   styleSetCursor,
@@ -86,6 +87,31 @@ const SNAP = {
 }
 
 describe('createNativeEngine — control contract', () => {
+  it('authenticates generation requests with the in-memory launch capability', async () => {
+    const invoke = vi.fn((cmd: string) =>
+      cmd === 'app_info'
+        ? Promise.resolve({
+            generationPort: 4321,
+            generationCapability: 'b'.repeat(64),
+          })
+        : Promise.resolve(undefined),
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      void _url
+      void _init
+      return { ok: true }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchGenerationApi('/api/models')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('http://127.0.0.1:4321/api/models')
+    expect((init.headers as Headers).get('x-lsdj-capability')).toBe('b'.repeat(64))
+  })
+
   it('createDeckChannel replays NO mixer config — the shell hydrates (phase C)', async () => {
     const engine = createNativeEngine()
     await engine.createDeckChannel(

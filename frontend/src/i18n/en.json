@@ -121,6 +121,8 @@
       "imported": "Imported",
       "inspect": "Show the full prompt for {{name}}",
       "pending": "{{title}} — composing…",
+      "cancel": "Cancel",
+      "cancelling": "cancelling…",
       "failed": "Track generation failed: {{message}}",
       "saveFailed": "Couldn't save {{title}} to the songs folder: {{message}}",
       "openFolderFailed": "Couldn't open the songs folder: {{message}}",
@@ -331,6 +333,8 @@
       "underruns": "Underruns",
       "generationSpeed": "Gen speed",
       "generationSpeedValue": "{{rtf}}×",
+      "negativePrompt": "Negative prompt",
+      "negativePromptUnavailable": "Unavailable upstream",
       "noData": "—",
       "position": "Position"
     },

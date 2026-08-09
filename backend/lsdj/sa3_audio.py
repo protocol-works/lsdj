@@ -10,17 +10,26 @@ from __future__ import annotations
 import io
 import math
 import struct
+import threading
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 
 SAMPLE_RATE = 44_100
 CHANNELS = 2
 SAMPLE_WIDTH = 2
 MAX_INPUT_SECONDS = 380.0
+MAX_DECODED_PCM_BYTES = 16 * 1024 * 1024
+MAX_NORMALIZED_FRAMES = round(MAX_INPUT_SECONDS * SAMPLE_RATE)
+NORMALIZATION_CHECK_FRAMES = 16_384
 
 
 class AudioFormatError(ValueError):
     """The WAV is corrupt or uses an encoding LSDJ does not accept."""
+
+
+class AudioNormalizationCancelled(Exception):
+    """The caller cancelled bounded input normalization."""
 
 
 @dataclass(frozen=True)
@@ -63,7 +72,12 @@ def _pcm16(value: float) -> int:
     return min(32767, max(-32768, round(value * 32767.0)))
 
 
-def normalize_wav(data: bytes) -> NormalizedAudio:
+def normalize_wav(
+    data: bytes,
+    *,
+    cancel_event: threading.Event | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> NormalizedAudio:
     """Return canonical 44.1 kHz stereo PCM16 WAV bytes.
 
     The conversion is deterministic and bounded by ``MAX_INPUT_SECONDS``.
@@ -89,6 +103,11 @@ def normalize_wav(data: bytes) -> NormalizedAudio:
                 )
             if frames < 1:
                 raise AudioFormatError("WAV must contain audio frames")
+            expected_bytes = frames * channels * width
+            if expected_bytes > MAX_DECODED_PCM_BYTES:
+                raise AudioFormatError(
+                    f"decoded PCM must be at most {MAX_DECODED_PCM_BYTES} bytes"
+                )
             seconds = frames / rate
             if not math.isfinite(seconds) or seconds > MAX_INPUT_SECONDS:
                 raise AudioFormatError(
@@ -100,17 +119,29 @@ def normalize_wav(data: bytes) -> NormalizedAudio:
     except (EOFError, wave.Error, OverflowError, struct.error):
         raise AudioFormatError("init audio must be a valid PCM WAV file") from None
 
-    expected_bytes = frames * channels * width
     if len(raw) != expected_bytes:
         raise AudioFormatError("WAV sample data is truncated")
+    if cancel_event is not None and cancel_event.is_set():
+        raise AudioNormalizationCancelled
     if channels == CHANNELS and width == SAMPLE_WIDTH and rate == SAMPLE_RATE:
+        if on_progress is not None:
+            on_progress(frames, frames)
         return NormalizedAudio(wav=data, frames=frames, seconds=seconds)
 
     target_frames = max(1, round(frames * SAMPLE_RATE / rate))
+    if target_frames > MAX_NORMALIZED_FRAMES:
+        raise AudioFormatError(
+            f"normalized WAV must be at most {MAX_NORMALIZED_FRAMES} frames"
+        )
     pcm = bytearray(target_frames * CHANNELS * SAMPLE_WIDTH)
     source_per_target = rate / SAMPLE_RATE
     last_source_frame = frames - 1
     for index in range(target_frames):
+        if index % NORMALIZATION_CHECK_FRAMES == 0:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AudioNormalizationCancelled
+            if on_progress is not None:
+                on_progress(index, target_frames)
         position = index * source_per_target
         lower = min(int(position), last_source_frame)
         upper = min(lower + 1, last_source_frame)
@@ -121,6 +152,11 @@ def normalize_wav(data: bytes) -> NormalizedAudio:
         right_sample = right_lower + (right_upper - right_lower) * fraction
         offset = index * 4
         struct.pack_into("<hh", pcm, offset, _pcm16(left_sample), _pcm16(right_sample))
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise AudioNormalizationCancelled
+    if on_progress is not None:
+        on_progress(target_frames, target_frames)
 
     output = io.BytesIO()
     with wave.open(output, "wb") as target:

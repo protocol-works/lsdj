@@ -9,7 +9,6 @@ import type { DeckId, TrackSource } from '../audio/types'
 import { LOOP_CROSSFADE_SECONDS } from '../audio/loops'
 import {
   encodeMetaFrame,
-  getApiBaseUrl,
   invoke,
   isTauri,
   subscribeLibraryChanged,
@@ -18,7 +17,11 @@ import {
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
-import { postMagentaRender, postSa3Generate } from '../generation/client'
+import {
+  postMagentaRender,
+  startSa3Generate,
+  type Sa3GenerationTask,
+} from '../generation/client'
 import {
   adaptersForKind,
   stackForKind,
@@ -90,6 +93,8 @@ type GeneratedTrack =
       prompt: string
       model: TrackEngine
       recipe: SongGenerationRecipeV1
+      jobId?: string
+      progress?: string
     }
   | {
       id: number
@@ -124,6 +129,8 @@ type GeneratedSample =
       prompt: string
       model: SampleEngine
       oneShot: boolean
+      jobId: string
+      progress?: string
     }
   | {
       id: number
@@ -407,6 +414,16 @@ export function MediaExplorer({
   // A ref, not state: two composes batched into one render (Enter +
   // click) must not mint the same id.
   const nextIdRef = useRef(1)
+  const trackTasksRef = useRef(new Map<number, Sa3GenerationTask>())
+  const sampleTasksRef = useRef(new Map<number, Sa3GenerationTask>())
+  useEffect(
+    () => () => {
+      for (const task of [...trackTasksRef.current.values(), ...sampleTasksRef.current.values()]) {
+        void task.cancel()
+      }
+    },
+    [],
+  )
   // The latest lists mirrored in refs (synced after commit). A live re-list (tab
   // open, or the folder watcher firing) reads these from its effect/callback to reuse
   // a row's id + in-memory wav by filename, so a refresh never churns ids or re-reads
@@ -762,6 +779,23 @@ export function MediaExplorer({
     const requestSeconds = oneShot ? sampleSeconds : sampleSeconds + LOOP_CROSSFADE_SECONDS
     setSampleError(null)
     setSampleSaveError(null)
+    const task = startSa3Generate(
+      {
+        prompt: trimmedPrompt,
+        seconds: requestSeconds,
+        kind: requestEngine,
+        ...(requestLoras.length > 0 ? { loras: requestLoras } : {}),
+      },
+      (status) =>
+        setSamples((current) =>
+          current.map((sample) =>
+            sample.id === id && sample.state === 'pending'
+              ? { ...sample, progress: status.progress?.message ?? status.state }
+              : sample,
+          ),
+        ),
+    )
+    sampleTasksRef.current.set(id, task)
     setSamples((current) => [
       {
         id,
@@ -770,30 +804,13 @@ export function MediaExplorer({
         prompt: trimmedPrompt,
         model: requestEngine,
         oneShot,
+        jobId: task.jobId,
       },
       ...current,
     ])
     void (async () => {
       try {
-        const apiBase = await getApiBaseUrl()
-        const response = await fetch(`${apiBase}/api/generate`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            prompt: trimmedPrompt,
-            seconds: requestSeconds,
-            kind: requestEngine,
-            ...(requestLoras.length > 0 ? { loras: requestLoras } : {}),
-          }),
-        })
-        if (!response.ok) {
-          const detail = await response
-            .json()
-            .then((body: { detail?: string }) => body.detail)
-            .catch(() => null)
-          throw new Error(detail || `generation failed (${response.status})`)
-        }
-        const wav = await response.arrayBuffer()
+        const wav = await task.result
         setSamples((current) =>
           current.map((sample) =>
             sample.id === id
@@ -834,9 +851,26 @@ export function MediaExplorer({
         }
       } catch (error) {
         setSamples((current) => current.filter((sample) => sample.id !== id))
-        setSampleError(error instanceof Error ? error.message : String(error))
+        if (!task.wasCancelled()) {
+          setSampleError(error instanceof Error ? error.message : String(error))
+        }
+      } finally {
+        sampleTasksRef.current.delete(id)
       }
     })()
+  }
+
+  function cancelSampleGeneration(id: number) {
+    const task = sampleTasksRef.current.get(id)
+    if (!task) return
+    setSamples((current) =>
+      current.map((sample) =>
+        sample.id === id && sample.state === 'pending'
+          ? { ...sample, progress: t('media.generate.cancelling') }
+          : sample,
+      ),
+    )
+    void task.cancel()
   }
 
   async function openSamplesFolder() {
@@ -883,6 +917,19 @@ export function MediaExplorer({
     // blank title gets a random song title so a long/JSON prompt never becomes the
     // name. The row appends a session-unique #id to tell same-title siblings apart.
     const songTitle = title.trim() || randomSongTitle()
+    const task =
+      'kind' in generation.request
+        ? startSa3Generate(generation.request, (status) =>
+            setTracks((current) =>
+              current.map((track) =>
+                track.id === id && track.state === 'pending'
+                  ? { ...track, progress: status.progress?.message ?? status.state }
+                  : track,
+              ),
+            ),
+          )
+        : null
+    if (task) trackTasksRef.current.set(id, task)
     setGenerateError(null)
     setSaveError(null)
     setRecipeNotice(null)
@@ -894,14 +941,15 @@ export function MediaExplorer({
         prompt: trimmedPrompt,
         model: requestEngine,
         recipe: generation.recipe,
+        ...(task ? { jobId: task.jobId } : {}),
       },
       ...current,
     ])
     void (async () => {
       try {
         const wav =
-          'kind' in generation.request
-            ? await postSa3Generate(generation.request)
+          task
+            ? await task.result
             : await postMagentaRender(generation.request)
         setTracks((current) =>
           current.map((track) =>
@@ -953,9 +1001,26 @@ export function MediaExplorer({
         }
       } catch (error) {
         setTracks((current) => current.filter((track) => track.id !== id))
-        setGenerateError(error instanceof Error ? error.message : String(error))
+        if (!task?.wasCancelled()) {
+          setGenerateError(error instanceof Error ? error.message : String(error))
+        }
+      } finally {
+        trackTasksRef.current.delete(id)
       }
     })()
+  }
+
+  function cancelTrackGeneration(id: number) {
+    const task = trackTasksRef.current.get(id)
+    if (!task) return
+    setTracks((current) =>
+      current.map((track) =>
+        track.id === id && track.state === 'pending'
+          ? { ...track, progress: t('media.generate.cancelling') }
+          : track,
+      ),
+    )
+    void task.cancel()
   }
 
   async function chooseFolder() {
@@ -1353,7 +1418,9 @@ export function MediaExplorer({
                       )}
                       <span className="media__name-text">
                         {track.state === 'pending'
-                          ? t('media.generate.pending', { title: track.title })
+                          ? `${t('media.generate.pending', { title: track.title })}${
+                              track.progress ? ` · ${track.progress}` : ''
+                            }`
                           : track.title}
                       </span>
                       {track.state === 'ready' && composed && (
@@ -1383,6 +1450,11 @@ export function MediaExplorer({
                         ? t('media.generate.imported')
                         : t(`media.generate.engines.${track.model}`)}
                     </span>
+                    {track.state === 'pending' && track.jobId && (
+                      <Button onClick={() => cancelTrackGeneration(track.id)}>
+                        {t('media.generate.cancel')}
+                      </Button>
+                    )}
                     {track.state === 'ready' && hasVersionedRecipe(track.recipe) && (
                       <Button
                         aria-label={t('media.generate.reuseSettingsFor', { name: rowLabel })}
@@ -1533,7 +1605,9 @@ export function MediaExplorer({
                       )}
                       <span className="media__name-text">
                         {sample.state === 'pending'
-                          ? t('media.generate.pending', { title: sample.title })
+                          ? `${t('media.generate.pending', { title: sample.title })}${
+                              sample.progress ? ` · ${sample.progress}` : ''
+                            }`
                           : sample.title}
                       </span>
                       {sample.state === 'ready' && composed && (
@@ -1558,6 +1632,11 @@ export function MediaExplorer({
                         </button>
                       )}
                     </span>
+                    {sample.state === 'pending' && (
+                      <Button onClick={() => cancelSampleGeneration(sample.id)}>
+                        {t('media.generate.cancel')}
+                      </Button>
+                    )}
                     <span className="media__meta">
                       {`${sampleModelLabel(sample.model)} · ${t(
                         sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop',

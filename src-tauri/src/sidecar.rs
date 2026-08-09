@@ -108,6 +108,8 @@ pub const FRAME_CONTROL: u8 = 3;
 /// Engine → sidecar: a style-sample embed (M15). Binary, not JSON, because it
 /// carries raw PCM: `[u32 LE id length][id utf-8][interleaved f32 LE PCM]`.
 pub const FRAME_EMBED: u8 = 4;
+/// Sidecar -> engine: the per-launch capability. This must be the first frame.
+pub const FRAME_AUTH: u8 = 5;
 
 /// Cap on a single frame's payload — a guard against a desynced/hostile stream
 /// allocating unbounded memory. A 1 s PCM chunk is 384 000 bytes; 16 MiB is far
@@ -122,8 +124,17 @@ const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Write one framed message: a type byte, a little-endian `u32` length, then the
 /// payload. Flushes so the consumer sees it promptly (the socket is `nodelay`).
 pub fn write_frame(w: &mut impl Write, frame_type: u8, payload: &[u8]) -> io::Result<()> {
+    let len = u32::try_from(payload.len()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "sidecar frame payload is too large")
+    })?;
+    if len > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("sidecar frame length {len} exceeds the cap"),
+        ));
+    }
     w.write_all(&[frame_type])?;
-    w.write_all(&(payload.len() as u32).to_le_bytes())?;
+    w.write_all(&len.to_le_bytes())?;
     w.write_all(payload)?;
     w.flush()
 }
@@ -297,13 +308,17 @@ pub struct Sidecar {
 /// FALLIBLE prefix, done BEFORE any [`DeckHandle`] is committed, so a bad launch
 /// (or a bind failure) never costs the deck its ring producer. [`Sidecar::restart`]
 /// runs this first and leaves the running sidecar untouched if it fails.
-fn bind_and_launch(deck_id: &str, model: &str) -> io::Result<(TcpListener, SupervisedChild)> {
+fn bind_and_launch(
+    deck_id: &str,
+    model: &str,
+) -> io::Result<(TcpListener, SupervisedChild, String)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(false).ok();
     let port = listener.local_addr()?.port();
-    let mut command = sidecar_command(deck_id, model, port)?;
+    let token = crate::local_auth::generate_capability();
+    let mut command = authenticated_sidecar_command(deck_id, model, port, &token)?;
     let child = crate::child_process::spawn_grouped(&mut command)?;
-    Ok((listener, child))
+    Ok((listener, child, token))
 }
 
 /// The PCM tee closure handed to a reader thread: forward each deck PCM frame
@@ -339,6 +354,7 @@ fn start_reader(
     listener: TcpListener,
     deck_id: &str,
     child: SupervisedChild,
+    token: String,
     handle: DeckHandle,
     mut on_status: StatusSink,
     mut on_pcm: impl FnMut(&[u8]) + Send + 'static,
@@ -356,7 +372,12 @@ fn start_reader(
             // is set — a teardown / restart wakes a never-connected accept promptly
             // instead of waiting out ACCEPT_TIMEOUT (which would freeze the deck's
             // control while the supervisor joins this thread).
-            let stream = match accept_with_timeout(&listener, &stop_for_reader, ACCEPT_TIMEOUT) {
+            let stream = match accept_authenticated_with_timeout(
+                &listener,
+                &stop_for_reader,
+                ACCEPT_TIMEOUT,
+                token.as_bytes(),
+            ) {
                 Some(s) => s,
                 None => {
                     eprintln!("lsdj-sidecar-{deck_label}: sidecar never connected");
@@ -395,18 +416,20 @@ fn start_reader(
 
 fn bind_and_launch_shared(
     models: &[String; lsdj_engine::DECK_COUNT],
-) -> io::Result<(TcpListener, SupervisedChild)> {
+) -> io::Result<(TcpListener, SupervisedChild, String)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(false).ok();
     let port = listener.local_addr()?.port();
-    let mut command = shared_sidecar_command(models, port)?;
+    let token = crate::local_auth::generate_capability();
+    let mut command = authenticated_shared_sidecar_command(models, port, &token)?;
     let child = crate::child_process::spawn_grouped(&mut command)?;
-    Ok((listener, child))
+    Ok((listener, child, token))
 }
 
 fn start_shared_reader(
     listener: TcpListener,
     child: SupervisedChild,
+    token: String,
     handles: [DeckHandle; lsdj_engine::DECK_COUNT],
     on_status: SharedStatusSinks,
     mut on_pcm: DeckPcmSinks,
@@ -427,7 +450,12 @@ fn start_shared_reader(
                     }
                 }) as StatusSink
             });
-            let stream = match accept_with_timeout(&listener, &stop_for_reader, ACCEPT_TIMEOUT) {
+            let stream = match accept_authenticated_with_timeout(
+                &listener,
+                &stop_for_reader,
+                ACCEPT_TIMEOUT,
+                token.as_bytes(),
+            ) {
                 Some(stream) => stream,
                 None => {
                     eprintln!("lsdj-sidecar-shared: sidecar never connected");
@@ -469,7 +497,8 @@ impl Sidecar {
     /// Spawn and supervise the sidecar for `deck_id`, feeding `deck_handle` and
     /// reporting status through `on_status`. Binds a loopback listener, launches
     /// the Python sidecar pointed at the bound port, accepts its connection, and
-    /// starts the reader thread. The spawn command is [`sidecar_command`]
+    /// starts the reader thread. The spawn command is built from
+    /// [`sidecar_base_command`]
     /// (`LSDJ_BACKEND_BIN` in a release; overridable via `LSDJ_SIDECAR_CMD` in dev).
     ///
     /// Errors if the listener cannot bind or the process cannot launch — the
@@ -484,11 +513,12 @@ impl Sidecar {
         taps: PcmTaps,
         feed: AnalysisFeed,
     ) -> io::Result<Sidecar> {
-        let (listener, child) = bind_and_launch(deck_id, model)?;
+        let (listener, child, token) = bind_and_launch(deck_id, model)?;
         let parts = start_reader(
             listener,
             deck_id,
             child,
+            token,
             deck_handle,
             Box::new(on_status),
             pcm_tee(taps.clone(), feed.clone(), deck_idx),
@@ -525,7 +555,7 @@ impl Sidecar {
         // — and its ring producer — are completely untouched; only after this
         // succeeds do we reclaim the handle, so it is never at risk on a recoverable
         // error.
-        let (listener, child) = bind_and_launch(&self.deck_id, new_model)?;
+        let (listener, child, token) = bind_and_launch(&self.deck_id, new_model)?;
 
         // `stop` suppresses the old reader's `worker_died` across the deliberate
         // switch (and wakes a never-connected accept).
@@ -566,6 +596,7 @@ impl Sidecar {
             listener,
             &self.deck_id,
             child,
+            token,
             exit.handle,
             on_status,
             pcm_tee(self.taps.clone(), self.feed.clone(), self.deck_idx),
@@ -633,7 +664,7 @@ impl SharedSidecar {
         taps: PcmTaps,
         feed: AnalysisFeed,
     ) -> Result<Self, (io::Error, [DeckHandle; lsdj_engine::DECK_COUNT])> {
-        let (listener, child) = match bind_and_launch_shared(&models) {
+        let (listener, child, token) = match bind_and_launch_shared(&models) {
             Ok(launch) => launch,
             Err(error) => return Err((error, handles)),
         };
@@ -642,7 +673,7 @@ impl SharedSidecar {
             Box::new(pcm_tee(taps.clone(), feed.clone(), 0)),
             Box::new(pcm_tee(taps.clone(), feed.clone(), 1)),
         ];
-        let parts = start_shared_reader(listener, child, handles, on_status.clone(), on_pcm);
+        let parts = start_shared_reader(listener, child, token, handles, on_status.clone(), on_pcm);
         Ok(Self {
             models,
             taps,
@@ -719,7 +750,7 @@ impl SharedSidecar {
         // Stop-and-reap is intentional for shared CUDA. Launch-first remains the
         // per-deck policy above, but would temporarily require two resident model
         // generations here and can OOM a minimum-VRAM host.
-        let (listener, child) = match bind_and_launch_shared(&models) {
+        let (listener, child, token) = match bind_and_launch_shared(&models) {
             Ok(launch) => launch,
             Err(error) => {
                 self.parked = Some(exit);
@@ -739,6 +770,7 @@ impl SharedSidecar {
         let parts = start_shared_reader(
             listener,
             child,
+            token,
             exit.handles,
             self.on_status.clone(),
             on_pcm,
@@ -948,18 +980,34 @@ impl Drop for Sidecar {
 /// without a dedicated timer thread, and checks `stop` each iteration so a
 /// teardown (`Drop`) or a model switch (`restart`) unblocks a never-connected
 /// accept promptly rather than waiting out the whole `timeout`.
-fn accept_with_timeout(
+fn accept_authenticated_with_timeout(
     listener: &TcpListener,
     stop: &AtomicBool,
     timeout: Duration,
+    expected_token: &[u8],
 ) -> Option<TcpStream> {
     let deadline = std::time::Instant::now() + timeout;
     listener.set_nonblocking(true).ok();
     loop {
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok((mut stream, _)) => {
                 stream.set_nonblocking(false).ok();
-                return Some(stream);
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let handshake_timeout = remaining.min(Duration::from_secs(1));
+                let _ = stream.set_read_timeout(Some(handshake_timeout));
+                let authenticated = matches!(
+                    read_frame(&mut stream),
+                    Ok(Some((FRAME_AUTH, ref supplied)))
+                        if crate::local_auth::constant_time_eq(supplied, expected_token)
+                );
+                let _ = stream.set_read_timeout(None);
+                if authenticated {
+                    return Some(stream);
+                }
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
+                    return None;
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if stop.load(Ordering::Acquire) || std::time::Instant::now() >= deadline {
@@ -975,7 +1023,7 @@ fn accept_with_timeout(
 /// The base sidecar launch command — program + base args + CWD — with NO mode
 /// flags. A packaged build uses the exact `LSDJ_BACKEND_BIN` path; otherwise
 /// `LSDJ_SIDECAR_CMD` is overridable (whitespace-split) and dev defaults to
-/// `uv run python -m lsdj.sidecar`. The deck path ([`sidecar_command`]) and the model
+/// `uv run python -m lsdj.sidecar`. The authenticated deck path and the model
 /// manager's installer (issue #43: `--init-resources` / `--download-model`) both
 /// build on this, so the resolution lives in one place — a download is NOT a
 /// deck, so it must not inherit `--deck`/`--model`/`--port`.
@@ -1018,6 +1066,23 @@ pub fn sidecar_base_command() -> io::Result<Command> {
         }
         Ok(cmd)
     }
+}
+
+#[cfg(feature = "managed-runtime")]
+fn authenticated_sidecar_base_command(token: &str) -> io::Result<Command> {
+    use std::ffi::OsString;
+
+    let paths = crate::platform_paths::get();
+    let ephemeral = paths.backend_env().into_iter().chain(std::iter::once((
+        OsString::from("LSDJ_WORKER_LAUNCH_TOKEN"),
+        OsString::from(token),
+    )));
+    crate::managed_runtime::resolve(
+        paths.assets(),
+        crate::managed_runtime::Service::Mrt2,
+    )
+    .and_then(|resolved| resolved.into_command([], ephemeral))
+    .map_err(io::Error::other)
 }
 
 /// Runtime selected by the native platform.  The value is always sent over the
@@ -1070,10 +1135,20 @@ pub fn status_event(status_json: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Build the command that launches the Python sidecar for a deck, pointed at the
-/// loopback `port` — the base command plus the deck-mode flags.
-pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Command> {
-    let mut cmd = sidecar_base_command()?;
+fn authenticated_sidecar_command(
+    deck_id: &str,
+    model: &str,
+    port: u16,
+    token: &str,
+) -> io::Result<Command> {
+    #[cfg(feature = "managed-runtime")]
+    let mut cmd = authenticated_sidecar_base_command(token)?;
+    #[cfg(not(feature = "managed-runtime"))]
+    let mut cmd = {
+        let mut cmd = sidecar_base_command()?;
+        cmd.env("LSDJ_WORKER_LAUNCH_TOKEN", token);
+        cmd
+    };
     let runtime = mrt2_runtime_for_platform()?;
     cmd.args([
         "--deck",
@@ -1088,12 +1163,19 @@ pub fn sidecar_command(deck_id: &str, model: &str, port: u16) -> io::Result<Comm
     Ok(cmd)
 }
 
-/// Build the one-process/two-deck PyTorch worker command selected by #109.
-pub fn shared_sidecar_command(
+fn authenticated_shared_sidecar_command(
     models: &[String; lsdj_engine::DECK_COUNT],
     port: u16,
+    token: &str,
 ) -> io::Result<Command> {
-    let mut cmd = sidecar_base_command()?;
+    #[cfg(feature = "managed-runtime")]
+    let mut cmd = authenticated_sidecar_base_command(token)?;
+    #[cfg(not(feature = "managed-runtime"))]
+    let mut cmd = {
+        let mut cmd = sidecar_base_command()?;
+        cmd.env("LSDJ_WORKER_LAUNCH_TOKEN", token);
+        cmd
+    };
     let runtime = mrt2_runtime_for_platform()?;
     if runtime != "pytorch-cuda" {
         return Err(io::Error::new(
@@ -1298,6 +1380,41 @@ mod tests {
         assert_eq!(statuses, vec!["{\"event\":\"ready\"}".to_string()]);
     }
 
+    #[test]
+    fn wrong_first_client_cannot_capture_the_sidecar_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let token = b"correct-sidecar-token-0123456789abcdef".to_vec();
+        let expected = token.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_accept = stop.clone();
+        let accept = thread::spawn(move || {
+            let mut stream = accept_authenticated_with_timeout(
+                &listener,
+                &stop_for_accept,
+                Duration::from_secs(2),
+                &expected,
+            )
+            .expect("legitimate sidecar should be accepted after rejecting the racer");
+            read_frame(&mut stream).unwrap()
+        });
+
+        let mut attacker = TcpStream::connect(addr).unwrap();
+        write_frame(&mut attacker, FRAME_AUTH, b"wrong-sidecar-token-0123456789abcdef")
+            .unwrap();
+        drop(attacker);
+
+        let mut legitimate = TcpStream::connect(addr).unwrap();
+        write_frame(&mut legitimate, FRAME_AUTH, &token).unwrap();
+        write_frame(&mut legitimate, FRAME_STATUS, br#"{"event":"ready"}"#).unwrap();
+        drop(legitimate);
+
+        assert_eq!(
+            accept.join().unwrap(),
+            Some((FRAME_STATUS, br#"{"event":"ready"}"#.to_vec()))
+        );
+    }
+
     /// In-process model switch: `restart` respawns the sidecar with a new model,
     /// reusing the deck's permanent ring producer, and suppresses a false
     /// `worker_died` across the deliberate switch. Wires a minimal stdlib-only
@@ -1311,13 +1428,15 @@ mod tests {
         // deliberately ignore socket EOF. Teardown must kill it as the wrapper's
         // process-group child; killing only the wrapper leaves this process and
         // the Rust reader alive forever. No backend deps.
-        let script = r#"import socket, struct, json, argparse, time
+        let script = r#"import socket, struct, json, argparse, time, os
 p = argparse.ArgumentParser()
 p.add_argument('--port', type=int)
 p.add_argument('--model')
 p.add_argument('--deck')
 a, _ = p.parse_known_args()
 s = socket.create_connection(('127.0.0.1', a.port))
+token = os.environ['LSDJ_WORKER_LAUNCH_TOKEN'].encode()
+s.sendall(struct.pack('<BI', 5, len(token)) + token)
 b = json.dumps({'event': 'ready', 'model': a.model}).encode()
 s.sendall(struct.pack('<BI', 2, len(b)) + b)
 while True:
@@ -1492,6 +1611,8 @@ for line in pidfile.read_text().splitlines():
         continue
     overlap.write_text(f'{pid} still alive when {os.getpid()} started')
 s = socket.create_connection(('127.0.0.1', a.port))
+token = os.environ['LSDJ_WORKER_LAUNCH_TOKEN'].encode()
+s.sendall(struct.pack('<BI', 5, len(token)) + token)
 if 'load_fail' in (a.model_a, a.model_b):
     for deck, model in enumerate((a.model_a, a.model_b)):
         body = bytes([deck]) + json.dumps({'event': 'startup_failed', 'model': model}).encode()
