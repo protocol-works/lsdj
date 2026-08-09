@@ -1,5 +1,6 @@
 """Bounded, authenticated protocol for the dedicated MRT2 render worker."""
 
+import hashlib
 import io
 import json
 import socket
@@ -327,6 +328,40 @@ def test_render_response_rejects_coercible_scalar_types(override):
     wire = RecordingSock()
     write_frame(wire, FRAME_RENDER_BEGIN, begin_payload(**override))
     with pytest.raises(RenderProtocolError):
+        read_render_response(io.BytesIO(wire.buffer), request)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"schemaVersion": 1.0},
+        {"sequence": 2},
+        {"frames": 24_001},
+        {"pcmBytes": 192_000.0},
+        {"sha256": "0" * 64},
+    ],
+)
+def test_render_response_end_requires_exact_active_identity_total_and_hash(override):
+    request = RenderRequest(JOB_ID, 1, "piano", 24_000)
+    pcm = b"\0" * request.pcm_bytes
+    end = {
+        "schemaVersion": RENDER_SCHEMA_VERSION,
+        "jobId": request.job_id,
+        "sequence": request.sequence,
+        "frames": request.frames,
+        "pcmBytes": request.pcm_bytes,
+        "sha256": hashlib.sha256(pcm).hexdigest(),
+        **override,
+    }
+    wire = RecordingSock()
+    write_frame(wire, FRAME_RENDER_BEGIN, begin_payload())
+    write_frame(wire, FRAME_RENDER_CHUNK, pcm)
+    write_frame(
+        wire,
+        FRAME_RENDER_END,
+        json.dumps(end, separators=(",", ":")).encode(),
+    )
+    with pytest.raises(RenderProtocolError, match="end metadata"):
         read_render_response(io.BytesIO(wire.buffer), request)
 
 
