@@ -725,7 +725,11 @@ export function MediaExplorer({
   )
 
   const bus = useControlBus()
-  useEffect(() =>
+  // Refresh the hardware handler in the same commit that exposes new rows.
+  // A passive effect leaves a frame where the DOM shows the new list but the
+  // bus still holds the previous render's empty/stale list closure, so a rotary
+  // tick in that window is silently ignored.
+  useLayoutEffect(() =>
     bus.subscribe((intent) => {
       if (intent.kind === 'browse_tab') {
         // Rotary press: cycle the visible tab from the hardware.
