@@ -121,6 +121,7 @@ pub(crate) struct VerifiedCommand {
     argv: Vec<OsString>,
     environment: BTreeMap<String, String>,
     ephemeral_environment: BTreeSet<String>,
+    host_environment: Vec<(OsString, OsString)>,
     generation: String,
     target: String,
 }
@@ -155,7 +156,7 @@ impl VerifiedCommand {
             command.env(name, value);
         }
         let mut seen = BTreeSet::new();
-        for (name, value) in ephemeral {
+        for (name, value) in self.host_environment.into_iter().chain(ephemeral) {
             let Some(name) = name.to_str() else {
                 return Err("managed runtime environment name is not UTF-8".into());
             };
@@ -212,11 +213,13 @@ pub(crate) fn service_root(assets: &Path, service: Service) -> PathBuf {
 }
 
 pub(crate) fn resolve(assets: &Path, service: Service) -> Result<VerifiedCommand, String> {
-    resolve_at(
+    let mut verified = resolve_at(
         &service_root(assets, service),
         service.wire_name(),
         &host_target(),
-    )
+    )?;
+    verified.host_environment = crate::platform_paths::get().managed_child_env()?;
+    Ok(verified)
 }
 
 fn resolve_at(root: &Path, service: &str, target: &str) -> Result<VerifiedCommand, String> {
@@ -261,6 +264,7 @@ fn resolve_at(root: &Path, service: &str, target: &str) -> Result<VerifiedComman
         argv: spec.argv.iter().map(OsString::from).collect(),
         environment: spec.environment.clone(),
         ephemeral_environment: spec.ephemeral_environment.iter().cloned().collect(),
+        host_environment: Vec::new(),
         generation: manifest.generation,
         target: manifest.target,
     })
@@ -643,6 +647,10 @@ mod tests {
             ephemeral_environment: vec![
                 "LSDJ_API_CAPABILITY".into(),
                 "LSDJ_WORKER_LAUNCH_TOKEN".into(),
+                "SYSTEMROOT".into(),
+                "WINDIR".into(),
+                "TEMP".into(),
+                "TMP".into(),
             ],
         };
         seal_candidate(
@@ -752,11 +760,23 @@ mod tests {
 
         fs::remove_dir_all(&root).unwrap();
         install(&root, &["mrt2"]);
-        let resolved = resolve_at(&root, "mrt2", "x86_64-pc-windows-msvc").unwrap();
-        assert!(resolved
-            .into_command([], [(OsString::from("HF_TOKEN"), OsString::from("secret"))])
-            .unwrap_err()
-            .contains("undeclared"));
+        for name in [
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "PATH",
+            "HOME",
+            "PYTHONPATH",
+            "LSDJ_GENERATION_CMD",
+            "LSDJ_SIDECAR_CMD",
+            "LSDJ_ALLOW_UNVERIFIED_MRT2_CUDA",
+            "LSDJ_ALLOW_UNVERIFIED_SA3_CUDA",
+        ] {
+            let resolved = resolve_at(&root, "mrt2", "x86_64-pc-windows-msvc").unwrap();
+            assert!(resolved
+                .into_command([], [(OsString::from(name), OsString::from("secret"))])
+                .unwrap_err()
+                .contains("undeclared"));
+        }
 
         #[cfg(unix)]
         {
@@ -863,5 +883,72 @@ mod tests {
             fs::remove_file(&program).unwrap();
             symlink("/bin/true", program).unwrap();
         });
+    }
+
+    #[test]
+    fn windows_host_essentials_are_explicit_and_other_host_values_stay_cleared() {
+        let root = root("windows host environment");
+        install(&root, &["mrt2"]);
+        let manifest_path = root.join(MANIFEST_NAME);
+        let mut manifest: LaunchManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let spec = manifest.services.get_mut("mrt2").unwrap();
+        spec.ephemeral_environment.extend(
+            ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
+                .into_iter()
+                .map(str::to_string),
+        );
+        fs::remove_file(&manifest_path).unwrap();
+        seal_candidate(
+            &root,
+            "x86_64-pc-windows-msvc",
+            manifest.provenance,
+            manifest.services,
+        )
+        .unwrap();
+
+        let mut verified = resolve_at(&root, "mrt2", "x86_64-pc-windows-msvc").unwrap();
+        verified.host_environment = vec![
+            (OsString::from("SYSTEMROOT"), OsString::from(r"C:\Windows")),
+            (OsString::from("WINDIR"), OsString::from(r"C:\Windows")),
+            (OsString::from("TEMP"), OsString::from(r"C:\LSDJ\tmp")),
+            (OsString::from("TMP"), OsString::from(r"C:\LSDJ\tmp")),
+        ];
+        let command = verified
+            .into_command(
+                [],
+                [(OsString::from("LSDJ_API_CAPABILITY"), OsString::from("cap"))],
+            )
+            .unwrap();
+        let environment: BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(environment.get("SYSTEMROOT"), Some(&r"C:\Windows".into()));
+        assert_eq!(environment.get("WINDIR"), Some(&r"C:\Windows".into()));
+        assert_eq!(environment.get("TEMP"), Some(&r"C:\LSDJ\tmp".into()));
+        assert_eq!(environment.get("TMP"), Some(&r"C:\LSDJ\tmp".into()));
+        assert_eq!(environment.get("LSDJ_API_CAPABILITY"), Some(&"cap".into()));
+        for forbidden in [
+            "PATH",
+            "HOME",
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "PYTHONPATH",
+            "LSDJ_GENERATION_CMD",
+            "LSDJ_SIDECAR_CMD",
+            "LSDJ_ALLOW_UNVERIFIED_MRT2_CUDA",
+            "LSDJ_ALLOW_UNVERIFIED_SA3_CUDA",
+        ] {
+            assert!(!environment.contains_key(forbidden));
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

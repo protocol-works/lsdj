@@ -97,6 +97,10 @@ impl AppPaths {
         &self.loras_home
     }
 
+    fn managed_runtime_temp(&self) -> PathBuf {
+        self.cache.join("managed-runtime-tmp")
+    }
+
     /// The old macOS Documents brand root, used only to migrate generated
     /// libraries independently when a destination already contains other data.
     pub fn legacy_data(&self) -> Option<&Path> {
@@ -118,6 +122,118 @@ impl AppPaths {
             pair("SA3_LORAS_HOME", &self.loras_home),
         ]
     }
+
+    /// Environment that an absolute-path managed child still needs after
+    /// `env_clear`. Unix needs nothing. Windows gets its canonical system root
+    /// from the host directory API for runtime/DLL discovery and uses a checked,
+    /// app-owned temp directory; never inherit `PATH`, a profile home,
+    /// credentials, or developer overrides.
+    pub(crate) fn managed_child_env(&self) -> Result<Vec<(OsString, OsString)>, String> {
+        managed_child_env_for_current_host(&self.managed_runtime_temp())
+    }
+}
+
+pub(crate) fn managed_child_env_for_current_host(
+    safe_temp: &Path,
+) -> Result<Vec<(OsString, OsString)>, String> {
+    managed_child_env_for(platform(), safe_temp, windows_system_root)
+}
+
+fn managed_child_env_for(
+    platform: Platform,
+    safe_temp: &Path,
+    system_root: impl FnOnce() -> Result<OsString, String>,
+) -> Result<Vec<(OsString, OsString)>, String> {
+    if platform != Platform::Windows {
+        return Ok(Vec::new());
+    }
+    let system_root = std::fs::canonicalize(PathBuf::from(system_root()?))
+        .map_err(|error| format!("cannot resolve Windows system root: {error}"))?;
+    require_real_directory(&system_root, "Windows system root")?;
+    let safe_parent = safe_temp
+        .parent()
+        .ok_or("managed runtime temp directory has no app-owned parent")?;
+    std::fs::create_dir_all(safe_parent)
+        .map_err(|error| format!("cannot create managed runtime temp parent: {error}"))?;
+    require_real_directory(safe_parent, "managed runtime temp parent")?;
+    match std::fs::create_dir(safe_temp) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot create managed runtime temp directory: {error}"
+            ))
+        }
+    }
+    require_real_directory(safe_temp, "managed runtime temp directory")?;
+    let safe_parent = std::fs::canonicalize(safe_parent)
+        .map_err(|error| format!("cannot resolve managed runtime temp parent: {error}"))?;
+    let safe_temp = std::fs::canonicalize(safe_temp)
+        .map_err(|error| format!("cannot resolve managed runtime temp directory: {error}"))?;
+    if safe_temp.parent() != Some(safe_parent.as_path()) {
+        return Err("managed runtime temp directory escapes its app-owned parent".into());
+    }
+    Ok(vec![
+        pair("SYSTEMROOT", &system_root),
+        pair("WINDIR", &system_root),
+        pair("TEMP", &safe_temp),
+        pair("TMP", &safe_temp),
+    ])
+}
+
+fn require_real_directory(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {label}: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+        return Err(format!("{label} is not a real directory"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn windows_system_root() -> Result<OsString, String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    let mut buffer = vec![0_u16; 260];
+    loop {
+        // SAFETY: `buffer` is writable for the advertised length. The API
+        // returns either the number of UTF-16 code units written (excluding
+        // NUL), the required capacity, or zero with a Win32 error.
+        let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length == 0 {
+            return Err(format!(
+                "Windows directory API failed: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        let length = length as usize;
+        if length < buffer.len() {
+            return Ok(OsString::from_wide(&buffer[..length]));
+        }
+        if length >= 32_768 {
+            return Err("Windows directory API returned an invalid path length".into());
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_system_root() -> Result<OsString, String> {
+    Err("Windows directory API is unavailable on this host".into())
 }
 
 fn pair(name: &str, value: &Path) -> (OsString, OsString) {
@@ -482,6 +598,100 @@ mod tests {
                 .map(OsString::as_os_str),
             Some(roots.sa3_home.as_os_str()),
         );
+    }
+
+    #[test]
+    fn managed_windows_children_receive_only_system_root_and_app_owned_temp() {
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-managed-child-env-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let system_root = root.join("Windows Root");
+        let safe_temp = root.join("cache").join("managed tmp");
+        std::fs::create_dir_all(&system_root).unwrap();
+
+        let environment = managed_child_env_for(Platform::Windows, &safe_temp, || {
+            Ok(system_root.as_os_str().to_owned())
+        })
+        .unwrap();
+        let values: std::collections::HashMap<_, _> = environment.into_iter().collect();
+        let canonical_root = std::fs::canonicalize(&system_root).unwrap();
+        let canonical_temp = std::fs::canonicalize(&safe_temp).unwrap();
+        assert_eq!(values.len(), 4);
+        for name in ["SYSTEMROOT", "WINDIR"] {
+            assert_eq!(
+                values.get(std::ffi::OsStr::new(name)),
+                Some(&canonical_root.as_os_str().to_owned())
+            );
+        }
+        for name in ["TEMP", "TMP"] {
+            assert_eq!(
+                values.get(std::ffi::OsStr::new(name)),
+                Some(&canonical_temp.as_os_str().to_owned())
+            );
+        }
+        for forbidden in [
+            "PATH",
+            "HOME",
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "PYTHONPATH",
+            "LSDJ_GENERATION_CMD",
+            "LSDJ_SIDECAR_CMD",
+        ] {
+            assert!(!values.contains_key(std::ffi::OsStr::new(forbidden)));
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_windows_managed_children_inherit_no_host_environment() {
+        let safe_temp = Path::new("/unused-managed-temp");
+        for platform in [Platform::MacOs, Platform::Linux] {
+            assert!(managed_child_env_for(platform, safe_temp, || {
+                panic!("non-Windows launch must not query the Windows directory API")
+            })
+            .unwrap()
+            .is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_windows_temp_rejects_a_link_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-managed-temp-link-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let system_root = root.join("Windows Root");
+        let safe_parent = root.join("cache");
+        let outside = root.join("outside");
+        let safe_temp = safe_parent.join("managed tmp");
+        std::fs::create_dir_all(&system_root).unwrap();
+        std::fs::create_dir_all(&safe_parent).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, &safe_temp).unwrap();
+
+        let error = managed_child_env_for(Platform::Windows, &safe_temp, || {
+            Ok(system_root.as_os_str().to_owned())
+        })
+        .unwrap_err();
+        assert!(error.contains("not a real directory"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_root_comes_from_the_host_directory_api() {
+        let root = PathBuf::from(windows_system_root().unwrap());
+        assert!(root.is_absolute());
+        assert!(root.is_dir());
     }
 
     #[test]

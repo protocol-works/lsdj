@@ -87,6 +87,10 @@ const BACKEND_SOURCES: &[(&str, &[u8])] = &[
     ),
     ("engine.py", include_bytes!("../../backend/lsdj/engine.py")),
     ("frozen.py", include_bytes!("../../backend/lsdj/frozen.py")),
+    (
+        "gpu_broker.py",
+        include_bytes!("../../backend/lsdj/gpu_broker.py"),
+    ),
     ("loras.py", include_bytes!("../../backend/lsdj/loras.py")),
     ("mrt2.py", include_bytes!("../../backend/lsdj/mrt2.py")),
     (
@@ -98,6 +102,10 @@ const BACKEND_SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("../../backend/lsdj/runtime_paths.py"),
     ),
     ("sa3.py", include_bytes!("../../backend/lsdj/sa3.py")),
+    (
+        "sa3_cuda.py",
+        include_bytes!("../../backend/lsdj/sa3_cuda.py"),
+    ),
     (
         "sa3_audio.py",
         include_bytes!("../../backend/lsdj/sa3_audio.py"),
@@ -112,6 +120,28 @@ const BACKEND_SOURCES: &[(&str, &[u8])] = &[
     ),
     ("worker.py", include_bytes!("../../backend/lsdj/worker.py")),
 ];
+
+const BACKEND_PATH_ENVIRONMENT: &[&str] = &[
+    "LSDJ_ASSETS_HOME",
+    "LSDJ_CACHE_HOME",
+    "LSDJ_CONFIG_HOME",
+    "LSDJ_DATA_HOME",
+    "LSDJ_STAGING_HOME",
+    "MAGENTA_HOME",
+    "SA3_HOME",
+    "SA3_LORAS_HOME",
+    "SA3_MLX_HOME",
+];
+
+const WINDOWS_CHILD_ENVIRONMENT: &[&str] = &["SYSTEMROOT", "WINDIR", "TEMP", "TMP"];
+
+fn service_ephemeral_environment(secret: &str) -> Vec<String> {
+    std::iter::once(secret)
+        .chain(BACKEND_PATH_ENVIRONMENT.iter().copied())
+        .chain(WINDOWS_CHILD_ENVIRONMENT.iter().copied())
+        .map(str::to_string)
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sa3Backend {
@@ -1363,6 +1393,12 @@ fn install_mrt2_managed(
     )?;
     write_mrt2_identity(&candidate, &pin)?;
     materialize_contained_file_links(&candidate)?;
+    smoke_test_materialized_backend(
+        shared,
+        &candidate,
+        &crate::platform_paths::venv_python(&candidate.join("runtime").join(".venv")),
+        &["lsdj.gpu_broker", "lsdj.mrt2_pytorch"],
+    )?;
     seal_mrt2_candidate(&candidate, &pin, python)?;
     validate_mrt2_candidate(&candidate, &pin, name, &cancelled_now)?;
     progress("promote", None, None);
@@ -1851,6 +1887,12 @@ fn build_sa3_candidate(
     )?;
     if backend == Sa3Backend::Tflite {
         materialize_contained_file_links(candidate)?;
+        smoke_test_materialized_backend(
+            shared,
+            candidate,
+            &crate::platform_paths::venv_python(&runtime.join(".venv")),
+            &["lsdj.sa3_cuda", "lsdj.sa3"],
+        )?;
         seal_sa3_candidate(candidate, pin, python)?;
     }
     validate_sa3_install_cancellable(candidate, pin, backend, &|| {
@@ -2434,6 +2476,82 @@ fn install_backend_sources(candidate: &Path) -> Result<(), String> {
     )
 }
 
+fn source_closure_digest(sources: &[(&str, &[u8])]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    for (name, bytes) in sources {
+        digest.update((name.len() as u64).to_le_bytes());
+        digest.update(name.as_bytes());
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    hex::encode(digest.finalize())
+}
+
+fn backend_sources_digest() -> String {
+    source_closure_digest(BACKEND_SOURCES)
+}
+
+const ISOLATED_IMPORT_SCRIPT: &str = r#"
+import importlib
+import pathlib
+import sys
+
+package_root = pathlib.Path(sys.argv[1]).resolve(strict=True)
+sys.path.insert(0, str(package_root))
+for name in sys.argv[2:]:
+    module = importlib.import_module(name)
+    pathlib.Path(module.__file__).resolve(strict=True).relative_to(package_root)
+"#;
+
+fn isolated_backend_import_command(
+    python: &Path,
+    candidate: &Path,
+    modules: &[&str],
+    host_environment: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<Command, String> {
+    if modules.is_empty()
+        || modules.iter().any(|name| {
+            name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
+        })
+    {
+        return Err("managed backend import smoke module list is invalid".into());
+    }
+    let package_root = candidate.join("lsdj_backend");
+    if !package_root.join("lsdj").is_dir() {
+        return Err("managed backend source closure is missing".into());
+    }
+    let mut command = Command::new(python);
+    command
+        .env_clear()
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONUTF8", "1")
+        .current_dir(candidate)
+        .args(["-I", "-c", ISOLATED_IMPORT_SCRIPT])
+        .arg(package_root)
+        .args(modules);
+    for (name, value) in host_environment {
+        command.env(name, value);
+    }
+    Ok(command)
+}
+
+fn smoke_test_materialized_backend(
+    shared: &InstallShared,
+    candidate: &Path,
+    python: &Path,
+    modules: &[&str],
+) -> Result<(), String> {
+    let host_environment = crate::platform_paths::get().managed_child_env()?;
+    let command = isolated_backend_import_command(python, candidate, modules, host_environment)?;
+    stream_child(shared, "managed-backend-import", command, |_| {})
+}
+
 fn relative_wire(root: &Path, path: &Path) -> Result<String, String> {
     let relative = path
         .strip_prefix(root)
@@ -2471,6 +2589,7 @@ fn seal_sa3_candidate(
     provenance.insert("source.repository".into(), pin.repo.clone());
     provenance.insert("source.revision".into(), pin.commit.clone());
     provenance.insert("source.sha256".into(), pin.source.artifact.sha256.clone());
+    provenance.insert("backend.sources.sha256".into(), backend_sources_digest());
     provenance.insert("python.version".into(), python_pin.version.clone());
     provenance.insert(
         "python.sha256".into(),
@@ -2500,21 +2619,7 @@ fn seal_sa3_candidate(
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
     .collect();
-    let ephemeral_environment = [
-        "LSDJ_API_CAPABILITY",
-        "LSDJ_ASSETS_HOME",
-        "LSDJ_CACHE_HOME",
-        "LSDJ_CONFIG_HOME",
-        "LSDJ_DATA_HOME",
-        "LSDJ_STAGING_HOME",
-        "MAGENTA_HOME",
-        "SA3_HOME",
-        "SA3_LORAS_HOME",
-        "SA3_MLX_HOME",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let ephemeral_environment = service_ephemeral_environment("LSDJ_API_CAPABILITY");
     let spec = crate::managed_runtime::CommandSpec {
         program: relative_wire(candidate, &program)?,
         argv: vec!["launch.py".into(), "--generation-server".into()],
@@ -2589,6 +2694,7 @@ fn seal_mrt2_candidate(candidate: &Path, pin: &Mrt2Pin, python: &PythonPin) -> R
         "runtime.pin.sha256".into(),
         content_digest(MRT2_PIN_JSON.as_bytes()),
     );
+    provenance.insert("backend.sources.sha256".into(), backend_sources_digest());
     provenance.insert(
         "runtime.wheels.sha256".into(),
         content_digest(MRT2_WHEEL_PIN_JSON.as_bytes()),
@@ -2622,21 +2728,7 @@ fn seal_mrt2_candidate(candidate: &Path, pin: &Mrt2Pin, python: &PythonPin) -> R
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
     .collect();
-    let ephemeral_environment = [
-        "LSDJ_WORKER_LAUNCH_TOKEN",
-        "LSDJ_ASSETS_HOME",
-        "LSDJ_CACHE_HOME",
-        "LSDJ_CONFIG_HOME",
-        "LSDJ_DATA_HOME",
-        "LSDJ_STAGING_HOME",
-        "MAGENTA_HOME",
-        "SA3_HOME",
-        "SA3_LORAS_HOME",
-        "SA3_MLX_HOME",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let ephemeral_environment = service_ephemeral_environment("LSDJ_WORKER_LAUNCH_TOKEN");
     let spec = crate::managed_runtime::CommandSpec {
         program: relative_wire(candidate, &program)?,
         argv: vec!["launch.py".into()],
@@ -3083,6 +3175,29 @@ pub fn open_model_folder(app: AppHandle, family: Family) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn import_smoke_python() -> PathBuf {
+        let backend = Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend");
+        let managed = crate::platform_paths::venv_python(&backend.join(".venv"));
+        if managed.is_file() {
+            return managed;
+        }
+        let candidates: &[&str] = if cfg!(target_os = "windows") {
+            &["python.exe", "python3.exe"]
+        } else {
+            &["python3", "python"]
+        };
+        let search = std::env::var_os("PATH").expect("Python is available on CI PATH");
+        for directory in std::env::split_paths(&search) {
+            for name in candidates {
+                let candidate = directory.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+        panic!("Python executable is unavailable for managed import smoke test");
+    }
+
     fn touch(path: &Path) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -3182,6 +3297,114 @@ mod tests {
             }
         }
         assert_eq!(pin.processor.files.len(), 5);
+    }
+
+    #[test]
+    fn backend_source_closure_carries_gpu_modules_and_service_exclusive_secrets() {
+        let sources: BTreeMap<_, _> = BACKEND_SOURCES.iter().copied().collect();
+        assert_eq!(
+            sources.get("gpu_broker.py").copied(),
+            Some(include_bytes!("../../backend/lsdj/gpu_broker.py").as_slice())
+        );
+        assert_eq!(
+            sources.get("sa3_cuda.py").copied(),
+            Some(include_bytes!("../../backend/lsdj/sa3_cuda.py").as_slice())
+        );
+        assert_eq!(backend_sources_digest().len(), 64);
+        assert_ne!(
+            source_closure_digest(&[("gpu_broker.py", b"changed")]),
+            backend_sources_digest()
+        );
+
+        let sa3: BTreeSet<_> = service_ephemeral_environment("LSDJ_API_CAPABILITY")
+            .into_iter()
+            .collect();
+        let mrt2: BTreeSet<_> = service_ephemeral_environment("LSDJ_WORKER_LAUNCH_TOKEN")
+            .into_iter()
+            .collect();
+        assert!(sa3.contains("LSDJ_API_CAPABILITY"));
+        assert!(!sa3.contains("LSDJ_WORKER_LAUNCH_TOKEN"));
+        assert!(mrt2.contains("LSDJ_WORKER_LAUNCH_TOKEN"));
+        assert!(!mrt2.contains("LSDJ_API_CAPABILITY"));
+        for name in BACKEND_PATH_ENVIRONMENT
+            .iter()
+            .chain(WINDOWS_CHILD_ENVIRONMENT)
+        {
+            assert!(sa3.contains(*name));
+            assert!(mrt2.contains(*name));
+        }
+    }
+
+    #[test]
+    fn materialized_backend_imports_are_isolated_and_missing_modules_fail_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "lsdj-backend-import-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let candidate = root.join("materialized candidate");
+        let unavailable_checkout = root.join("source checkout unavailable");
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::create_dir_all(&unavailable_checkout).unwrap();
+        install_backend_sources(&candidate).unwrap();
+        let python = import_smoke_python();
+        let host_environment = crate::platform_paths::managed_child_env_for_current_host(
+            &root.join("safe managed temp"),
+        )
+        .unwrap();
+
+        let mut command = isolated_backend_import_command(
+            &python,
+            &candidate,
+            &["lsdj.gpu_broker", "lsdj.sa3_cuda"],
+            host_environment.clone(),
+        )
+        .unwrap();
+        command.current_dir(&unavailable_checkout);
+        let declared: BTreeSet<_> = command
+            .get_envs()
+            .filter_map(|(name, value)| value.map(|_| name.to_string_lossy().into_owned()))
+            .collect();
+        for forbidden in [
+            "PATH",
+            "HOME",
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "PYTHONPATH",
+            "LSDJ_GENERATION_CMD",
+            "LSDJ_SIDECAR_CMD",
+            "LSDJ_ALLOW_UNVERIFIED_MRT2_CUDA",
+            "LSDJ_ALLOW_UNVERIFIED_SA3_CUDA",
+        ] {
+            assert!(!declared.contains(forbidden));
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "isolated imports failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        for module in ["gpu_broker", "sa3_cuda"] {
+            let path = candidate
+                .join("lsdj_backend")
+                .join("lsdj")
+                .join(format!("{module}.py"));
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            let mut missing = isolated_backend_import_command(
+                &python,
+                &candidate,
+                &[&format!("lsdj.{module}")],
+                host_environment.clone(),
+            )
+            .unwrap();
+            missing.current_dir(&unavailable_checkout);
+            assert!(!missing.output().unwrap().status.success());
+            std::fs::write(path, bytes).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
