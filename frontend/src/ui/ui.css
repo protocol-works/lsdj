@@ -596,6 +596,13 @@
   position: relative;
   width: 2.75rem;
   height: 2.75rem;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.ui-knob__dial:active {
+  cursor: grabbing;
 }
 
 .ui-knob__dial svg {
@@ -646,7 +653,9 @@
   width: 100%;
   height: 100%;
   opacity: 0;
-  cursor: grab;
+  /* Pointer dragging is relative to the knob's starting value. Let the dial
+     receive those events instead of using this tiny native slider track. */
+  pointer-events: none;
 }
 
 /* The input is transparent, so its native focus ring is invisible — show
@@ -666,6 +675,10 @@
 
 .ui-knob--disabled {
   opacity: 0.4;
+}
+
+.ui-knob--disabled .ui-knob__dial {
+  cursor: default;
 }
 
 /* Small dial ('s'): the in-row trim (for example the LoRA panel). The viewBox is 28 so the
