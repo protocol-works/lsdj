@@ -174,6 +174,47 @@ impl MasterLimiter {
     }
 }
 
+/// A control-value linear glide for the RT path (issue: MCP finding #10 — an
+/// agent "walking the fader" was a series of audible steps). `set` stores a
+/// target and a frame count; `tick` advances one frame toward it. The per-frame
+/// step is recomputed off the remainder so the landing is exact, and
+/// `frames = 0` snaps — the instant move every pre-ramp caller keeps.
+struct Ramp {
+    current: f32,
+    target: f32,
+    frames_left: u32,
+}
+
+impl Ramp {
+    fn new(value: f32) -> Self {
+        Ramp { current: value, target: value, frames_left: 0 }
+    }
+
+    /// Aim at `target`, landing `frames` frames from now (0 = snap immediately).
+    fn set(&mut self, target: f32, frames: u32) {
+        self.target = target;
+        self.frames_left = frames;
+        if frames == 0 {
+            self.current = target;
+        }
+    }
+
+    /// Still gliding? (Lets `mix_frame` skip per-frame work once landed.)
+    fn active(&self) -> bool {
+        self.frames_left > 0
+    }
+
+    /// Advance one frame and return the value to apply.
+    #[inline]
+    fn tick(&mut self) -> f32 {
+        if self.frames_left > 0 {
+            self.current += (self.target - self.current) / self.frames_left as f32;
+            self.frames_left -= 1;
+        }
+        self.current
+    }
+}
+
 /// One frame's mix output: the master pair the speakers get, the headphone cue
 /// pair, and the master limiter's applied gain (for the gain-reduction meter).
 pub(crate) struct FrameOut {
@@ -203,8 +244,9 @@ pub(crate) struct MixGraph {
     /// only ticks the pre-built nodes.
     fx: [FxInsert; DECK_COUNT],
     /// Per-deck channel-fader volume (linear, default 1.0), applied before the
-    /// crossfade. Recomputed by `set_volume` (non-RT).
-    volumes: [f32; DECK_COUNT],
+    /// crossfade. Set by `set_volume` (instant) / `set_volume_ramped` (a linear
+    /// glide the RT `mix_frame` ticks per frame — MCP finding #10).
+    volumes: [Ramp; DECK_COUNT],
     /// Per-deck chain-head trim (linear, default 1.0). Applied PRE-EQ at the very
     /// head so EQ kills stay the performer's move (M17 gain staging). Set in dB by
     /// `set_trim` (non-RT).
@@ -226,8 +268,13 @@ pub(crate) struct MixGraph {
     /// default [`crate::INITIAL_CUE_MIX`]. Non-RT `set_cue_mix`.
     cue_mix: f32,
     /// Equal-power crossfade gains, one per deck. `gains[0]` weights deck A,
-    /// `gains[1]` weights deck B. Recomputed by `set_crossfade` (non-RT).
+    /// `gains[1]` weights deck B. Recomputed by `set_crossfade` (non-RT) — or,
+    /// while `xfade` glides, per frame by `mix_frame` from the ramped position.
     gains: [f32; DECK_COUNT],
+    /// The crossfader POSITION, rampable (MCP finding #10). The equal-power law
+    /// is applied to the ramped position each frame (not to the gains directly),
+    /// so a glide holds constant power the whole way across.
+    xfade: Ramp,
     /// The master limiter (feed-forward compressor); ticked per frame on the RT
     /// path. Its applied gain feeds the gain-reduction telemetry.
     limiter: MasterLimiter,
@@ -293,13 +340,14 @@ impl MixGraph {
             eq,
             eq_gains,
             fx: std::array::from_fn(|_| FxInsert::new(SAMPLE_RATE as f32)),
-            volumes: [1.0; DECK_COUNT],
+            volumes: std::array::from_fn(|_| Ramp::new(1.0)),
             trims: [1.0; DECK_COUNT],
             on_air: [true; DECK_COUNT],
             fx_enabled: [false; DECK_COUNT],
             cue: [false; DECK_COUNT],
             cue_mix: crate::INITIAL_CUE_MIX,
             gains: [0.0; DECK_COUNT],
+            xfade: Ramp::new(0.5),
             limiter: MasterLimiter::new(SAMPLE_RATE as f32),
         };
         // Centre crossfade by default (equal-power 0.5).
@@ -313,10 +361,25 @@ impl MixGraph {
     /// `mix_frame` reads — see the note in `lib.rs` on the single-threaded
     /// ownership that keeps this sound.
     pub(crate) fn set_crossfade(&mut self, position: f32) {
+        self.set_crossfade_ramped(position, 0);
+    }
+
+    /// Like `set_crossfade`, but glide there over `frames` frames (0 = instant):
+    /// the RT `mix_frame` walks the POSITION linearly and re-applies the
+    /// equal-power law each frame, so the glide holds constant power throughout
+    /// (MCP finding #10 — stepwise agent fades were audible).
+    pub(crate) fn set_crossfade_ramped(&mut self, position: f32, frames: u32) {
         let p = position.clamp(0.0, 1.0);
-        // Equal-power law: gain_a = cos(p·π/2), gain_b = sin(p·π/2). At p = 0.5
-        // both are cos(π/4) = sin(π/4), matching the Spike A constant mix.
-        let angle = p * std::f32::consts::FRAC_PI_2;
+        self.xfade.set(p, frames);
+        if frames == 0 {
+            self.apply_crossfade(p);
+        }
+    }
+
+    /// The equal-power law: gain_a = cos(p·π/2), gain_b = sin(p·π/2). At p = 0.5
+    /// both are cos(π/4) = sin(π/4), matching the Spike A constant mix.
+    fn apply_crossfade(&mut self, position: f32) {
+        let angle = position * std::f32::consts::FRAC_PI_2;
         self.gains[0] = angle.cos();
         self.gains[1] = angle.sin();
     }
@@ -324,7 +387,13 @@ impl MixGraph {
     /// Set a deck's channel-fader volume (linear, 0..1+). Non-RT; writes
     /// `self.volumes`, read by the RT `mix_frame`.
     pub(crate) fn set_volume(&mut self, deck: usize, gain: f32) {
-        self.volumes[deck] = gain;
+        self.volumes[deck].set(gain, 0);
+    }
+
+    /// Like `set_volume`, but glide there linearly over `frames` frames
+    /// (0 = instant) — `mix_frame` ticks the ramp (MCP finding #10).
+    pub(crate) fn set_volume_ramped(&mut self, deck: usize, gain: f32, frames: u32) {
+        self.volumes[deck].set(gain, frames);
     }
 
     /// Set a deck's chain-head trim in dB (0 dB = unity). Stored linear; applied
@@ -418,6 +487,13 @@ impl MixGraph {
         let mut in1 = [0.0f32; 1];
         let mut out1 = [0.0f32; 1];
 
+        // A gliding crossfade re-applies the equal-power law from the ramped
+        // position each frame; once landed this is skipped and `gains` holds.
+        if self.xfade.active() {
+            let p = self.xfade.tick();
+            self.apply_crossfade(p);
+        }
+
         let mut mixed_l = 0.0f32;
         let mut mixed_r = 0.0f32;
         // Pre-fade-listen bus: cued decks' post-FX signal, independent of faders.
@@ -456,8 +532,9 @@ impl MixGraph {
 
             // Channel fader. The post-fader magnitude drives the channel meter —
             // captured here, BEFORE the crossfade weight and the on-air gate.
-            let fader_l = l * self.volumes[d];
-            let fader_r = r * self.volumes[d];
+            let volume = self.volumes[d].tick();
+            let fader_l = l * volume;
+            let fader_r = r * volume;
             deck_levels[d] = fader_l.abs().max(fader_r.abs());
 
             // Equal-power crossfade weight, gated by on-air (off-air contributes
@@ -535,6 +612,74 @@ mod tests {
                 graph.gains,
             );
         }
+    }
+
+    /// A ramped crossfade (MCP finding #10) walks the position across `frames`
+    /// frames: deck A's gain falls monotonically (no audible step), the
+    /// equal-power invariant holds at every frame of the glide (the law is
+    /// re-applied to the ramped POSITION, not interpolated on the gains), and
+    /// the landing is exact.
+    #[test]
+    fn ramped_crossfade_glides_monotonically_and_lands_exact() {
+        let mut graph = MixGraph::new();
+        graph.set_crossfade(0.0);
+        let frames = 100;
+        graph.set_crossfade_ramped(1.0, frames);
+
+        let mut levels = [0.0f32; DECK_COUNT];
+        let mut last_gain_a = graph.gains[0];
+        for frame in 0..frames {
+            graph.mix_frame([(0.0, 0.0); DECK_COUNT], &mut levels);
+            let power = graph.gains[0] * graph.gains[0] + graph.gains[1] * graph.gains[1];
+            assert!(
+                (power - 1.0).abs() < 1e-5,
+                "constant power mid-glide at frame {frame}: a²+b²={power}",
+            );
+            assert!(
+                graph.gains[0] <= last_gain_a + 1e-6,
+                "deck A gain rose at frame {frame}: {} -> {}",
+                last_gain_a,
+                graph.gains[0],
+            );
+            last_gain_a = graph.gains[0];
+        }
+        assert!((graph.gains[0] - 0.0).abs() < 1e-6, "deck A silent after the glide");
+        assert!((graph.gains[1] - 1.0).abs() < 1e-6, "deck B full after the glide");
+
+        // Landed: further frames hold the endpoint (the ramp goes inactive).
+        graph.mix_frame([(0.0, 0.0); DECK_COUNT], &mut levels);
+        assert!((graph.gains[1] - 1.0).abs() < 1e-6, "endpoint holds after landing");
+    }
+
+    /// A ramped volume glides linearly to the target and lands exact; an
+    /// un-ramped `set_volume` still snaps (frames = 0 keeps the instant move).
+    #[test]
+    fn ramped_volume_glides_and_lands_exact() {
+        let mut graph = MixGraph::new();
+        graph.set_crossfade(0.0); // full deck A
+        let frames = 50;
+        graph.set_volume_ramped(0, 0.0, frames);
+
+        let mut levels = [0.0f32; DECK_COUNT];
+        let mut last_level = f32::MAX;
+        for frame in 0..frames {
+            graph.mix_frame([(0.5, 0.5), (0.0, 0.0)], &mut levels);
+            assert!(
+                levels[0] <= last_level + 1e-6,
+                "deck A level rose at frame {frame}: {last_level} -> {}",
+                levels[0],
+            );
+            last_level = levels[0];
+        }
+        assert!(last_level.abs() < 1e-6, "deck A faded to silence after the glide");
+
+        graph.set_volume(0, 1.0);
+        graph.mix_frame([(0.5, 0.5), (0.0, 0.0)], &mut levels);
+        assert!(
+            (levels[0] - 0.5).abs() < 1e-6,
+            "un-ramped set_volume snaps back instantly (got {})",
+            levels[0],
+        );
     }
 
     /// Out-of-range positions clamp to the endpoints rather than running the

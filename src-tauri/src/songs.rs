@@ -112,14 +112,19 @@ impl SongLibrary {
     }
 
     /// Reconcile the registry against the folder and return the current take list.
-    /// Writes the reconciled registry back so a hand-added or hand-deleted file is
-    /// remembered. Called at webview startup.
+    /// Writes the reconciled registry back — only when the reconcile changed it —
+    /// so a hand-added or hand-deleted file is remembered without every read
+    /// becoming a write (concurrent readers were serialising on the disk write
+    /// past the MCP client timeout). Called at webview startup.
     pub fn list(&self) -> Result<Vec<SongEntry>, String> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("cannot create songs folder: {e}"))?;
-        let reconciled = reconcile(library::load_registry(&self.dir), &library::audio_files(&self.dir)?);
-        library::save_registry(&self.dir, &reconciled)?;
+        let existing = library::load_registry(&self.dir);
+        let reconciled = reconcile(existing.clone(), &library::audio_files(&self.dir)?);
+        if reconciled != existing {
+            library::save_registry(&self.dir, &reconciled)?;
+        }
         Ok(reconciled)
     }
 

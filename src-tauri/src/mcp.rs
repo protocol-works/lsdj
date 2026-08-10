@@ -10,8 +10,10 @@
 //! ([`crate::generation`]): a disabled or failed start just leaves the endpoint
 //! unadvertised (`port() == None`).
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::Request;
 use axum::http::{header::AUTHORIZATION, StatusCode};
@@ -40,9 +42,21 @@ use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
 use crate::songs::{NewSong, SongLibrary};
 use crate::midi::notes::NoteSteering;
-use crate::store::{InterfaceStore, NoteModeSnap, PadPointSnap, StyleTargetSnap};
+use crate::store::{InterfaceStore, NoteModeSnap, PadPointSnap, PlayModeSnap, StyleTargetSnap};
 use lsdj_engine::host::Host;
 use lsdj_engine::FxKind;
+
+/// Ceiling for a ramped mixer move (`ramp_ms` on set_crossfade / set_volume):
+/// long enough for any show-length blend, short enough that a typo'd value
+/// can't leave a fader gliding for minutes.
+const MAX_RAMP_MS: f32 = 60_000.0;
+
+/// Per-adapter ETA surcharge when a `generate_track` request stacks LoRAs:
+/// the SA3 CLI merges adapter deltas into the DiT at load — measured ~128 s
+/// for one adapter on the medium DiT, and worse than linear beyond one (a
+/// two-adapter merge ran past 570 s live), so this is per adapter and still
+/// optimistic for big stacks.
+const LORA_MERGE_ETA_SECONDS: u32 = 130;
 
 /// The MCP request handler. Holds the [`AppHandle`] so a tool reaches the same
 /// Tauri-managed state (`Host`, `InterfaceStore`, sidecars) the IPC commands drive —
@@ -57,6 +71,10 @@ pub struct McpHandler {
 struct CrossfadeArgs {
     /// Crossfader position, 0 = deck A, 1 = deck B.
     position: f32,
+    /// Optional glide time in milliseconds: the engine walks the fader there as
+    /// a click-free linear blend (equal-power the whole way). Omit or 0 for an
+    /// instant move. The UI fader shows the destination while the audio glides.
+    ramp_ms: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -65,6 +83,9 @@ struct DeckGainArgs {
     deck: usize,
     /// Channel volume, 0..1.
     gain: f32,
+    /// Optional glide time in milliseconds (engine-side linear fade, click-free).
+    /// Omit or 0 for an instant move.
+    ramp_ms: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -153,6 +174,9 @@ struct GenerateTrackArgs {
     prompt: String,
     /// Length in seconds (the server caps tracks at 380 s).
     seconds: f32,
+    /// Optional LoRA adapter stack (max 4) applied to the generation — names
+    /// from list_loras; track generations ride the "medium" base DiT.
+    loras: Option<Vec<LoraArg>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -166,13 +190,40 @@ struct GenerateSampleArgs {
     /// Whether the clip plays once (a one-shot) instead of looping. Defaults to loop.
     #[serde(default)]
     one_shot: bool,
+    /// Optional LoRA adapter stack (max 4) — names from list_loras; sfx/music
+    /// ride the "small" base DiT. Not supported by the "magenta" engine.
+    loras: Option<Vec<LoraArg>>,
+}
+
+/// One LoRA adapter riding a generation — mirrors the webview generator's
+/// `LoraChoice` and the server's `loras[]` contract (ADR-0028).
+#[derive(Debug, Clone, serde::Serialize, Deserialize, schemars::JsonSchema)]
+struct LoraArg {
+    /// Adapter name from list_loras (`<base>/<slug>`).
+    name: String,
+    /// Blend strength, 0-4 (0 = bit-exact bypass, ~1 = as trained). Defaults to 1.
+    #[serde(default = "default_lora_strength")]
+    strength: f32,
+}
+
+fn default_lora_strength() -> f32 {
+    1.0
 }
 
 /// The `/api/generate` request body, matching the generation server's contract
 /// (`prompt`/`seconds`/`kind`). Pulled out so the wire shape is unit-testable. `kind`
 /// is the wire string (`sfx`/`music`/`track`).
-fn generate_request_body(prompt: &str, seconds: f32, kind: &str) -> serde_json::Value {
-    json!({ "prompt": prompt, "seconds": seconds, "kind": kind })
+fn generate_request_body(
+    prompt: &str,
+    seconds: f32,
+    kind: &str,
+    loras: &[LoraArg],
+) -> serde_json::Value {
+    let mut body = json!({ "prompt": prompt, "seconds": seconds, "kind": kind });
+    if !loras.is_empty() {
+        body["loras"] = json!(loras);
+    }
+    body
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -280,6 +331,14 @@ struct BeatLoopArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeckPadArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Loop/sample pad slot index (0-based).
+    slot: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct OnAirArgs {
     /// Deck index: 0 = A, 1 = B.
     deck: usize,
@@ -300,44 +359,310 @@ fn cue_pad_count(store: &InterfaceStore, deck: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Which source a deck currently plays, from the store snapshot — so the
+/// transport tools route to the stream or the loaded track coherently instead
+/// of driving the realtime worker under a playback deck.
+fn deck_mode(store: &InterfaceStore, deck: usize) -> Option<PlayModeSnap> {
+    store.snapshot().decks.get(deck).map(|d| d.mode)
+}
+
+/// Session-unique id keying an agent generation's `start` to its `done`/`error`
+/// (`mcp://generation`), so the webview retires the matching pending row.
+fn next_generation_job() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many generation jobs `GenerationJobs` remembers. A show generates a
+/// handful; the cap only bounds a runaway session.
+const MAX_TRACKED_JOBS: usize = 16;
+
+/// The agent generation jobs the MCP surface tracks (#8): `generate_track`
+/// answers immediately with a job id and the work continues in a spawned task —
+/// a full track generates at ~2.3 s of audio per wall-clock second, which
+/// outlives MCP client timeouts (observed live: a 240 s track killed the tool
+/// call at 60 s). Tauri-managed (app-wide), so a reconnecting MCP session still
+/// sees jobs the previous session started. Ids are [`next_generation_job`]'s —
+/// the same ids the `mcp://generation` UI events carry.
+#[derive(Default)]
+pub struct GenerationJobs(Mutex<VecDeque<GenerationJob>>);
+
+struct GenerationJob {
+    id: u64,
+    kind: &'static str,
+    title: String,
+    prompt: String,
+    deck: Option<usize>,
+    started: Instant,
+    /// `None` while running; then the tool-style result and how long it took.
+    outcome: Option<(Result<String, String>, Duration)>,
+}
+
+impl GenerationJobs {
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<GenerationJob>> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Record a job as running. Evicts the oldest *finished* job past the cap
+    /// (running jobs are never dropped — their `finish` must still land).
+    fn begin(&self, id: u64, kind: &'static str, title: &str, prompt: &str, deck: Option<usize>) {
+        let mut jobs = self.lock();
+        if jobs.len() >= MAX_TRACKED_JOBS {
+            if let Some(oldest_done) = jobs.iter().position(|j| j.outcome.is_some()) {
+                jobs.remove(oldest_done);
+            }
+        }
+        jobs.push_back(GenerationJob {
+            id,
+            kind,
+            title: title.to_string(),
+            prompt: prompt.to_string(),
+            deck,
+            started: Instant::now(),
+            outcome: None,
+        });
+    }
+
+    /// Record a running job's result (the message `generate_track` would have
+    /// returned synchronously, or the error).
+    fn finish(&self, id: u64, result: Result<String, String>) {
+        let mut jobs = self.lock();
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            let took = job.started.elapsed();
+            job.outcome = Some((result, took));
+        }
+    }
+
+    /// The `generation_status` payload: every tracked job, newest first.
+    fn report(&self) -> String {
+        let jobs: Vec<_> = self
+            .lock()
+            .iter()
+            .rev()
+            .map(|job| {
+                let (status, detail, elapsed) = match &job.outcome {
+                    None => ("running", None, job.started.elapsed()),
+                    Some((Ok(message), took)) => ("done", Some(message.clone()), *took),
+                    Some((Err(message), took)) => ("failed", Some(message.clone()), *took),
+                };
+                json!({
+                    "job": job.id,
+                    "kind": job.kind,
+                    "title": job.title,
+                    "prompt": job.prompt,
+                    "deck": job.deck,
+                    "status": status,
+                    "elapsedSeconds": elapsed.as_secs(),
+                    "detail": detail,
+                })
+            })
+            .collect();
+        if jobs.is_empty() {
+            "no generation jobs yet — generate_track starts one".to_string()
+        } else {
+            json!({ "jobs": jobs }).to_string()
+        }
+    }
+}
+
+/// The MCP path's counterpart of the webview's `randomSongTitle()`
+/// (`frontend/src/media/songTitle.ts`, same word lists): a throwaway-but-pleasant
+/// two-word name, so a long prompt never becomes the row title or the on-disk
+/// filename — the prompt still rides in the registry.
+fn pleasant_title() -> String {
+    const ADJECTIVES: [&str; 24] = [
+        "Velvet", "Neon", "Crimson", "Glass", "Midnight", "Golden", "Hollow", "Electric",
+        "Lunar", "Crystal", "Phantom", "Sapphire", "Wild", "Quiet", "Burning", "Frozen",
+        "Cosmic", "Scarlet", "Faded", "Molten", "Paper", "Iron", "Silent", "Amber",
+    ];
+    const NOUNS: [&str; 24] = [
+        "Mirage", "Halo", "Cathedral", "Tide", "Echo", "Bloom", "Pulse", "Horizon",
+        "Ember", "Drift", "Reverie", "Cascade", "Vortex", "Lullaby", "Static", "Aurora",
+        "Monsoon", "Eclipse", "Requiem", "Afterglow", "Cinder", "Spire", "Solstice", "Comet",
+    ];
+    // Clock nanos pick well enough for a name — no rand dependency.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0);
+    format!(
+        "{} {}",
+        ADJECTIVES[nanos % ADJECTIVES.len()],
+        NOUNS[(nanos / ADJECTIVES.len()) % NOUNS.len()]
+    )
+}
+
+/// Normalise every tool's input schema into the plainest shape MCP clients
+/// handle: inline local `#/$defs/*` refs, then strip the `null` variants
+/// schemars emits for `Option<…>` params.
+///
+/// schemars emits nested param types (`PadPointSnap`, `StyleTargetSnap`, the
+/// enum args…) as `$ref`s into `$defs`, and rmcp 1.8 hardcodes its schemars
+/// settings (no `inline_subschemas` hook). At least one MCP client (Claude
+/// Code) strips `$defs`/`$ref` before surfacing the schema to the model,
+/// leaving those params untyped — the model then sends a JSON *string* where
+/// a struct is expected (observed live with `set_style`'s cursor). With every
+/// ref inlined there is nothing to strip.
+fn normalize_tool_schemas(router: &mut ToolRouter<McpHandler>) {
+    for route in router.map.values_mut() {
+        let mut schema = serde_json::Value::Object(route.attr.input_schema.as_ref().clone());
+        if let Some(defs) = schema.get("$defs").and_then(|d| d.as_object()).cloned() {
+            inline_refs(&mut schema, &defs, 0);
+        }
+        strip_null_variants(&mut schema, 0);
+        let serde_json::Value::Object(mut object) = schema else {
+            unreachable!("schema root stays an object");
+        };
+        object.remove("$defs");
+        route.attr.input_schema = Arc::new(object);
+    }
+}
+
+/// Replace `{"$ref": "#/$defs/X", …siblings}` with X's schema merged under the
+/// siblings (siblings win — schemars puts the per-field doc there). Depth-capped:
+/// the arg types are small and non-recursive; a cycle would be a bug here, not a
+/// schema to honour.
+fn inline_refs(
+    value: &mut serde_json::Value,
+    defs: &serde_json::Map<String, serde_json::Value>,
+    depth: usize,
+) {
+    if depth > 16 {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            let resolved = map
+                .get("$ref")
+                .and_then(|r| r.as_str())
+                .and_then(|r| r.strip_prefix("#/$defs/"))
+                .and_then(|name| defs.get(name))
+                .and_then(|d| d.as_object())
+                .cloned();
+            if let Some(def) = resolved {
+                map.remove("$ref");
+                for (key, sub) in def {
+                    map.entry(key).or_insert(sub);
+                }
+            }
+            for sub in map.values_mut() {
+                inline_refs(sub, defs, depth + 1);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for sub in items {
+                inline_refs(sub, defs, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Strip the `null` variants schemars emits for `Option<…>` params:
+/// `"type": ["number", "null"]` and `anyOf: [X, {"type": "null"}]`. At least
+/// one MCP client (Claude Code) drops array-valued `type`s and `anyOf`
+/// wrappers when surfacing the schema, leaving the param untyped — the model
+/// then sends the value as a JSON *string* the server's serde rejects
+/// (observed live with `ramp_ms` and `loras`, session 4). Optionality already
+/// lives in `required`, and serde accepts an explicit null regardless of the
+/// schema, so the null variant carries nothing a tool-calling client needs.
+fn strip_null_variants(value: &mut serde_json::Value, depth: usize) {
+    if depth > 16 {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Array(types)) = map.get_mut("type") {
+                types.retain(|t| t != "null");
+                if let [only] = types.as_slice() {
+                    let only = only.clone();
+                    map.insert("type".to_owned(), only);
+                }
+            }
+            // `anyOf: [X, {"type": "null"}]` collapses to X merged under the
+            // field's own siblings (siblings win — the per-field doc is there,
+            // same rule as inline_refs).
+            let sole_branch = map.get("anyOf").and_then(|v| v.as_array()).and_then(|branches| {
+                let mut real = branches
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) != Some("null"));
+                match (real.next().and_then(|b| b.as_object()), real.next()) {
+                    (Some(only), None) if branches.len() > 1 => Some(only.clone()),
+                    _ => None,
+                }
+            });
+            if let Some(branch) = sole_branch {
+                map.remove("anyOf");
+                for (key, sub) in branch {
+                    map.entry(key).or_insert(sub);
+                }
+            }
+            for sub in map.values_mut() {
+                strip_null_variants(sub, depth + 1);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for sub in items {
+                strip_null_variants(sub, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tool_router]
 impl McpHandler {
     pub fn new(app: AppHandle) -> Self {
-        Self {
-            app,
-            tool_router: Self::tool_router(),
-        }
+        let mut tool_router = Self::tool_router();
+        normalize_tool_schemas(&mut tool_router);
+        Self { app, tool_router }
     }
 
     /// Move the crossfader — forwarded to the engine and recorded in the store
     /// exactly as the UI/MIDI `set_crossfade` command does, so the on-screen
     /// crossfader follows (the bidirectional projection).
-    #[tool(description = "Set the crossfader position (0 = deck A, 1 = deck B).")]
+    #[tool(description = "Set the crossfader position (0 = deck A, 1 = deck B). Optional \
+                          ramp_ms glides there engine-side (click-free, equal-power).")]
     async fn set_crossfade(
         &self,
-        Parameters(CrossfadeArgs { position }): Parameters<CrossfadeArgs>,
+        Parameters(CrossfadeArgs { position, ramp_ms }): Parameters<CrossfadeArgs>,
     ) -> String {
         // Clamp to the engine's range BEFORE recording, so a `lsdj://interface-state`
         // read reports what the audio actually does (the engine clamps too) — an agent
         // must not observe an out-of-range value it never hears (ADR-0020).
         let position = position.clamp(0.0, 1.0);
-        self.app.state::<Host>().set_crossfade(position);
+        let ramp_ms = ramp_ms.unwrap_or(0.0).clamp(0.0, MAX_RAMP_MS);
+        self.app
+            .state::<Host>()
+            .set_crossfade_ramped(position, ramp_ms);
+        // The store records the DESTINATION at once (the audio walks to it) —
+        // the UI fader jumps ahead of the glide, same as a ramped volume.
         self.app.state::<InterfaceStore>().set_crossfade(position);
-        format!("crossfade set to {position}")
+        if ramp_ms > 0.0 {
+            format!("crossfade gliding to {position} over {ramp_ms} ms")
+        } else {
+            format!("crossfade set to {position}")
+        }
     }
 
-    #[tool(description = "Set a deck's channel volume (0..1). deck 0 = A, 1 = B.")]
+    #[tool(description = "Set a deck's channel volume (0..1). deck 0 = A, 1 = B. Optional \
+                          ramp_ms glides there engine-side (a click-free linear fade).")]
     async fn set_volume(
         &self,
-        Parameters(DeckGainArgs { deck, gain }): Parameters<DeckGainArgs>,
+        Parameters(DeckGainArgs { deck, gain, ramp_ms }): Parameters<DeckGainArgs>,
     ) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
         let gain = gain.clamp(0.0, 1.0); // keep the store honest (see set_crossfade)
-        self.app.state::<Host>().set_volume(deck, gain);
+        let ramp_ms = ramp_ms.unwrap_or(0.0).clamp(0.0, MAX_RAMP_MS);
+        self.app.state::<Host>().set_volume_ramped(deck, gain, ramp_ms);
         self.app.state::<InterfaceStore>().set_volume(deck, gain);
-        format!("deck {deck} volume = {gain}")
+        if ramp_ms > 0.0 {
+            format!("deck {deck} volume gliding to {gain} over {ramp_ms} ms")
+        } else {
+            format!("deck {deck} volume = {gain}")
+        }
     }
 
     #[tool(description = "Set a deck's EQ band (low/mid/high) amount (0..1; 0.5 = flat).")]
@@ -426,10 +751,19 @@ impl McpHandler {
         format!("deck {deck} cue {}", if on { "on" } else { "off" })
     }
 
-    #[tool(description = "Start a realtime deck generating.")]
+    #[tool(
+        description = "Start a deck: a realtime deck starts generating; a playback deck \
+                       resumes its loaded track. deck 0 = A, 1 = B."
+    )]
     async fn deck_play(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
+        }
+        // A playback deck's PLAY drives the track, not the worker — route through
+        // the webview's mode-aware play(), like the on-air gesture.
+        if deck_mode(&self.app.state::<InterfaceStore>(), deck) == Some(PlayModeSnap::Playback) {
+            self.emit_deck_command(deck, "play", None);
+            return format!("deck {deck} resuming its loaded track");
         }
         // The same flow as the `deck_play` command: the store's atomic
         // start_transport is the idempotence guard (phase D) — a play on an
@@ -446,10 +780,19 @@ impl McpHandler {
         format!("deck {deck} playing")
     }
 
-    #[tool(description = "Stop a realtime deck.")]
+    #[tool(
+        description = "Stop a deck: a realtime deck stops generating; a playback deck \
+                       pauses its loaded track in place. deck 0 = A, 1 = B."
+    )]
     async fn deck_stop(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
+        }
+        // A playback deck's STOP pauses the track (pads stop with it) — the
+        // webview's mode-aware stop(), not the realtime worker's.
+        if deck_mode(&self.app.state::<InterfaceStore>(), deck) == Some(PlayModeSnap::Playback) {
+            self.emit_deck_command(deck, "stop", None);
+            return format!("deck {deck} pausing its loaded track");
         }
         self.app.state::<Host>().set_deck_playing(deck, false);
         self.app
@@ -457,6 +800,26 @@ impl McpHandler {
             .send(deck, &json!({ "type": "stop" }).to_string());
         self.app.state::<InterfaceStore>().set_playing(deck, false);
         format!("deck {deck} stopped")
+    }
+
+    /// The way back from `load_track`: the webview owns the unload flow
+    /// (`leavePlayback`), so this validates the mode and asks it to run — the
+    /// load-flow pattern in reverse.
+    #[tool(
+        description = "Eject a deck's loaded track and return the deck to the realtime \
+                       (live-generation) stream — the way back from load_track. A track \
+                       that was playing hands straight back to the live stream. \
+                       deck 0 = A, 1 = B."
+    )]
+    async fn eject(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        if deck_mode(&self.app.state::<InterfaceStore>(), deck) != Some(PlayModeSnap::Playback) {
+            return format!("deck {deck} is already live (realtime) — nothing to eject");
+        }
+        self.emit_deck_command(deck, "eject", None);
+        format!("ejecting deck {deck} — handing back to the realtime stream")
     }
 
     /// Set a hot-cue point on a playback deck's loaded track. Writes the store; the
@@ -693,12 +1056,45 @@ impl McpHandler {
         format!("deck {deck} prompt set to \"{prompt}\"")
     }
 
+    /// Observe the whole instrument: the same snapshot the `lsdj://interface-state`
+    /// resource serves, exposed as a tool because many MCP clients (Claude Code among
+    /// them) surface tools but not resources to the agent loop — without this the co-DJ
+    /// is blind. Read-only; no store write.
+    #[tool(
+        description = "Observe the whole instrument — returns the interface-state \
+                       snapshot (both decks, mixer, FX, style pads, cues, transport, \
+                       models) as JSON, the same data as the lsdj://interface-state \
+                       resource. Call it to see current state before and after a move. \
+                       Note: a deck's top-level `playing` covers the REALTIME stream \
+                       only; on a playback deck read `transport.playing`."
+    )]
+    async fn get_state(&self) -> String {
+        let snapshot = self.app.state::<InterfaceStore>().snapshot();
+        serde_json::to_string(&snapshot)
+            .unwrap_or_else(|e| format!("could not serialise the interface state: {e}"))
+    }
+
+    /// Run a blocking library scan off the async runtime. `SongLibrary`/
+    /// `SampleLibrary` reads take a lock and touch the filesystem; on a tokio
+    /// worker, concurrent scans serialised past the MCP client's timeout
+    /// (observed live: a batched `load_track` returned -32001).
+    async fn scan_library<T, F>(&self, scan: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&AppHandle) -> Result<T, String> + Send + 'static,
+    {
+        let app = self.app.clone();
+        tokio::task::spawn_blocking(move || scan(&app))
+            .await
+            .map_err(|e| format!("library scan task failed: {e}"))?
+    }
+
     #[tool(
         description = "List the generated songs/tracks available to load onto a deck — \
                        each has a `file` (pass to load_track) plus title + prompt."
     )]
     async fn list_songs(&self) -> String {
-        match self.app.state::<SongLibrary>().list() {
+        match self.scan_library(|app| app.state::<SongLibrary>().list()).await {
             Ok(entries) => serde_json::to_string(&entries)
                 .unwrap_or_else(|e| format!("could not serialise songs: {e}")),
             Err(e) => format!("could not list songs: {e}"),
@@ -710,10 +1106,29 @@ impl McpHandler {
                        pad — each has a `file` (pass to load_sample)."
     )]
     async fn list_samples(&self) -> String {
-        match self.app.state::<SampleLibrary>().list() {
+        match self.scan_library(|app| app.state::<SampleLibrary>().list()).await {
             Ok(entries) => serde_json::to_string(&entries)
                 .unwrap_or_else(|e| format!("could not serialise samples: {e}")),
             Err(e) => format!("could not list samples: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "List the installed LoRA style adapters for generation. Each has a \
+                       `name` (pass in generate_track / generate_sample `loras`) and a \
+                       `base`: \"medium\" adapters ride generate_track, \"small\" ones \
+                       ride generate_sample kind sfx/music."
+    )]
+    async fn list_loras(&self) -> String {
+        // Same blocking-fs rule as the library scans (finding #2).
+        let list = tokio::task::spawn_blocking(|| {
+            crate::loras::discover(&crate::loras::loras_dir())
+        })
+        .await;
+        match list {
+            Ok(adapters) => serde_json::to_string(&adapters)
+                .unwrap_or_else(|e| format!("could not serialise adapters: {e}")),
+            Err(e) => format!("could not list LoRA adapters: {e}"),
         }
     }
 
@@ -732,7 +1147,7 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        let entries = match self.app.state::<SongLibrary>().list() {
+        let entries = match self.scan_library(|app| app.state::<SongLibrary>().list()).await {
             Ok(entries) => entries,
             Err(e) => return format!("could not read the song library: {e}"),
         };
@@ -760,7 +1175,7 @@ impl McpHandler {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        let entries = match self.app.state::<SampleLibrary>().list() {
+        let entries = match self.scan_library(|app| app.state::<SampleLibrary>().list()).await {
             Ok(entries) => entries,
             Err(e) => return format!("could not read the sample library: {e}"),
         };
@@ -785,7 +1200,37 @@ impl McpHandler {
         );
     }
 
-    #[tool(description = "Seek a deck's loaded track to a position in seconds. deck 0 = A, 1 = B.")]
+    /// Tell the webview what an agent generation is doing (`mcp://generation`) —
+    /// a multi-second/minute proxy call is otherwise invisible in the UI, and the
+    /// co-DJ is a second operator the human should be able to watch. The Media
+    /// Explorer mirrors a pending row from `start` and retires it on `done`/`error`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_generation(
+        &self,
+        job: u64,
+        phase: &str,
+        kind: &str,
+        prompt: &str,
+        title: &str,
+        deck: Option<usize>,
+        one_shot: bool,
+    ) {
+        let _ = self.app.emit(
+            "mcp://generation",
+            json!({
+                "job": job,
+                "phase": phase,
+                "kind": kind,
+                "prompt": prompt,
+                "title": title,
+                "deck": deck,
+                "oneShot": one_shot,
+            }),
+        );
+    }
+
+    #[tool(description = "Seek a deck's loaded track to a position in seconds. Seeking \
+                          releases an active beat loop. deck 0 = A, 1 = B.")]
     async fn seek_track(&self, Parameters(SeekArgs { deck, seconds }): Parameters<SeekArgs>) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
@@ -823,7 +1268,9 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Beat-match (sync) a deck's track to the other deck's tempo. \
+        description = "Beat-match (sync) a deck's track to the other deck's tempo. Both \
+                       decks need a known BPM — a library track can carry `bpm: null` \
+                       (no analysis; see get_state), which cannot beat-match. \
                        deck 0 = A, 1 = B."
     )]
     async fn sync_deck(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {
@@ -834,7 +1281,8 @@ impl McpHandler {
         format!("deck {deck} syncing to the other deck")
     }
 
-    #[tool(description = "Set a beat loop on a deck's track (length in beats, e.g. 4). deck 0 = A, 1 = B.")]
+    #[tool(description = "Set a beat loop on a deck's track (length in beats, e.g. 4). A \
+                          later seek_track releases the loop. deck 0 = A, 1 = B.")]
     async fn beat_loop(&self, Parameters(BeatLoopArgs { deck, beats }): Parameters<BeatLoopArgs>) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
@@ -843,13 +1291,40 @@ impl McpHandler {
         format!("deck {deck} {beats}-beat loop")
     }
 
+    /// Fire a deck's loop/sample pad — the webview runs the exact pad-press gesture
+    /// (`toggleLoopPad`), so quantise, layering, and the pad UI all follow.
+    #[tool(
+        description = "Toggle a deck's loop/sample pad (0-based slot). A filled slot \
+                       plays or stops it (loops layer over the deck; one-shots fire \
+                       once); an EMPTY slot captures a freeze loop from the deck's live \
+                       stream. Slot contents are in get_state loopLabels. deck 0 = A, 1 = B."
+    )]
+    async fn toggle_pad(&self, Parameters(DeckPadArgs { deck, slot }): Parameters<DeckPadArgs>) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        let slots = self
+            .app
+            .state::<InterfaceStore>()
+            .snapshot()
+            .decks
+            .get(deck)
+            .map(|d| d.loop_labels.len())
+            .unwrap_or(0);
+        if slot >= slots {
+            return format!("invalid slot {slot} — deck {deck} has {slots} pad slots");
+        }
+        self.emit_deck_command(deck, "pad", Some(slot as f64));
+        format!("deck {deck} pad {slot} toggled")
+    }
+
     /// Bring a realtime deck on air (its audio reaches the master) or off air — the
     /// prep/primed gesture: it keeps generating but is audible only in the cue. Routed
     /// through the deck's own play/prime so the on-screen status + cue LED follow.
     #[tool(
-        description = "Bring a realtime deck on air (to the master) or off air (prep: it \
-                       keeps generating, audible only in the headphone cue). \
-                       deck 0 = A, 1 = B."
+        description = "Bring a realtime deck on air (to the master) or off air (prep: the \
+                       deck starts — or keeps — generating, audible only in the headphone \
+                       cue; no separate deck_play needed). deck 0 = A, 1 = B."
     )]
     async fn set_on_air(&self, Parameters(OnAirArgs { deck, on }): Parameters<OnAirArgs>) -> String {
         if !valid_deck(deck) {
@@ -871,30 +1346,53 @@ impl McpHandler {
         description = "Generate a short audio clip from a text prompt and save it to the \
                        samples library, where it appears in the Samples tab ready to load \
                        onto a deck. kind: \"sfx\" or \"music\" (Stable Audio 3), or \
-                       \"magenta\" (the Magenta pad renderer)."
+                       \"magenta\" (the Magenta pad renderer). Optional `loras` applies \
+                       installed style adapters (list_loras; sfx/music only)."
     )]
     async fn generate_sample(
         &self,
         Parameters(args): Parameters<GenerateSampleArgs>,
     ) -> String {
-        match self.generate_sample_inner(args).await {
+        let job = next_generation_job();
+        let title = pleasant_title();
+        let (kind, one_shot) = (args.kind, args.one_shot);
+        let prompt = args.prompt.clone();
+        self.emit_generation(job, "start", kind.as_str(), &prompt, &title, None, one_shot);
+        let result = self.generate_sample_inner(args, &title).await;
+        self.emit_generation(
+            job,
+            if result.is_ok() { "done" } else { "error" },
+            kind.as_str(),
+            &prompt,
+            &title,
+            None,
+            one_shot,
+        );
+        match result {
             Ok(message) | Err(message) => message,
         }
     }
 
     /// The fallible body of [`generate_sample`], so the proxy + save can use `?` and the
     /// tool flattens the result to one message.
-    async fn generate_sample_inner(&self, args: GenerateSampleArgs) -> Result<String, String> {
+    async fn generate_sample_inner(
+        &self,
+        args: GenerateSampleArgs,
+        title: &str,
+    ) -> Result<String, String> {
         let GenerateSampleArgs {
             prompt,
             seconds,
             kind,
             one_shot,
+            loras,
         } = args;
-        let wav = self.generate_clip(&prompt, seconds, kind.as_str()).await?;
+        let wav = self
+            .generate_clip(&prompt, seconds, kind.as_str(), &loras.unwrap_or_default())
+            .await?;
         let entry = self.app.state::<SampleLibrary>().record(
             NewSample {
-                title: prompt.clone(),
+                title: title.to_string(),
                 prompt: Some(prompt),
                 model: Some(kind.as_str().to_string()),
                 one_shot,
@@ -902,10 +1400,10 @@ impl McpHandler {
             &wav,
         )?;
         Ok(format!(
-            "generated a {} sample, saved to the samples library as {} (\"{}\")",
+            "generated a {} sample \"{}\", saved to the samples library as {}",
             kind.as_str(),
-            entry.file,
-            entry.title
+            entry.title,
+            entry.file
         ))
     }
 
@@ -914,7 +1412,13 @@ impl McpHandler {
     /// [`generate_track`] (track → songs), reusing the server's prompt/length
     /// validation. `magenta` routes to the Magenta renderer (`/api/render`, body
     /// `{prompt, seconds}`); the rest are Stable Audio 3 (`/api/generate`).
-    async fn generate_clip(&self, prompt: &str, seconds: f32, kind: &str) -> Result<Vec<u8>, String> {
+    async fn generate_clip(
+        &self,
+        prompt: &str,
+        seconds: f32,
+        kind: &str,
+        loras: &[LoraArg],
+    ) -> Result<Vec<u8>, String> {
         let port = self
             .app
             .state::<GenerationServer>()
@@ -927,9 +1431,19 @@ impl McpHandler {
             .build()
             .map_err(|e| format!("could not build the http client: {e}"))?;
         let (path, body) = if kind == "magenta" {
+            if !loras.is_empty() {
+                return Err(
+                    "the magenta engine does not take LoRA adapters — use kind \
+                     \"sfx\" or \"music\" (or generate_track)"
+                        .to_string(),
+                );
+            }
             ("/api/render", json!({ "prompt": prompt, "seconds": seconds }))
         } else {
-            ("/api/generate", generate_request_body(prompt, seconds, kind))
+            (
+                "/api/generate",
+                generate_request_body(prompt, seconds, kind, loras),
+            )
         };
         let response = client
             .post(format!("http://127.0.0.1:{port}{path}"))
@@ -953,10 +1467,19 @@ impl McpHandler {
     /// Generate a full track and load it onto a deck (the user's "compose a track and
     /// drop it on a deck"). Saves to the songs library, then asks the webview to load
     /// it — the same path as `load_track`, so the deck flips to playback and shows it.
+    ///
+    /// Async (#8): answers immediately with a job id and spawns the work — a full
+    /// track generates at ~2.3 s of audio per wall-clock second, which outlives MCP
+    /// client timeouts (a 240 s track died at the client's 60 s live). The spawned
+    /// task lands its result in [`GenerationJobs`] for `generation_status`.
     #[tool(
         description = "Generate a full track (Stable Audio 3, long-form) from a text \
                        prompt, save it to the songs library, and load it onto a deck \
-                       (flipping it to playback). deck 0 = A, 1 = B."
+                       (flipping it to playback). Returns immediately with a job id — \
+                       generation runs in the background at roughly 2.3 s of audio per \
+                       second, so keep mixing and poll generation_status (or watch \
+                       get_state for the deck to flip). Optional `loras` applies \
+                       installed style adapters (see list_loras). deck 0 = A, 1 = B."
     )]
     async fn generate_track(
         &self,
@@ -964,14 +1487,53 @@ impl McpHandler {
             deck,
             prompt,
             seconds,
+            loras,
         }): Parameters<GenerateTrackArgs>,
     ) -> String {
         if !valid_deck(deck) {
             return format!("invalid deck {deck}");
         }
-        match self.generate_track_inner(deck, prompt, seconds).await {
-            Ok(message) | Err(message) => message,
-        }
+        let job = next_generation_job();
+        let title = pleasant_title();
+        self.emit_generation(job, "start", "track", &prompt, &title, Some(deck), false);
+        self.app
+            .state::<GenerationJobs>()
+            .begin(job, "track", &title, &prompt, Some(deck));
+        let handler = self.clone();
+        let loras = loras.unwrap_or_default();
+        let lora_merge = LORA_MERGE_ETA_SECONDS * loras.len() as u32;
+        let spawned_title = title.clone();
+        let spawned_prompt = prompt.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = handler
+                .generate_track_inner(deck, spawned_prompt.clone(), seconds, &spawned_title, &loras)
+                .await;
+            handler.emit_generation(
+                job,
+                if result.is_ok() { "done" } else { "error" },
+                "track",
+                &spawned_prompt,
+                &spawned_title,
+                Some(deck),
+                false,
+            );
+            handler.app.state::<GenerationJobs>().finish(job, result);
+        });
+        let eta = (seconds / 2.3).round() as u32 + lora_merge;
+        format!(
+            "track generation started as job {job}: \"{title}\" ({seconds:.0}s) will load \
+             onto deck {deck} when done, roughly {eta}s from now. Keep mixing — poll \
+             generation_status to see it land."
+        )
+    }
+
+    #[tool(
+        description = "Status of this app run's generation jobs (generate_track runs in \
+                       the background): running/done/failed per job with elapsed seconds \
+                       and, once finished, what loaded where. No arguments."
+    )]
+    async fn generation_status(&self) -> String {
+        self.app.state::<GenerationJobs>().report()
     }
 
     /// The fallible body of [`generate_track`].
@@ -980,11 +1542,13 @@ impl McpHandler {
         deck: usize,
         prompt: String,
         seconds: f32,
+        title: &str,
+        loras: &[LoraArg],
     ) -> Result<String, String> {
-        let wav = self.generate_clip(&prompt, seconds, "track").await?;
+        let wav = self.generate_clip(&prompt, seconds, "track", loras).await?;
         let entry = self.app.state::<SongLibrary>().record(
             NewSong {
-                title: prompt.clone(),
+                title: title.to_string(),
                 prompt,
                 model: "track".to_string(),
                 recipe: None,
@@ -1017,9 +1581,10 @@ impl ServerHandler for McpHandler {
             .enable_resources()
             .build();
         info.instructions = Some(
-            "LSDJ — a generative DJ instrument. Read the `lsdj://interface-state` \
-             resource to observe the decks, mixer, and FX; call the tools to mix, drive \
-             the decks, and generate audio into the samples library as a co-DJ."
+            "LSDJ — a generative DJ instrument. Call the `get_state` tool (or read the \
+             `lsdj://interface-state` resource) to observe the decks, mixer, and FX; call \
+             the other tools to mix, drive the decks, and generate audio into the samples \
+             library as a co-DJ."
                 .to_string(),
         );
         info
@@ -1382,18 +1947,214 @@ fn generate_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        constant_time_eq, generate_request_body, generate_token, load_or_generate_token,
-        save_token,
+        constant_time_eq, generate_request_body, generate_token, inline_refs,
+        load_or_generate_token, normalize_tool_schemas, pleasant_title, save_token,
+        strip_null_variants, GenerationJobs, LoraArg, McpHandler, MAX_TRACKED_JOBS,
     };
+    use serde_json::json;
+
+    #[test]
+    fn inline_refs_flattens_local_defs_keeping_ref_siblings() {
+        // The set_style shape that failed live: a $ref'd struct param whose type
+        // information a client stripped along with $defs. After inlining, the
+        // schema must carry the full shape with NO $ref left — and the $ref's
+        // sibling description (the per-field doc) must win over the def's own.
+        let defs = json!({
+            "PadPoint": {
+                "description": "the type doc",
+                "type": "object",
+                "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+                "required": ["x", "y"]
+            },
+            "Band": { "type": "string", "enum": ["low", "mid", "high"] }
+        });
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "cursor": { "$ref": "#/$defs/PadPoint", "description": "the field doc" },
+                "targets": { "type": "array", "items": { "$ref": "#/$defs/PadPoint" } },
+                "band": { "$ref": "#/$defs/Band" }
+            }
+        });
+        inline_refs(&mut schema, defs.as_object().unwrap(), 0);
+        let cursor = &schema["properties"]["cursor"];
+        assert_eq!(cursor["type"], "object");
+        assert_eq!(cursor["description"], "the field doc");
+        assert!(cursor.get("$ref").is_none());
+        assert_eq!(cursor["properties"]["x"]["type"], "number");
+        // Nested position: the array's items inline too.
+        let items = &schema["properties"]["targets"]["items"];
+        assert!(items.get("$ref").is_none());
+        assert_eq!(items["required"], json!(["x", "y"]));
+        // Enum defs surface their values — the client can finally see them.
+        assert_eq!(schema["properties"]["band"]["enum"], json!(["low", "mid", "high"]));
+    }
+
+    #[test]
+    fn strip_null_variants_types_optional_params() {
+        // The session-4 live failure: schemars emits Option<…> params as
+        // draft-2020-12 nullable shapes, a client drops the array-valued
+        // `type`/`anyOf`, and the untyped param arrives as a string.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "ramp_ms": { "format": "float", "type": ["number", "null"] },
+                "loras": {
+                    "items": {
+                        "type": "object",
+                        "properties": { "sample": { "type": ["string", "null"] } }
+                    },
+                    "type": ["array", "null"]
+                },
+                "mode": {
+                    "anyOf": [
+                        { "description": "the type doc", "enum": ["chord", "onset"], "type": "string" },
+                        { "type": "null" }
+                    ],
+                    "description": "the field doc"
+                }
+            }
+        });
+        strip_null_variants(&mut schema, 0);
+        assert_eq!(schema["properties"]["ramp_ms"]["type"], "number");
+        assert_eq!(schema["properties"]["loras"]["type"], "array");
+        // Nested optional fields normalise too.
+        let sample = &schema["properties"]["loras"]["items"]["properties"]["sample"];
+        assert_eq!(sample["type"], "string");
+        // The Option anyOf collapses onto the field; the per-field doc wins.
+        let mode = &schema["properties"]["mode"];
+        assert!(mode.get("anyOf").is_none());
+        assert_eq!(mode["type"], "string");
+        assert_eq!(mode["enum"], json!(["chord", "onset"]));
+        assert_eq!(mode["description"], "the field doc");
+    }
+
+    #[test]
+    fn normalized_schemas_carry_no_client_hostile_shapes() {
+        // Walk every real tool schema post-normalisation: no $ref/$defs, no
+        // nullable type array, no Option anyOf — the shapes MCP clients have
+        // been observed to strip (sessions 3 and 4).
+        fn check(tool: &str, value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    assert!(
+                        !map.contains_key("$ref") && !map.contains_key("$defs"),
+                        "{tool}: $ref/$defs survived normalisation"
+                    );
+                    if let Some(types) = map.get("type").and_then(|t| t.as_array()) {
+                        assert!(
+                            !types.iter().any(|t| t == "null"),
+                            "{tool}: nullable type array survived"
+                        );
+                    }
+                    if let Some(branches) = map.get("anyOf").and_then(|b| b.as_array()) {
+                        assert!(
+                            !branches
+                                .iter()
+                                .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("null")),
+                            "{tool}: Option anyOf survived"
+                        );
+                    }
+                    map.values().for_each(|sub| check(tool, sub));
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|sub| check(tool, sub)),
+                _ => {}
+            }
+        }
+        let mut router = McpHandler::tool_router();
+        normalize_tool_schemas(&mut router);
+        for route in router.map.values() {
+            let schema = serde_json::Value::Object(route.attr.input_schema.as_ref().clone());
+            check(route.attr.name.as_ref(), &schema);
+        }
+        // And the live-failure params specifically end up plainly typed.
+        let schema_of = |name: &str| {
+            let route = router.map.values().find(|r| r.attr.name == name).unwrap();
+            serde_json::Value::Object(route.attr.input_schema.as_ref().clone())
+        };
+        assert_eq!(schema_of("set_crossfade")["properties"]["ramp_ms"]["type"], "number");
+        assert_eq!(schema_of("generate_track")["properties"]["loras"]["type"], "array");
+    }
+
+    #[test]
+    fn generation_jobs_report_running_then_finished() {
+        let jobs = GenerationJobs::default();
+        assert!(jobs.report().starts_with("no generation jobs"));
+        jobs.begin(7, "track", "Velvet Mirage", "hyperfocus chiptune", Some(1));
+        let running: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        assert_eq!(running["jobs"][0]["job"], 7);
+        assert_eq!(running["jobs"][0]["status"], "running");
+        assert_eq!(running["jobs"][0]["deck"], 1);
+        assert_eq!(running["jobs"][0]["detail"], json!(null));
+        jobs.finish(7, Ok("loaded onto deck 1".to_string()));
+        let done: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        assert_eq!(done["jobs"][0]["status"], "done");
+        assert_eq!(done["jobs"][0]["detail"], "loaded onto deck 1");
+        jobs.begin(8, "track", "Neon Halo", "acid techno", Some(0));
+        jobs.finish(8, Err("generation failed (500)".to_string()));
+        // Newest first, failures surfaced as such.
+        let both: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        assert_eq!(both["jobs"][0]["job"], 8);
+        assert_eq!(both["jobs"][0]["status"], "failed");
+        assert_eq!(both["jobs"][1]["job"], 7);
+    }
+
+    #[test]
+    fn generation_jobs_evict_finished_before_running() {
+        let jobs = GenerationJobs::default();
+        // Job 0 finished, the rest still running — past the cap the finished
+        // one goes; a running job must never be dropped mid-flight.
+        for id in 0..MAX_TRACKED_JOBS as u64 {
+            jobs.begin(id, "track", "t", "p", None);
+        }
+        jobs.finish(0, Ok("done".to_string()));
+        jobs.begin(99, "track", "t", "p", None);
+        let report: serde_json::Value = serde_json::from_str(&jobs.report()).unwrap();
+        let ids: Vec<_> = report["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["job"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids.len(), MAX_TRACKED_JOBS);
+        assert!(!ids.contains(&0), "the finished job should have been evicted");
+        assert!(ids.contains(&99) && ids.contains(&1));
+    }
+
+    #[test]
+    fn pleasant_title_is_two_words_not_the_prompt() {
+        let title = pleasant_title();
+        assert_eq!(title.split(' ').count(), 2);
+        assert!(title.len() < 30); // never a runaway prompt-length name
+    }
 
     #[test]
     fn generate_body_matches_the_server_contract() {
         // The keys + the wire `kind` value must match what `/api/generate` validates.
-        let body = generate_request_body("warm pad", 4.0, "music");
+        let body = generate_request_body("warm pad", 4.0, "music", &[]);
         assert_eq!(body["prompt"], "warm pad");
         assert_eq!(body["seconds"], 4.0);
         assert_eq!(body["kind"], "music");
-        assert_eq!(generate_request_body("epic", 60.0, "track")["kind"], "track");
+        // No adapters → no `loras` key at all (the server treats absent and [] alike,
+        // but absent is the documented no-LoRA shape).
+        assert!(body.get("loras").is_none());
+        assert_eq!(
+            generate_request_body("epic", 60.0, "track", &[])["kind"],
+            "track"
+        );
+
+        // With adapters the stack serialises as the server's `loras[]` contract.
+        let stacked = generate_request_body(
+            "chiptune",
+            30.0,
+            "track",
+            &[LoraArg {
+                name: "medium/zentai-chiptune".to_string(),
+                strength: 1.2,
+            }],
+        );
+        assert_eq!(stacked["loras"][0]["name"], "medium/zentai-chiptune");
+        assert_eq!(stacked["loras"][0]["strength"], 1.2f32);
     }
 
     #[test]

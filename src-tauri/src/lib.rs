@@ -767,7 +767,9 @@ pub fn run() {
             // The native MCP server (ADR-0020 Phase 2): an external agent as a
             // co-DJ. Always on, loopback-only, token-guarded; its tools mutate the
             // same managed state the IPC commands do. Reaches that state through the
-            // cloned AppHandle.
+            // cloned AppHandle. The job registry is app-wide so a reconnecting MCP
+            // session still sees generations the previous session started.
+            app.manage(mcp::GenerationJobs::default());
             app.manage(mcp::McpServer::start(app.handle().clone()));
             app.manage(IdleHandles(Mutex::new(idle_handles)));
             Ok(())

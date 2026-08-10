@@ -248,10 +248,24 @@ impl Engine {
         }
     }
 
+    /// Milliseconds → whole frames at [`SAMPLE_RATE`], for the ramped control
+    /// moves (negative input snaps: 0 frames).
+    fn ramp_ms_to_frames(ramp_ms: f32) -> u32 {
+        (ramp_ms.max(0.0) / 1000.0 * SAMPLE_RATE as f32).round() as u32
+    }
+
     /// Set the crossfader position in `[0, 1]` (0 = deck A, 1 = deck B). Non-RT
     /// control; recomputes the equal-power mix gains the RT path reads.
     pub fn set_crossfade(&mut self, position: f32) {
         self.graph.set_crossfade(position);
+    }
+
+    /// Like [`Engine::set_crossfade`], but glide there over `ramp_ms`
+    /// milliseconds (0 = instant): the RT path walks the position linearly per
+    /// frame and re-applies the equal-power law, so an agent's fade is a
+    /// click-free blend instead of audible steps (MCP finding #10).
+    pub fn set_crossfade_ramped(&mut self, position: f32, ramp_ms: f32) {
+        self.graph.set_crossfade_ramped(position, Self::ramp_ms_to_frames(ramp_ms));
     }
 
     /// Set a deck's EQ `band` knob value in `[0, 1]` (0 = kill, 0.5 = flat,
@@ -280,6 +294,16 @@ impl Engine {
     pub fn set_volume(&mut self, deck_index: usize, gain: f32) {
         assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
         self.graph.set_volume(deck_index, gain);
+    }
+
+    /// Like [`Engine::set_volume`], but glide there linearly over `ramp_ms`
+    /// milliseconds (0 = instant) — MCP finding #10.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT` (a caller programming error).
+    pub fn set_volume_ramped(&mut self, deck_index: usize, gain: f32, ramp_ms: f32) {
+        assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
+        self.graph.set_volume_ramped(deck_index, gain, Self::ramp_ms_to_frames(ramp_ms));
     }
 
     /// Select a deck's Color FX effect (ADR-0008). The insert sits post-EQ,
