@@ -62,6 +62,42 @@ describe('Knob', () => {
     expect(onChange).toHaveBeenCalledWith(0.8)
   })
 
+  it('uses a precise relative pointer drag independent of the dial width', () => {
+    const onChange = vi.fn()
+    const { container } = render(
+      <Knob
+        label="LoRA strength"
+        value={1}
+        min={0}
+        max={2}
+        step={0.25}
+        size="s"
+        onChange={onChange}
+      />,
+    )
+    const dial = container.querySelector('.ui-knob__dial')
+    if (!(dial instanceof HTMLElement)) throw new Error('dial not rendered')
+
+    fireEvent.pointerDown(dial, {
+      pointerId: 1,
+      pointerType: 'mouse',
+      button: 0,
+      clientY: 100,
+    })
+    // Four pixels used to cover more than one LoRA step on the 28 px native
+    // range. It should now be too small to move the value at all.
+    fireEvent.pointerMove(dial, { pointerId: 1, clientY: 96 })
+    expect(onChange).not.toHaveBeenCalled()
+
+    fireEvent.pointerMove(dial, { pointerId: 1, clientY: 80 })
+    fireEvent.pointerMove(dial, { pointerId: 1, clientY: 60 })
+    expect(onChange.mock.calls).toEqual([[1.25], [1.5]])
+
+    fireEvent.pointerUp(dial, { pointerId: 1 })
+    fireEvent.pointerMove(dial, { pointerId: 1, clientY: 20 })
+    expect(onChange).toHaveBeenCalledTimes(2)
+  })
+
   it('resets to the centre of the range on double-click', () => {
     const onChange = vi.fn()
     const { getByLabelText } = render(
