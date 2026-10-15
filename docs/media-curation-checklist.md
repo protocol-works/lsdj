@@ -52,10 +52,11 @@ the drag-and-drop that jsdom cannot exercise.
 
 - [ ] "+ New playlist" in the source column, name it, Enter: it appears
       selected and empty with the hint text.
-- [ ] Drag a row by its name onto the playlist in the column: the target lights
+- [ ] Drag a row (anywhere on it) onto the playlist in the column: the target lights
       while hovering; on drop the count increments. Drop the same row again: no
       duplicate.
-- [ ] Select the playlist: rows appear in playlist order. Drag a row above
+- [ ] Select the playlist: rows appear in playlist order with a ⋮⋮ grip at
+      the left. Drag a row above
       another: a drop-indicator line shows between rows; the order updates and
       survives a relaunch.
 - [ ] In the playlist, ✕ on a row removes it from the playlist only; the song is

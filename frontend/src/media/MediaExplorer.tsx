@@ -2167,6 +2167,20 @@ export function MediaExplorer({
                         ? ' media__item--highlighted'
                         : ''
                     }${played ? ' media__item--played' : ''}${dropSide}`}
+                    // A saved song drags as a whole row — onto a playlist, or within one.
+                    // The row, not the name button: WebKit ignores `draggable` on form
+                    // controls, so a button-sourced drag never starts in the WKWebView.
+                    draggable={fileOf(track) != null}
+                    onDragStart={(event) => {
+                      const file = fileOf(track)
+                      if (file == null) return
+                      event.dataTransfer.setData('text/plain', file)
+                      event.dataTransfer.effectAllowed = 'copyMove'
+                    }}
+                    onDragEnd={() => {
+                      setDropSource(null)
+                      setDropRow(null)
+                    }}
                     // Outside a playlist view nothing is accepted (no preventDefault).
                     onDragOver={(event) => {
                       if (playlistFile == null) return
@@ -2193,6 +2207,18 @@ export function MediaExplorer({
                       )
                     }}
                   >
+                    {/* The reorder affordance: the whole row drags, the grip says so.
+                        Only while the stored order is showing — a rating/title sort is a
+                        view, and Move up/down are disabled there too. */}
+                    {playlistFile != null && playlistSort === 'playlist' && (
+                      <span
+                        className="media__grip"
+                        aria-hidden="true"
+                        title={t('media.playlists.reorderHint')}
+                      >
+                        ⋮⋮
+                      </span>
+                    )}
                     <span className="media__name">
                       {track.state === 'pending' && (
                         <span className="media__spinner" aria-hidden="true" />
@@ -2213,17 +2239,6 @@ export function MediaExplorer({
                           aria-current={track.id === highlightedReadyId}
                           onClick={() => setHighlight(ready.indexOf(track))}
                           onDoubleClick={() => setEditingId(track.id)}
-                          // A saved song drags by its name onto a playlist (or within one).
-                          draggable={track.file != null}
-                          onDragStart={(event) => {
-                            if (track.file == null) return
-                            event.dataTransfer.setData('text/plain', track.file)
-                            event.dataTransfer.effectAllowed = 'copyMove'
-                          }}
-                          onDragEnd={() => {
-                            setDropSource(null)
-                            setDropRow(null)
-                          }}
                         >
                           <span className="media__name-text">{track.title}</span>
                         </button>

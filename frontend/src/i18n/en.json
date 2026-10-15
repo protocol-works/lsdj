@@ -115,7 +115,8 @@
       "addNew": "New playlist",
       "none": "No playlists yet — name one below.",
       "removeFrom": "Remove {{name}} from {{playlist}}",
-      "failed": "Couldn't save playlist {{name}}: {{message}}"
+      "failed": "Couldn't save playlist {{name}}: {{message}}",
+      "reorderHint": "Drag to reorder, or use ⋯ → Move up / Move down"
     },
     "generate": {
       "title": "Title",

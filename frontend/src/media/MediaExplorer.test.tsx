@@ -2365,16 +2365,33 @@ describe('library curation', () => {
       expect(screen.queryByRole('menuitem', { name: 'Add to playlist…' })).toBeNull()
     })
 
-    it('drags a song by its name: dragstart carries the file', async () => {
+    it('drags a saved song as a whole row: dragstart carries the file', async () => {
       playlistShell([set])
       renderExplorer()
       await openGenerate('Gamma')
       const transfer = dataTransfer('')
-      fireEvent.dragStart(screen.getByRole('button', { name: 'Select Beta' }), {
-        dataTransfer: transfer,
-      })
-      expect(screen.getByRole('button', { name: 'Select Beta' })).toHaveAttribute('draggable', 'true')
+      const row = screen.getByRole('button', { name: 'Select Beta' }).closest('li')!
+      fireEvent.dragStart(row, { dataTransfer: transfer })
+      // The row is the drag source — WebKit ignores `draggable` on a button.
+      expect(row).toHaveAttribute('draggable', 'true')
+      expect(screen.getByRole('button', { name: 'Select Beta' })).not.toHaveAttribute('draggable')
       expect(transfer.setData).toHaveBeenCalledWith('text/plain', 'b.wav')
+    })
+
+    it('shows a reorder grip only in a playlist shown in its stored order', async () => {
+      playlistShell([set])
+      renderExplorer()
+      await openGenerate('Gamma')
+      expect(document.querySelectorAll('.media__grip')).toHaveLength(0)
+      await openPlaylist('Set')
+      expect(document.querySelectorAll('.media__grip')).toHaveLength(3)
+      expect(document.querySelector('.media__grip')).toHaveAttribute(
+        'title',
+        'Drag to reorder, or use ⋯ → Move up / Move down',
+      )
+      // A rating/title sort is a view of the playlist, not its order: no grip.
+      fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'title' } })
+      expect(document.querySelectorAll('.media__grip')).toHaveLength(0)
     })
 
     it('a drop on a playlist in the column appends the song once', async () => {

@@ -314,6 +314,21 @@
   box-shadow: inset 0 -2px 0 var(--color-accent);
 }
 
+/* The reorder grip at a playlist row's leading edge. The whole row is the drag
+   source; the grip is the visible promise that it moves. */
+.media__grip {
+  flex: none;
+  cursor: grab;
+  color: var(--color-text-silkscreen);
+  font-size: var(--text-s);
+  line-height: 1;
+  user-select: none;
+}
+
+.media__item:active .media__grip {
+  cursor: grabbing;
+}
+
 @media (max-width: 52rem) {
   .media__header-end,
   .media__header-actions {
