@@ -45,7 +45,9 @@ Deck 0 = A, deck 1 = B. Each deck is in one of two modes (`get_state`
 
 - **realtime** — a Magenta RT model streams endlessly, steered by the style
   pad (`set_style`, `set_style_cursor`, `set_prompt`), held notes
-  (`set_notes`), drum conditioning (`set_drums`), and `set_model`. Bring it
+  (`set_notes`), drum conditioning (`set_drums`), live generation
+  (`set_generation`: temperature, top_k, prompt and note adherence, as the
+  performance drawer's sliders), and `set_model`. Bring it
   to the master with `set_on_air` (off-air = prep: it keeps generating,
   audible only in the headphone cue). Steering changes are heard once the
   buffered audio drains (a few seconds); note steering resets on
@@ -95,6 +97,18 @@ deck's live stream. Slot contents are in `get_state` `loopLabels`.
   "strength": 1.0}]` (max 4, strength 0–4, ~1 = as trained). Adapters are
   per-base-model: `medium/…` adapters ride `generate_track` only, `small/…`
   ride `generate_sample` sfx/music; the `magenta` engine takes none.
+
+## Curation
+
+`list_songs` / `list_samples` rows carry the DJ's own curation signals:
+`rating` (1–5, absent when unrated) and `tags` (their words for the
+material, e.g. `banger`, `deep-house`). Prefer higher-rated material, and
+when asked for a vibe, honour matching tags before guessing from prompts.
+`rate_song` / `rate_sample(file, rating)` set a rating (omit `rating` to
+clear) — only when the DJ asks. `list_playlists` shows their sets;
+`save_playlist(name, files)` creates or replaces one with the whole ordered
+list of song files (e.g. five top-rated tracks, warm-up to peak), and it
+appears in the Media Explorer as you write it.
 
 ## A clean transition (A playing, B incoming)
 

@@ -41,6 +41,18 @@ pub struct SampleEntry {
     /// loops. Defaulted so an older/partial registry row stays loadable.
     #[serde(default)]
     pub one_shot: bool,
+    /// The DJ's 1–5 star rating; absent when unrated, so old rows stay readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<u8>,
+    /// The DJ's own normalised words for the sample (`library::normalise_tags`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl library::RegistryEntry for SampleEntry {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 /// The metadata the webview sends with a sample to persist (deck pad / composed
@@ -117,6 +129,8 @@ impl SampleLibrary {
             prompt: new.prompt,
             model: new.model,
             one_shot: new.one_shot,
+            rating: None,
+            tags: Vec::new(),
         };
         let mut entries: Vec<SampleEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != file);
@@ -142,6 +156,28 @@ impl SampleLibrary {
         library::save_registry(&self.dir, &entries)?;
         Ok(())
     }
+
+    /// Set or clear (`None`) a sample's 1–5 star rating; returns the updated row.
+    pub fn rate(&self, name: &str, rating: Option<u8>) -> Result<SampleEntry, String> {
+        library::validate_rating(rating)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| e.rating = rating)
+    }
+
+    /// Change a sample's display title, never its file (see
+    /// [`crate::songs::SongLibrary::rename`]). Returns the updated row.
+    pub fn rename(&self, name: &str, title: &str) -> Result<SampleEntry, String> {
+        let title = library::validate_title(title)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| e.title = title)
+    }
+
+    /// Replace a sample's tags with the normalised `tags`; returns the updated row.
+    pub fn tag(&self, name: &str, tags: Vec<String>) -> Result<SampleEntry, String> {
+        let tags = library::normalise_tags(&tags)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| e.tags = tags)
+    }
 }
 
 /// Reconcile a loaded registry against the filenames on disk: keep known entries (in
@@ -163,6 +199,8 @@ fn reconcile(existing: Vec<SampleEntry>, disk: &[String]) -> Vec<SampleEntry> {
                 prompt: None,
                 model: None,
                 one_shot: false,
+                rating: None,
+                tags: Vec::new(),
             });
         }
     }
@@ -180,6 +218,8 @@ mod tests {
             prompt: model.map(|_| "a prompt".to_string()),
             model: model.map(str::to_string),
             one_shot,
+            rating: None,
+            tags: Vec::new(),
         }
     }
 
@@ -220,5 +260,58 @@ mod tests {
             serde_json::from_str(r#"{"file":"x.wav","title":"x","prompt":null,"model":"freeze"}"#)
                 .expect("row without oneShot deserialises");
         assert!(!row.one_shot);
+    }
+
+    #[test]
+    fn rate_rename_and_tag_round_trip_and_reject_bad_input() {
+        let dir =
+            std::env::temp_dir().join(format!("lsdj-sample-curate-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let samples = SampleLibrary::new(dir.clone());
+        samples
+            .record(
+                NewSample {
+                    title: "Riff".to_string(),
+                    prompt: None,
+                    model: Some("freeze".to_string()),
+                    one_shot: true,
+                },
+                b"RIFF test bytes",
+            )
+            .unwrap();
+        samples.rate("Riff.wav", Some(2)).unwrap();
+        samples.rename("Riff.wav", "Gritty riff").unwrap();
+        samples.tag("Riff.wav", vec!["Drone".to_string()]).unwrap();
+        assert!(samples.rate("Riff.wav", Some(6)).is_err());
+        assert!(samples.rename("Riff.wav", "a\nb").is_err());
+        assert!(samples.tag("missing.wav", vec![]).is_err());
+        drop(samples);
+
+        let rows = SampleLibrary::new(dir.clone()).list().unwrap();
+        assert_eq!(rows[0].file, "Riff.wav");
+        assert_eq!(rows[0].title, "Gritty riff");
+        assert_eq!(rows[0].rating, Some(2));
+        assert_eq!(rows[0].tags, ["drone"]);
+        assert!(
+            rows[0].one_shot,
+            "curation leaves the rest of the row alone"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reconcile_keeps_rating_and_tags_and_old_rows_default_them() {
+        let mut rated = entry("pad.wav", Some("music"), false);
+        rated.rating = Some(1);
+        rated.tags = vec!["drone".to_string()];
+        assert_eq!(
+            reconcile(vec![rated.clone()], &["pad.wav".to_string()]),
+            vec![rated]
+        );
+        let legacy: SampleEntry =
+            serde_json::from_str(r#"{"file":"x.wav","title":"x","prompt":null,"model":"freeze"}"#)
+                .unwrap();
+        assert_eq!(legacy.rating, None);
+        assert!(legacy.tags.is_empty());
     }
 }

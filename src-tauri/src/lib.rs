@@ -48,6 +48,7 @@ mod loras;
 mod mcp;
 mod midi;
 mod models;
+mod playlists;
 mod samples;
 mod settings;
 mod sidecar;
@@ -803,11 +804,21 @@ pub fn run() {
             commands::save_generated_song,
             commands::read_generated_song,
             commands::delete_generated_song,
+            commands::rate_generated_song,
+            commands::rename_generated_song,
+            commands::tag_generated_song,
+            commands::list_playlists,
+            commands::save_playlist,
+            commands::rename_playlist,
+            commands::delete_playlist,
             commands::open_songs_folder,
             commands::list_generated_samples,
             commands::save_generated_sample,
             commands::read_generated_sample,
             commands::delete_generated_sample,
+            commands::rate_generated_sample,
+            commands::rename_generated_sample,
+            commands::tag_generated_sample,
             commands::open_samples_folder,
             commands::save_loop_slot,
             commands::load_track_file,

@@ -22,6 +22,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::library;
+use crate::playlists::{self, Playlist};
 
 /// A LoRA slot captured in the effective song-generation request.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -76,6 +77,18 @@ pub struct SongEntry {
     /// and shape before offering recall.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<serde_json::Value>,
+    /// The DJ's 1–5 star rating; absent when unrated, so old rows stay readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<u8>,
+    /// The DJ's own normalised words for the take (`library::normalise_tags`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl library::RegistryEntry for SongEntry {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 /// The metadata the webview sends with a freshly composed take. The WAV bytes ride in
@@ -155,6 +168,8 @@ impl SongLibrary {
             prompt: Some(new.prompt),
             model: Some(new.model),
             recipe,
+            rating: None,
+            tags: Vec::new(),
         };
         let mut entries: Vec<SongEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != file);
@@ -178,7 +193,80 @@ impl SongLibrary {
         let mut entries: Vec<SongEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != name);
         library::save_registry(&self.dir, &entries)?;
-        Ok(())
+        playlists::strip(&self.dir, name, title_lookup(&entries))
+    }
+
+    /// Set or clear (`None`) a song's 1–5 star rating; returns the updated row.
+    pub fn rate(&self, name: &str, rating: Option<u8>) -> Result<SongEntry, String> {
+        library::validate_rating(rating)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| e.rating = rating)
+    }
+
+    /// Change a song's display title — never its file, the identity everything
+    /// else holds (curation plan, decision 6). Returns the updated row.
+    pub fn rename(&self, name: &str, title: &str) -> Result<SongEntry, String> {
+        let title = library::validate_title(title)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| e.title = title)
+    }
+
+    /// Replace a song's tags with the normalised `tags`; returns the updated row.
+    pub fn tag(&self, name: &str, tags: Vec<String>) -> Result<SongEntry, String> {
+        let tags = library::normalise_tags(&tags)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| e.tags = tags)
+    }
+
+    /// Every playlist, reconciled against the songs on disk.
+    pub fn list_playlists(&self) -> Result<Vec<Playlist>, String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        playlists::list(&self.dir, &self.disk()?)
+    }
+
+    /// Create or replace a playlist with exactly `files` — the one write path for
+    /// create, add, remove, and reorder, so the webview sends the whole list and
+    /// there is no per-operation race.
+    pub fn save_playlist(&self, name: &str, files: Vec<String>) -> Result<Playlist, String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let entries: Vec<SongEntry> = library::load_registry(&self.dir);
+        playlists::save(
+            &self.dir,
+            name,
+            files,
+            &self.disk()?,
+            title_lookup(&entries),
+        )
+    }
+
+    /// Rename a playlist; a name already taken is refused.
+    pub fn rename_playlist(&self, from: &str, to: &str) -> Result<Playlist, String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        playlists::rename(&self.dir, from, to, &self.disk()?)
+    }
+
+    /// Move a playlist to the OS Trash; its songs stay.
+    pub fn delete_playlist(&self, name: &str) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        playlists::delete(&self.dir, name)
+    }
+
+    /// The audio files in the songs folder, created first so a fresh install lists
+    /// cleanly.
+    fn disk(&self) -> Result<Vec<String>, String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| format!("cannot create songs folder: {e}"))?;
+        library::audio_files(&self.dir)
+    }
+}
+
+/// A file → registry title lookup for the playlist `#EXTINF` lines.
+fn title_lookup(entries: &[SongEntry]) -> impl Fn(&str) -> Option<String> + '_ {
+    |file| {
+        entries
+            .iter()
+            .find(|e| e.file == file)
+            .map(|e| e.title.clone())
     }
 }
 
@@ -201,6 +289,8 @@ fn reconcile(existing: Vec<SongEntry>, disk: &[String]) -> Vec<SongEntry> {
                 prompt: None,
                 model: None,
                 recipe: None,
+                rating: None,
+                tags: Vec::new(),
             });
         }
     }
@@ -218,6 +308,8 @@ mod tests {
             prompt: model.map(|_| "a prompt".to_string()),
             model: model.map(str::to_string),
             recipe: None,
+            rating: None,
+            tags: Vec::new(),
         }
     }
 
@@ -271,6 +363,8 @@ mod tests {
             prompt: Some("warm dub".to_string()),
             model: Some("track".to_string()),
             recipe: Some(serde_json::to_value(recipe).unwrap()),
+            rating: None,
+            tags: Vec::new(),
         };
         let encoded = serde_json::to_string(&row).unwrap();
         let decoded: SongEntry = serde_json::from_str(&encoded).unwrap();
@@ -300,6 +394,8 @@ mod tests {
                     seed: 55,
                 }),
             }).unwrap()),
+            rating: None,
+            tags: Vec::new(),
         };
         let encoded_basic = serde_json::to_string(&basic).unwrap();
         assert!(!encoded_basic.contains("\"cfg\""));
@@ -334,6 +430,8 @@ mod tests {
             prompt: Some("legacy display prompt".to_string()),
             model: Some("track".to_string()),
             recipe: Some(future_recipe.clone()),
+            rating: None,
+            tags: Vec::new(),
         };
         std::fs::write(
             dir.join("registry.json"),
@@ -403,6 +501,105 @@ mod tests {
             Some(&serde_json::to_value(&recipe).unwrap())
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn temp_library(tag: &str) -> (std::path::PathBuf, SongLibrary) {
+        let dir = std::env::temp_dir().join(format!("lsdj-song-{tag}-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let songs = SongLibrary::new(dir.clone());
+        songs
+            .record(
+                NewSong {
+                    title: "Dub".to_string(),
+                    prompt: "warm dub".to_string(),
+                    model: "track".to_string(),
+                    recipe: None,
+                },
+                b"RIFF test bytes",
+            )
+            .unwrap();
+        (dir, songs)
+    }
+
+    #[test]
+    fn rate_rename_and_tag_round_trip_through_a_fresh_instance() {
+        let (dir, songs) = temp_library("curate");
+        songs.rate("Dub.wav", Some(4)).unwrap();
+        let renamed = songs.rename("Dub.wav", "  Late Night Dub ").unwrap();
+        assert_eq!(renamed.title, "Late Night Dub");
+        let tagged = songs
+            .tag(
+                "Dub.wav",
+                vec!["#Deep House".to_string(), "deep-house".to_string()],
+            )
+            .unwrap();
+        assert_eq!(tagged.tags, ["deep-house"]);
+        drop(songs);
+
+        let rows = SongLibrary::new(dir.clone()).list().unwrap();
+        assert_eq!(rows[0].file, "Dub.wav", "a rename never touches the file");
+        assert_eq!(rows[0].title, "Late Night Dub");
+        assert_eq!(rows[0].prompt.as_deref(), Some("warm dub"));
+        assert_eq!(rows[0].model.as_deref(), Some("track"));
+        assert_eq!(rows[0].rating, Some(4));
+        assert_eq!(rows[0].tags, ["deep-house"]);
+
+        let cleared = SongLibrary::new(dir.clone()).rate("Dub.wav", None).unwrap();
+        assert_eq!(cleared.rating, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn curation_rejects_bad_input_and_unknown_files_without_writing() {
+        let (dir, songs) = temp_library("reject");
+        songs.rate("Dub.wav", Some(3)).unwrap();
+        assert!(songs.rate("Dub.wav", Some(0)).is_err());
+        assert!(songs.rate("Dub.wav", Some(6)).is_err());
+        assert!(songs.rate("nope.wav", Some(3)).is_err());
+        assert!(songs.rename("Dub.wav", "").is_err());
+        assert!(songs.rename("Dub.wav", "   ").is_err());
+        assert!(songs.rename("Dub.wav", &"x".repeat(201)).is_err());
+        assert!(songs.tag("Dub.wav", vec!["a\u{0}b".to_string()]).is_err());
+        let row = &songs.list().unwrap()[0];
+        assert_eq!((row.title.as_str(), row.rating), ("Dub", Some(3)));
+        assert!(row.tags.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reconcile_keeps_rating_and_tags_and_old_rows_default_them() {
+        let mut rated = entry("first.wav", Some("track"));
+        rated.rating = Some(5);
+        rated.tags = vec!["banger".to_string()];
+        let out = reconcile(vec![rated.clone()], &["first.wav".to_string()]);
+        assert_eq!(out, vec![rated]);
+
+        let legacy: SongEntry = serde_json::from_str(
+            r#"{"file":"old.wav","title":"Old","prompt":"dub","model":"track"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.rating, None);
+        assert!(legacy.tags.is_empty());
+        // Unrated, untagged rows serialise without the new keys.
+        let encoded = serde_json::to_string(&legacy).unwrap();
+        assert!(!encoded.contains("rating") && !encoded.contains("tags"));
+    }
+
+    #[test]
+    fn playlists_save_and_list_with_registry_titles() {
+        let (dir, songs) = temp_library("playlist");
+        songs.rename("Dub.wav", "Dub, the long one").unwrap();
+        let saved = songs
+            .save_playlist(
+                "Warm-up",
+                vec!["Dub.wav".to_string(), "gone.wav".to_string()],
+            )
+            .unwrap();
+        assert_eq!(saved.files, ["Dub.wav"]);
+        let text = std::fs::read_to_string(dir.join("playlists/Warm-up.m3u8")).unwrap();
+        assert_eq!(text, "#EXTM3U\n#EXTINF:-1,Dub, the long one\n../Dub.wav\n");
+        assert_eq!(songs.list_playlists().unwrap(), vec![saved]);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -36,6 +36,7 @@ use crate::analysis::live::AnalysisFeed;
 use crate::analysis::track::{DeckTrack, TrackAnalysis};
 use crate::library;
 use crate::midi::notes::NoteSteering;
+use crate::playlists::Playlist;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
@@ -613,8 +614,9 @@ pub async fn read_generated_song(
     library.read(&name).map(tauri::ipc::Response::new)
 }
 
-/// Delete a persisted song: move it to the OS Trash (recoverable) and drop it from the
-/// registry, so the take list and the folder stay in sync without a restart. `async`
+/// Delete a persisted song: move it to the OS Trash (recoverable), drop it from the
+/// registry and from every playlist, so the take list and the folder stay in sync
+/// without a restart. `async`
 /// keeps the trash + registry I/O off the main thread, like the sibling commands.
 #[tauri::command]
 pub async fn delete_generated_song(
@@ -622,6 +624,83 @@ pub async fn delete_generated_song(
     name: String,
 ) -> Result<(), String> {
     library.remove(&name)
+}
+
+/// Set (1–5) or clear (`None`) a song's star rating and return the updated row. The
+/// rating lives in the registry, so it survives a relaunch and MCP sees it. Out of
+/// range or an unknown `name` is an `Err`; `async` keeps the registry write off the
+/// main thread, like the sibling commands.
+#[tauri::command]
+pub async fn rate_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    rating: Option<u8>,
+) -> Result<SongEntry, String> {
+    library.rate(&name, rating)
+}
+
+/// Retitle a song and return the updated row. Only the registry title changes — the
+/// file stays the identity decks, MCP, and the re-list hold. The title is untrusted
+/// and validated in [`SongLibrary::rename`].
+#[tauri::command]
+pub async fn rename_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    title: String,
+) -> Result<SongEntry, String> {
+    library.rename(&name, &title)
+}
+
+/// Replace a song's tags and return the updated row carrying the shell-normalised
+/// list (lowercased, `#` dropped, spaces to `-`), which the webview adopts.
+#[tauri::command]
+pub async fn tag_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    tags: Vec<String>,
+) -> Result<SongEntry, String> {
+    library.tag(&name, tags)
+}
+
+/// Every playlist (`generated_songs/playlists/*.m3u8`), each reconciled against the
+/// songs on disk. `async` keeps the folder reads off the main thread.
+#[tauri::command]
+pub async fn list_playlists(
+    library: tauri::State<'_, SongLibrary>,
+) -> Result<Vec<Playlist>, String> {
+    library.list_playlists()
+}
+
+/// Create or replace a playlist with exactly `files` (create, add, remove, and
+/// reorder all send the whole list) and return what was stored — the name as a safe
+/// stem, files missing from the songs folder dropped, duplicates collapsed.
+#[tauri::command]
+pub async fn save_playlist(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    files: Vec<String>,
+) -> Result<Playlist, String> {
+    library.save_playlist(&name, files)
+}
+
+/// Rename a playlist and return it under its new name; a name already taken is
+/// refused rather than suffixed.
+#[tauri::command]
+pub async fn rename_playlist(
+    library: tauri::State<'_, SongLibrary>,
+    from: String,
+    to: String,
+) -> Result<Playlist, String> {
+    library.rename_playlist(&from, &to)
+}
+
+/// Move a playlist to the OS Trash (recoverable). The songs it listed are untouched.
+#[tauri::command]
+pub async fn delete_playlist(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+) -> Result<(), String> {
+    library.delete_playlist(&name)
 }
 
 /// Open the generated-songs folder in the OS file manager so the user can copy songs
@@ -690,6 +769,36 @@ pub async fn delete_generated_sample(
     name: String,
 ) -> Result<(), String> {
     library.remove(&name)
+}
+
+/// Set (1–5) or clear (`None`) a sample's star rating and return the updated row.
+#[tauri::command]
+pub async fn rate_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    rating: Option<u8>,
+) -> Result<SampleEntry, String> {
+    library.rate(&name, rating)
+}
+
+/// Retitle a sample (registry title only, never the file) and return the updated row.
+#[tauri::command]
+pub async fn rename_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    title: String,
+) -> Result<SampleEntry, String> {
+    library.rename(&name, &title)
+}
+
+/// Replace a sample's tags and return the updated row with the normalised list.
+#[tauri::command]
+pub async fn tag_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    tags: Vec<String>,
+) -> Result<SampleEntry, String> {
+    library.tag(&name, tags)
 }
 
 /// Open the generated-samples folder in the OS file manager (driven from Rust, no

@@ -8,6 +8,9 @@
 //! Two guards keep it honest:
 //! - `registry.json` changes are ignored. Reconcile-on-list rewrites that file on
 //!   every read, so reacting to it would loop (emit → re-list → write → emit …).
+//!   Playlists (`generated_songs/playlists/*.m3u8`) never emit either: the watch is
+//!   non-recursive and only audio files count. Writers of either emit themselves
+//!   ([`emit_library_changed`]).
 //! - A short debounce coalesces a burst (one save fires several create/modify
 //!   events; a deck saving four freezes fires more) into one emit per library.
 
@@ -23,9 +26,17 @@ use tauri::{AppHandle, Emitter};
 /// The `library://changed` payload: which library the webview should re-list.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LibraryChanged {
-    /// `"songs"` or `"samples"` — the Media Explorer keys its re-list on this.
-    library: &'static str,
+pub struct LibraryChanged {
+    /// `"songs"`, `"samples"`, or `"playlists"` — the Media Explorer keys its
+    /// re-list on this.
+    pub library: &'static str,
+}
+
+/// Emit `library://changed` for `library`. The watcher calls it for an audio change;
+/// shell-side writers it cannot see (an MCP rating or playlist write — the registry
+/// and `playlists/` are deliberately unwatched) call it themselves.
+pub fn emit_library_changed(app: &AppHandle, library: &'static str) {
+    let _ = app.emit("library://changed", LibraryChanged { library });
 }
 
 /// How long to coalesce a burst of FS events before emitting. One emit per library
@@ -88,10 +99,10 @@ pub fn watch_libraries(app: AppHandle, songs_dir: PathBuf, samples_dir: PathBuf)
                     hit_samples |= p;
                 }
                 if hit_songs {
-                    let _ = app.emit("library://changed", LibraryChanged { library: "songs" });
+                    emit_library_changed(&app, "songs");
                 }
                 if hit_samples {
-                    let _ = app.emit("library://changed", LibraryChanged { library: "samples" });
+                    emit_library_changed(&app, "samples");
                 }
             }
         })
@@ -247,6 +258,9 @@ mod tests {
         let samples = [PathBuf::from("/lib/samples")];
         assert_eq!(classify(&ev("/lib/songs/registry.json"), &songs, &samples), (false, false));
         assert_eq!(classify(&ev("/lib/samples/notes.txt"), &songs, &samples), (false, false));
+        // A playlist save is not audio, so it never triggers a songs re-list.
+        assert_eq!(classify(&ev("/lib/songs/playlists/x.m3u8"), &songs, &samples), (false, false));
+        assert_eq!(classify(&ev("/lib/songs/playlists"), &songs, &samples), (false, false));
     }
 
     #[test]

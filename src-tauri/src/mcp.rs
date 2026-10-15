@@ -40,9 +40,11 @@ use crate::commands::{valid_deck, DrumModeArg, EqBandArg, FxKindArg};
 use crate::generation::GenerationServer;
 use crate::samples::{NewSample, SampleLibrary};
 use crate::sidecar::Sidecars;
-use crate::songs::{NewSong, SongLibrary};
+use crate::songs::{GenerationLora, GenerationRecipe, NewSong, Sa3SteeringRecipe, SongLibrary};
 use crate::midi::notes::NoteSteering;
-use crate::store::{InterfaceStore, NoteModeSnap, PadPointSnap, PlayModeSnap, StyleTargetSnap};
+use crate::store::{
+    GenerationPatch, InterfaceStore, NoteModeSnap, PadPointSnap, PlayModeSnap, StyleTargetSnap,
+};
 use lsdj_engine::host::Host;
 use lsdj_engine::FxKind;
 
@@ -203,10 +205,10 @@ struct LoraArg {
     name: String,
     /// Blend strength, 0-4 (0 = bit-exact bypass, ~1 = as trained). Defaults to 1.
     #[serde(default = "default_lora_strength")]
-    strength: f32,
+    strength: f64,
 }
 
-fn default_lora_strength() -> f32 {
+fn default_lora_strength() -> f64 {
     1.0
 }
 
@@ -218,12 +220,52 @@ fn generate_request_body(
     seconds: f32,
     kind: &str,
     loras: &[LoraArg],
+    seed: Option<u32>,
 ) -> serde_json::Value {
     let mut body = json!({ "prompt": prompt, "seconds": seconds, "kind": kind });
     if !loras.is_empty() {
         body["loras"] = json!(loras);
     }
+    if let Some(seed) = seed {
+        body["seed"] = json!(seed);
+    }
     body
+}
+
+/// The seed range Stable Audio 3 accepts (the server's `MAX_SEED`, the webview's
+/// `SA3_SEED_MAX`): a non-negative signed 32-bit int.
+const SA3_SEED_MAX: u32 = i32::MAX as u32;
+
+/// Mint the seed a track generation rides on — the MCP counterpart of the webview's
+/// `mintSa3Seed()`. The server never reports the seed it used, so whoever sends the
+/// request picks it and records it; that is what makes a saved take re-creatable.
+fn mint_sa3_seed() -> u32 {
+    rand::random::<u32>() & SA3_SEED_MAX
+}
+
+/// The recipe an MCP track save records: the webview's Basic-mode
+/// `SongGenerationRecipeV1` (`buildSongGeneration`), same keys and casing, so the
+/// Generate tab recalls an agent-composed take exactly as it recalls its own.
+fn track_recipe(prompt: &str, seconds: f32, loras: &[LoraArg], seed: u32) -> GenerationRecipe {
+    GenerationRecipe {
+        version: 1,
+        prompt: prompt.to_string(),
+        engine: "track".to_string(),
+        seconds: seconds as f64,
+        loras: loras
+            .iter()
+            .map(|l| GenerationLora {
+                name: l.name.clone(),
+                strength: l.strength,
+            })
+            .collect(),
+        sa3: Some(Sa3SteeringRecipe {
+            negative_prompt: String::new(),
+            cfg: None,
+            apg: None,
+            seed,
+        }),
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -299,11 +341,42 @@ struct SetDrumsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SetGenerationArgs {
+    /// Deck index: 0 = A, 1 = B.
+    deck: usize,
+    /// Sampling randomness (0–3): higher wanders, lower repeats. ~1.1 is the tuned default.
+    temperature: Option<f32>,
+    /// How many candidate tokens sampling weighs (1–1024). ~50 is the tuned default.
+    top_k: Option<u32>,
+    /// Prompt adherence (0–5): higher locks on to the style, lower drifts. ~1.6 is the tuned default.
+    prompt_adherence: Option<f32>,
+    /// Note adherence (0–5): how strictly held notes bind while steering. ~2.4 is the tuned default.
+    note_adherence: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct LoadFromLibraryArgs {
     /// Deck index: 0 = A, 1 = B.
     deck: usize,
     /// The library `file` name (from list_songs / list_samples).
     file: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RateArgs {
+    /// The library `file` name (from list_songs / list_samples).
+    file: String,
+    /// Star rating 1–5 (5 = a keeper). Omit or null to clear the rating.
+    rating: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SavePlaylistArgs {
+    /// Playlist name. An existing name replaces that playlist; a new one creates it.
+    name: String,
+    /// Song `file` names (from list_songs) in play order — the WHOLE list; files not
+    /// in the songs library are dropped and repeats collapse to the first.
+    files: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1028,6 +1101,40 @@ impl McpHandler {
         )
     }
 
+    /// Set a realtime deck's live generation params (issue #84) — the drawer's
+    /// sliders, through the same merge-under-lock path (`patch_generation`), which
+    /// clamps the result, sends it to the worker and mirrors the store.
+    #[tool(
+        description = "Set a realtime deck's live generation params; omitted ones stay as \
+                       they are. temperature 0–3 (~1.1 default), top_k 1–1024 (~50), \
+                       prompt_adherence 0–5 (~1.6), note_adherence 0–5 (~2.4, bites only \
+                       while note-steering). Values are clamped. deck 0 = A, 1 = B."
+    )]
+    async fn set_generation(
+        &self,
+        Parameters(SetGenerationArgs {
+            deck,
+            temperature,
+            top_k,
+            prompt_adherence,
+            note_adherence,
+        }): Parameters<SetGenerationArgs>,
+    ) -> String {
+        if !valid_deck(deck) {
+            return format!("invalid deck {deck}");
+        }
+        self.app.state::<NoteSteering>().patch_generation(
+            deck,
+            GenerationPatch {
+                temperature,
+                top_k,
+                cfg_musiccoca: prompt_adherence,
+                cfg_notes: note_adherence,
+            },
+        );
+        format!("deck {deck} generation set")
+    }
+
     /// Set a realtime deck's generation prompt. Routed through the style pad as one
     /// centred target so it shows on the pad and drives the worker — the same path the
     /// UI takes (the bidirectional projection), not a hidden raw override.
@@ -1091,7 +1198,10 @@ impl McpHandler {
 
     #[tool(
         description = "List the generated songs/tracks available to load onto a deck — \
-                       each has a `file` (pass to load_track) plus title + prompt."
+                       each has a `file` (pass to load_track) plus title + prompt. \
+                       `rating` is 1–5 when the DJ has rated it: prefer higher-rated \
+                       material. `tags` are the DJ's own words for the material — \
+                       honour them when asked for a vibe."
     )]
     async fn list_songs(&self) -> String {
         match self.scan_library(|app| app.state::<SongLibrary>().list()).await {
@@ -1103,7 +1213,10 @@ impl McpHandler {
 
     #[tool(
         description = "List the generated samples/loops available to load onto a deck's \
-                       pad — each has a `file` (pass to load_sample)."
+                       pad — each has a `file` (pass to load_sample). `rating` is 1–5 \
+                       when the DJ has rated it: prefer higher-rated material. `tags` \
+                       are the DJ's own words for the material — honour them when \
+                       asked for a vibe."
     )]
     async fn list_samples(&self) -> String {
         match self.scan_library(|app| app.state::<SampleLibrary>().list()).await {
@@ -1188,6 +1301,84 @@ impl McpHandler {
             json!({ "deck": deck, "file": file, "oneShot": one_shot, "label": label }),
         );
         format!("loading \"{label}\" onto deck {deck}")
+    }
+
+    #[tool(
+        description = "Rate a generated song (by its `file` from list_songs) 1–5 stars, \
+                       or clear its rating with no `rating`. Returns the updated row."
+    )]
+    async fn rate_song(
+        &self,
+        Parameters(RateArgs { file, rating }): Parameters<RateArgs>,
+    ) -> String {
+        let rated = self
+            .scan_library(move |app| app.state::<SongLibrary>().rate(&file, rating))
+            .await;
+        self.library_write_result(rated, "songs", "could not rate the song")
+    }
+
+    #[tool(
+        description = "Rate a generated sample (by its `file` from list_samples) 1–5 \
+                       stars, or clear its rating with no `rating`. Returns the updated row."
+    )]
+    async fn rate_sample(
+        &self,
+        Parameters(RateArgs { file, rating }): Parameters<RateArgs>,
+    ) -> String {
+        let rated = self
+            .scan_library(move |app| app.state::<SampleLibrary>().rate(&file, rating))
+            .await;
+        self.library_write_result(rated, "samples", "could not rate the sample")
+    }
+
+    #[tool(
+        description = "List the DJ's playlists — each has a `name` and its song `files` \
+                       in play order (pass a file to load_track)."
+    )]
+    async fn list_playlists(&self) -> String {
+        match self
+            .scan_library(|app| app.state::<SongLibrary>().list_playlists())
+            .await
+        {
+            Ok(playlists) => serde_json::to_string(&playlists)
+                .unwrap_or_else(|e| format!("could not serialise playlists: {e}")),
+            Err(e) => format!("could not list playlists: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Create or replace a playlist: `name` plus the WHOLE ordered list \
+                       of song `files` from list_songs (e.g. a warm-up-to-peak set of \
+                       the best-rated tracks). The DJ sees it appear in the Media \
+                       Explorer. Returns the stored playlist."
+    )]
+    async fn save_playlist(
+        &self,
+        Parameters(SavePlaylistArgs { name, files }): Parameters<SavePlaylistArgs>,
+    ) -> String {
+        let saved = self
+            .scan_library(move |app| app.state::<SongLibrary>().save_playlist(&name, files))
+            .await;
+        self.library_write_result(saved, "playlists", "could not save the playlist")
+    }
+
+    /// Report an MCP library write and, on success, tell the webview to re-list
+    /// `library` — the watcher ignores the registry and `playlists/`, so without this
+    /// the open explorer would show a stale row.
+    fn library_write_result<T: serde::Serialize>(
+        &self,
+        result: Result<T, String>,
+        library: &'static str,
+        failure: &str,
+    ) -> String {
+        match result {
+            Ok(value) => {
+                crate::watcher::emit_library_changed(&self.app, library);
+                serde_json::to_string(&value)
+                    .unwrap_or_else(|e| format!("could not serialise the result: {e}"))
+            }
+            Err(e) => format!("{failure}: {e}"),
+        }
     }
 
     /// Ask the webview to run a track-transport gesture on a deck. Transport that the
@@ -1388,7 +1579,7 @@ impl McpHandler {
             loras,
         } = args;
         let wav = self
-            .generate_clip(&prompt, seconds, kind.as_str(), &loras.unwrap_or_default())
+            .generate_clip(&prompt, seconds, kind.as_str(), &loras.unwrap_or_default(), None)
             .await?;
         let entry = self.app.state::<SampleLibrary>().record(
             NewSample {
@@ -1411,13 +1602,14 @@ impl McpHandler {
     /// Shared by [`generate_sample`] (sfx/music/magenta → samples) and
     /// [`generate_track`] (track → songs), reusing the server's prompt/length
     /// validation. `magenta` routes to the Magenta renderer (`/api/render`, body
-    /// `{prompt, seconds}`); the rest are Stable Audio 3 (`/api/generate`).
+    /// `{prompt, seconds}`, no seed); the rest are Stable Audio 3 (`/api/generate`).
     async fn generate_clip(
         &self,
         prompt: &str,
         seconds: f32,
         kind: &str,
         loras: &[LoraArg],
+        seed: Option<u32>,
     ) -> Result<Vec<u8>, String> {
         let port = self
             .app
@@ -1442,7 +1634,7 @@ impl McpHandler {
         } else {
             (
                 "/api/generate",
-                generate_request_body(prompt, seconds, kind, loras),
+                generate_request_body(prompt, seconds, kind, loras, seed),
             )
         };
         let response = client
@@ -1545,13 +1737,17 @@ impl McpHandler {
         title: &str,
         loras: &[LoraArg],
     ) -> Result<String, String> {
-        let wav = self.generate_clip(&prompt, seconds, "track", loras).await?;
+        let seed = mint_sa3_seed();
+        let wav = self
+            .generate_clip(&prompt, seconds, "track", loras, Some(seed))
+            .await?;
+        let recipe = track_recipe(&prompt, seconds, loras, seed);
         let entry = self.app.state::<SongLibrary>().record(
             NewSong {
                 title: title.to_string(),
                 prompt,
                 model: "track".to_string(),
-                recipe: None,
+                recipe: Some(recipe),
             },
             &wav,
         )?;
@@ -1949,7 +2145,8 @@ mod tests {
     use super::{
         constant_time_eq, generate_request_body, generate_token, inline_refs,
         load_or_generate_token, normalize_tool_schemas, pleasant_title, save_token,
-        strip_null_variants, GenerationJobs, LoraArg, McpHandler, MAX_TRACKED_JOBS,
+        strip_null_variants, track_recipe, GenerationJobs, LoraArg, McpHandler,
+        MAX_TRACKED_JOBS,
     };
     use serde_json::json;
 
@@ -2131,7 +2328,7 @@ mod tests {
     #[test]
     fn generate_body_matches_the_server_contract() {
         // The keys + the wire `kind` value must match what `/api/generate` validates.
-        let body = generate_request_body("warm pad", 4.0, "music", &[]);
+        let body = generate_request_body("warm pad", 4.0, "music", &[], None);
         assert_eq!(body["prompt"], "warm pad");
         assert_eq!(body["seconds"], 4.0);
         assert_eq!(body["kind"], "music");
@@ -2139,7 +2336,7 @@ mod tests {
         // but absent is the documented no-LoRA shape).
         assert!(body.get("loras").is_none());
         assert_eq!(
-            generate_request_body("epic", 60.0, "track", &[])["kind"],
+            generate_request_body("epic", 60.0, "track", &[], None)["kind"],
             "track"
         );
 
@@ -2152,9 +2349,40 @@ mod tests {
                 name: "medium/zentai-chiptune".to_string(),
                 strength: 1.2,
             }],
+            None,
         );
         assert_eq!(stacked["loras"][0]["name"], "medium/zentai-chiptune");
-        assert_eq!(stacked["loras"][0]["strength"], 1.2f32);
+        assert_eq!(stacked["loras"][0]["strength"], 1.2);
+    }
+
+    #[test]
+    fn mcp_track_save_records_the_webview_recipe_shape_with_the_sent_seed() {
+        // The registry row's `recipe` is this value verbatim (`SongLibrary::record`),
+        // and it must be the webview's Basic-mode `SongGenerationRecipeV1` — same keys,
+        // same casing — so the Generate tab recalls an agent take like its own.
+        let loras = [LoraArg {
+            name: "medium/dub".to_string(),
+            strength: 1.25,
+        }];
+        let recipe = serde_json::to_value(track_recipe("warm dub", 120.0, &loras, 42)).unwrap();
+        assert_eq!(
+            recipe,
+            json!({
+                "version": 1,
+                "prompt": "warm dub",
+                "engine": "track",
+                "seconds": 120.0,
+                "loras": [{ "name": "medium/dub", "strength": 1.25 }],
+                "sa3": { "negativePrompt": "", "seed": 42 }
+            })
+        );
+        // The recorded seed is the one the server was told to use — the only way a
+        // take is re-creatable, since the server never reports its seed back.
+        let body = generate_request_body("warm dub", 120.0, "track", &loras, Some(42));
+        assert_eq!(body["seed"], recipe["sa3"]["seed"]);
+        assert!(generate_request_body("warm dub", 120.0, "track", &loras, None)
+            .get("seed")
+            .is_none());
     }
 
     #[test]

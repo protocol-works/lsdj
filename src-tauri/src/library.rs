@@ -160,6 +160,95 @@ pub fn save_registry<T: Serialize>(dir: &Path, entries: &[T]) -> Result<(), Stri
     std::fs::write(registry_path(dir), json).map_err(|e| format!("cannot write registry: {e}"))
 }
 
+/// A registry row that knows its own identity — the `file` every library keys on —
+/// so [`update_entry`] can find it without knowing the row's schema.
+pub trait RegistryEntry {
+    fn file(&self) -> &str;
+}
+
+/// Read-modify-write ONE registry row: load the registry, find the row whose `file`
+/// is `file` (an error if there is none — a stale row must not be resurrected), let
+/// `apply` change it, save, and return the updated row. The caller holds its
+/// library's lock; rating, renaming, and tagging are all this one write.
+pub fn update_entry<T>(dir: &Path, file: &str, apply: impl FnOnce(&mut T)) -> Result<T, String>
+where
+    T: RegistryEntry + Clone + Serialize + DeserializeOwned,
+{
+    let mut entries: Vec<T> = load_registry(dir);
+    let entry = entries
+        .iter_mut()
+        .find(|e| e.file() == file)
+        .ok_or_else(|| format!("no library entry named {file}"))?;
+    apply(entry);
+    let updated = entry.clone();
+    save_registry(dir, &entries)?;
+    Ok(updated)
+}
+
+/// A star rating is 1–5, or `None` to clear it — there is no zero star (clearing
+/// is a click on the current star, curation plan decision 3).
+pub fn validate_rating(rating: Option<u8>) -> Result<(), String> {
+    match rating {
+        Some(stars) if !(1..=5).contains(&stars) => Err(format!("rating must be 1–5, got {stars}")),
+        _ => Ok(()),
+    }
+}
+
+/// The longest display title a rename accepts. Looser than [`MAX_STEM_CHARS`]: a
+/// title is only a label in the registry, never a filename.
+pub const MAX_TITLE_CHARS: usize = 200;
+
+/// Validate a webview-supplied display title (decision 7 of the curation plan):
+/// trimmed, non-empty, no control characters, at most [`MAX_TITLE_CHARS`]. Returns
+/// the trimmed title to store.
+pub fn validate_title(title: &str) -> Result<String, String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err("title cannot be empty".to_string());
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("title cannot contain control characters".to_string());
+    }
+    if trimmed.chars().count() > MAX_TITLE_CHARS {
+        return Err(format!("title is longer than {MAX_TITLE_CHARS} characters"));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The longest single tag, and the most tags one row carries.
+pub const MAX_TAG_CHARS: usize = 32;
+pub const MAX_TAGS: usize = 16;
+
+/// Normalise a webview-supplied tag list (decision 8): each tag trimmed, lowercased,
+/// one leading `#` dropped, inner whitespace runs folded to `-` (so a tag is one
+/// search term), empties dropped, deduped keeping the first. A control character, an
+/// over-long tag, or too many tags is refused rather than silently clipped, so the
+/// DJ never loses a word without being told.
+pub fn normalise_tags(tags: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in tags {
+        if raw.chars().any(char::is_control) {
+            return Err("tags cannot contain control characters".to_string());
+        }
+        let lower = raw.trim().to_lowercase();
+        let bare = lower.strip_prefix('#').unwrap_or(&lower);
+        let tag = bare.split_whitespace().collect::<Vec<_>>().join("-");
+        if tag.is_empty() || out.contains(&tag) {
+            continue;
+        }
+        if tag.chars().count() > MAX_TAG_CHARS {
+            return Err(format!(
+                "tag \"{tag}\" is longer than {MAX_TAG_CHARS} characters"
+            ));
+        }
+        out.push(tag);
+    }
+    if out.len() > MAX_TAGS {
+        return Err(format!("a row can carry at most {MAX_TAGS} tags"));
+    }
+    Ok(out)
+}
+
 /// Read one file's bytes scoped to `dir` (`name` is a plain filename, never a path —
 /// see [`scoped_path`]), refusing a non-file or one larger than `max_bytes`. The
 /// read/delete boundary for a webview-supplied name.
@@ -275,5 +364,52 @@ mod tests {
         assert_eq!(std::fs::read(&first).unwrap(), b"already here", "earlier take is untouched");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_title_trims_and_refuses_bad_titles() {
+        assert_eq!(validate_title("  Late Dub  ").unwrap(), "Late Dub");
+        assert!(validate_title("").is_err());
+        assert!(validate_title("   ").is_err());
+        assert!(validate_title("a\nb").is_err());
+        assert!(validate_title("a\u{7}b").is_err());
+        assert!(validate_title(&"x".repeat(MAX_TITLE_CHARS)).is_ok());
+        assert!(validate_title(&"x".repeat(MAX_TITLE_CHARS + 1)).is_err());
+        // The cap counts characters, not bytes.
+        assert!(validate_title(&"é".repeat(MAX_TITLE_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn normalise_tags_folds_case_hash_and_whitespace_and_dedupes() {
+        let tags: Vec<String> = [
+            "  Deep   House ",
+            "#Banger",
+            "banger",
+            "",
+            "  ",
+            "#",
+            "drone",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            normalise_tags(&tags).unwrap(),
+            ["deep-house", "banger", "drone"]
+        );
+        // Only ONE leading `#` is dropped.
+        assert_eq!(normalise_tags(&["##x".to_string()]).unwrap(), ["#x"]);
+    }
+
+    #[test]
+    fn normalise_tags_refuses_control_chars_and_caps() {
+        assert!(normalise_tags(&["a\tb".to_string()]).is_err());
+        assert!(normalise_tags(&["x".repeat(MAX_TAG_CHARS)]).is_ok());
+        assert!(normalise_tags(&["x".repeat(MAX_TAG_CHARS + 1)]).is_err());
+        let many: Vec<String> = (0..=MAX_TAGS).map(|n| format!("t{n}")).collect();
+        assert!(normalise_tags(&many).is_err());
+        // Duplicates do not count toward the cap.
+        let dupes: Vec<String> = (0..40).map(|_| "same".to_string()).collect();
+        assert_eq!(normalise_tags(&dupes).unwrap(), ["same"]);
     }
 }
