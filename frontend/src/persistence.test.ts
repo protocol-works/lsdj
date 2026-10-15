@@ -165,6 +165,25 @@ describe('persistence', () => {
     expect(loadAppSettings().generationMode).toBeUndefined()
   })
 
+  it('round-trips the media sort and drops garbage', () => {
+    // Absent loads as absent; the explorer reads that as newest-first.
+    expect(loadAppSettings().mediaSort).toBeUndefined()
+    updateAppSettings({ mediaSort: 'rating' })
+    expect(loadAppSettings().mediaSort).toBe('rating')
+    updateAppSettings({ mediaSort: 'loudest' as never })
+    expect(loadAppSettings().mediaSort).toBeUndefined()
+  })
+
+  it('round-trips the media source and drops a blank or non-string one', () => {
+    expect(loadAppSettings().mediaSource).toBeUndefined()
+    updateAppSettings({ mediaSource: 'Warm-up' })
+    expect(loadAppSettings().mediaSource).toBe('Warm-up')
+    updateAppSettings({ mediaSource: '' })
+    expect(loadAppSettings().mediaSource).toBeUndefined()
+    updateAppSettings({ mediaSource: 7 as never })
+    expect(loadAppSettings().mediaSource).toBeUndefined()
+  })
+
   it('ignores garbage in the legacy shell-setting keys during migration', () => {
     localStorage.setItem(
       'lsdj:v1',

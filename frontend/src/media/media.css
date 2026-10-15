@@ -119,6 +119,20 @@
   min-inline-size: 0;
 }
 
+/* The sort select sits in the header beside the search, so like the search its
+   label is for assistive technology only (ui/Select has no labelHidden mode). */
+.media__sort .ui-field__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .media__generate,
 .media__folder {
   display: flex;
@@ -223,6 +237,83 @@
   min-width: 10rem;
 }
 
+/* The Songs tab body: the source column (All songs, the playlists, New playlist)
+   left of the row list. */
+.media__songs {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.media__sources {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.media__songs-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Playlist names read as typed, not in the button's silkscreen caps; the count
+   rides the right edge. */
+.media__sources .ui-button {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  inline-size: 100%;
+  text-transform: none;
+  text-align: left;
+}
+
+.media__source {
+  display: flex;
+  border-radius: var(--radius-s);
+}
+
+/* A dragged song is over this playlist: the accent inset border. */
+.media__source--drop {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.media__source-count {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* Shown only below the breakpoint, in place of the column. */
+.media__source-select {
+  display: none;
+}
+
+.media__playlist-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.media__playlist-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 var(--text-m) var(--font-ui);
+  color: var(--color-text);
+}
+
+/* Where a dragged row lands in a playlist: a line on the row's top or bottom edge. */
+.media__item.media__item--drop-before {
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+
+.media__item.media__item--drop-after {
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
 @media (max-width: 52rem) {
   .media__header-end,
   .media__header-actions {
@@ -233,8 +324,26 @@
     flex-wrap: wrap;
   }
 
+  /* Stars, meta and the row actions drop under the name rather than squeeze it. */
+  .media__item {
+    flex-wrap: wrap;
+  }
+
   .media__guidance-body {
     grid-template-columns: 1fr;
+  }
+
+  /* The source column collapses to the Select above the list. */
+  .media__songs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .media__sources {
+    display: none;
+  }
+
+  .media__source-select {
+    display: block;
   }
 }
 
@@ -312,6 +421,32 @@
   cursor: pointer;
 }
 
+/* The Generate/Samples title button sits inside the name cluster (the Folder tab's
+   IS the cluster), so it takes the cluster's type and keeps the ellipsis working. */
+.media__name > .media__name--button {
+  display: flex;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+/* Loaded onto a deck this session: muted, so the list reads done / playing / next. */
+.media__item--played .media__name-text {
+  color: var(--color-text-muted);
+}
+
+/* "On A": the row a deck holds right now. Silkscreen like the meta column, lit in
+   the accent so it reads as live. */
+.media__on-deck {
+  flex: none;
+  align-self: center;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
 /* The prompt rides the same line as the title, muted and monospaced so it reads
    as secondary; it fills the leftover width and truncates, keeping every row to
    one line. It's a button — clicking expands it to the full text in place. */
@@ -348,6 +483,31 @@
   content: '·';
   margin-right: var(--space-1);
   color: var(--color-text-silkscreen);
+}
+
+/* A tag chip (#drone) after the prompt preview: silkscreen-muted like the meta
+   column, never shrinking — the prompt is what gives way. A click searches it. */
+.media__tag {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  color: var(--color-text-silkscreen);
+  white-space: nowrap;
+}
+
+.media__tag:hover {
+  color: var(--color-text);
+}
+
+/* The ⋯ menu's wrapper: a real box, so the tag panel can anchor to it. */
+.media__menu {
+  display: flex;
+  flex: none;
 }
 
 /* A quiet spinner while a take composes, so a long render reads as working,

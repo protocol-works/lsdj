@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
+  DragEvent as ReactDragEvent,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react'
@@ -15,6 +16,7 @@ import {
   subscribeLibraryChanged,
   subscribeMcpGeneration,
   togglePianoWindow,
+  type DeckSnap,
 } from '../audio/nativeEngine'
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
@@ -44,13 +46,18 @@ import { loadAppSettings, updateAppSettings } from '../persistence'
 import { LoraControl } from '../ui/LoraControl'
 import type { StylePreset } from '../presets'
 import { matchesSearch } from '../search'
+import { ActionMenu, type ActionMenuItem } from '../ui/ActionMenu'
 import { Button } from '../ui/Button'
+import { ChecklistPanel } from '../ui/ChecklistPanel'
 import { Panel } from '../ui/Panel'
 import { PianoIcon } from '../ui/PianoIcon'
+import { Rating } from '../ui/Rating'
 import { Select } from '../ui/Select'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { TextField } from '../ui/TextField'
+import { insertFile, moveFile, removeFile } from './playlistOrder'
 import { randomSongTitle } from './songTitle'
+import { sortRows, type MediaSort } from './sortRows'
 import './media.css'
 
 // The tray toggle's shortcut, shown in its tooltip. ⌘ on macOS (the primary
@@ -71,6 +78,10 @@ type SongEntry = {
   prompt: string | null
   model: string | null
   recipe?: unknown
+  /** 1–5; absent when unrated. */
+  rating?: number
+  /** Absent when untagged. */
+  tags?: string[]
 }
 
 // One row of the on-disk sample registry (Rust `samples::SampleEntry`, camelCase):
@@ -81,6 +92,8 @@ type SampleEntry = {
   prompt: string | null
   model: string | null
   oneShot: boolean
+  rating?: number
+  tags?: string[]
 }
 
 type GeneratedTrack =
@@ -114,6 +127,10 @@ type GeneratedTrack =
       // from disk on demand (a full render is 100 MB+ — don't hold them all).
       wav?: ArrayBuffer
       recipe?: unknown
+      // 0 = unrated, else 1–5 — the registry's rating.
+      rating: number
+      // The registry's tags. Carried for the tag chips (curation phase 4).
+      tags: string[]
     }
 
 // A take in the Samples tab — the loop counterpart of GeneratedTrack. Carries
@@ -147,7 +164,29 @@ type GeneratedSample =
       // Bytes held only for a clip composed THIS session in the Samples tab; a
       // restored sample (incl. a deck-saved freeze/pad) reads them from disk on load.
       wav?: ArrayBuffer
+      // As on a GeneratedTrack: 0 = unrated, and the registry's tags.
+      rating: number
+      tags: string[]
     }
+
+// One playlist (Rust `playlists::Playlist`): an ordered list of song files, already
+// reconciled against the songs folder and deduped by the shell.
+type Playlist = { name: string; files: string[] }
+
+// The sort in a playlist view: the stored order, or a library sort applied to the
+// view only (the stored order changes only by reordering).
+type PlaylistSort = 'playlist' | MediaSort
+
+/** Name order as the shell lists playlists (ignoring case). */
+function byPlaylistName(a: Playlist, b: Playlist): number {
+  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+}
+
+/** Whether a drag is over the lower half of `element` — a drop lands after it. */
+function dropsAfter(event: ReactDragEvent<HTMLElement>): boolean {
+  const box = event.currentTarget.getBoundingClientRect()
+  return event.clientY > box.top + box.height / 2
+}
 
 // A browsable file: just the name. `read_audio_file` re-derives the path from the
 // chosen folder + name (the webview never supplies a path to read).
@@ -205,7 +244,7 @@ function sampleLabel(sample: GeneratedSample): string {
 }
 
 /** A row's on-disk filename, or null for a pending row / an in-session take not yet
- * saved. The key a live re-list reuses an existing row by, so its id (and any
+ * saved. The key a live re-list matches an existing row by, so its id (and any
  * in-memory `wav`) survive a refresh instead of churning. */
 function fileOf(row: { state: string; file?: string | null }): string | null {
   return row.state === 'ready' ? (row.file ?? null) : null
@@ -219,21 +258,60 @@ function hasVersionedRecipe(value: unknown): boolean {
   )
 }
 
+/** The take's length from a versioned recipe, or null (an older or imported song). */
+function recipeSeconds(recipe: unknown): number | null {
+  const seconds = hasVersionedRecipe(recipe)
+    ? (recipe as { seconds?: unknown }).seconds
+    : undefined
+  return typeof seconds === 'number' ? seconds : null
+}
+
+/** A song row's registry-owned fields. A re-list and every command's returned entry
+ * rebuild exactly these; only the row's id and in-memory wav are session state. */
+function songRowFields(entry: SongEntry) {
+  return {
+    state: 'ready' as const,
+    title: entry.title,
+    prompt: entry.prompt,
+    model: asTrackEngine(entry.model),
+    file: entry.file,
+    recipe: entry.recipe,
+    rating: entry.rating ?? 0,
+    tags: entry.tags ?? [],
+  }
+}
+
+/** A sample row's registry-owned fields (see {@link songRowFields}). */
+function sampleRowFields(entry: SampleEntry) {
+  return {
+    state: 'ready' as const,
+    title: entry.title,
+    prompt: entry.prompt,
+    model: entry.model,
+    file: entry.file,
+    oneShot: entry.oneShot,
+    rating: entry.rating ?? 0,
+    tags: entry.tags ?? [],
+  }
+}
+
 /** Re-list one library (songs or samples) from its on-disk registry, reconciled
  * against the folder by the Rust shell (hand-added files appear; deleted files drop
- * out). A row already held for a file keeps its id + in-memory wav (reuse by
- * filename), so a live re-list never churns; a row whose file vanished is dropped; an
- * in-session take not yet on disk is kept. `ref` is read after the fetch resolves
- * (freshest), and the id mint (`toRow`) runs OUTSIDE the state updater — StrictMode
- * replays updaters, so they must be pure. A no-op outside Tauri. */
+ * out). Every row is rebuilt from its registry entry, so an out-of-band write (an MCP
+ * rating, a resync after a failed command) always shows; a row already held for the
+ * file hands `toRow` only its id + in-memory wav, so a live re-list never churns. A
+ * row whose file vanished is dropped; an in-session take not yet on disk is kept.
+ * `ref` is read after the fetch resolves (freshest), and the id mint (`toRow`) runs
+ * OUTSIDE the state updater — StrictMode replays updaters, so they must be pure. A
+ * no-op outside Tauri. */
 function reListLibrary<
-  R extends { id: number; state: string; file?: string | null },
+  R extends { id: number; state: string; file?: string | null; wav?: ArrayBuffer },
   E extends { file: string },
 >(
   command: string,
   ref: { current: R[] },
   setRows: (next: (current: R[]) => R[]) => void,
-  toRow: (entry: E) => R,
+  toRow: (entry: E, kept: { id: number; wav?: ArrayBuffer } | undefined) => R,
 ): void {
   if (!isTauri()) return
   void (async () => {
@@ -248,7 +326,10 @@ function reListLibrary<
         .map((row) => [fileOf(row), row] as const)
         .filter((pair): pair is readonly [string, R] => pair[0] != null),
     )
-    const restored = entries.map((entry) => byFile.get(entry.file) ?? toRow(entry))
+    const restored = entries.map((entry) => {
+      const prior = byFile.get(entry.file)
+      return toRow(entry, prior && { id: prior.id, wav: prior.wav })
+    })
     // Newest-first: in-session takes not yet on disk lead, above the restored
     // library reversed so the most recently composed file sits at the top (the
     // registry stores composition order, oldest first), sparing a scroll to the
@@ -348,7 +429,8 @@ export function MediaExplorer({
   const { t } = useTranslation()
   // Whether the standalone MIDI-keyboard window (issue #49) is open — a shell
   // read-back that lights the tray's piano toggle.
-  const pianoWindowOpen = useInterfaceStore()?.pianoWindowOpen ?? false
+  const interfaceState = useInterfaceStore()
+  const pianoWindowOpen = interfaceState?.pianoWindowOpen ?? false
   const [tab, setTab] = useState<MediaTab>('crates')
   const [search, setSearch] = useState('')
   // True only while the top grip is being dragged, to drop the height
@@ -404,6 +486,43 @@ export function MediaExplorer({
   // The take whose prompt is expanded to full text, or null. One at a time; the
   // rest stay truncated to one line.
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  // The row whose title is open in the inline rename editor, or null. One at a time,
+  // like expandedId.
+  const [editingId, setEditingId] = useState<number | null>(null)
+  // The row whose tag panel is open, or null — one at a time, like editingId.
+  // `focusAdd` is the `t` fast path: open on the add field, not the first tag.
+  const [tagging, setTagging] = useState<{ id: number; focusAdd: boolean } | null>(null)
+  // The row whose "Add to playlist…" panel is open, or null — one at a time.
+  const [playlistPanelId, setPlaylistPanelId] = useState<number | null>(null)
+  // The menu wrapper of the row whose tag or playlist panel is open, that panel's
+  // anchor (ActionMenu keeps its trigger ref internal).
+  const panelAnchorRef = useRef<HTMLSpanElement>(null)
+  // Generate/Samples order, a persisted preference.
+  const [mediaSort, setMediaSort] = useState<MediaSort>(
+    () => loadAppSettings().mediaSort ?? 'newest',
+  )
+  // The playlists (the shell's list, adopted after every write) and the Songs tab's
+  // selected source: 'all' or a playlist name, persisted.
+  const [playlists, setPlaylists] = useState<Playlist[]>([])
+  const [mediaSource, setMediaSource] = useState(() => loadAppSettings().mediaSource ?? 'all')
+  // A playlist view's sort, session-only; every playlist opens in its own order.
+  const [playlistSort, setPlaylistSort] = useState<PlaylistSort>('playlist')
+  // The inline name editors: a new playlist in the column, and the open playlist's
+  // rename in its header.
+  const [creatingPlaylist, setCreatingPlaylist] = useState(false)
+  const [renamingPlaylist, setRenamingPlaylist] = useState(false)
+  // The drag-and-drop targets under the pointer: a playlist in the column, and a row
+  // (by file) in a playlist view with the side the drop lands on.
+  const [dropSource, setDropSource] = useState<string | null>(null)
+  const [dropRow, setDropRow] = useState<{ file: string; after: boolean } | null>(null)
+  // Which row each deck was loaded with from here (row id captured at load time —
+  // titles change under a rename), per library: a deck holds one track but may hold
+  // a sample in a loop slot alongside it. Session-only.
+  const [trackOnDeck, setTrackOnDeck] = useState<Partial<Record<DeckId, number>>>({})
+  const [sampleOnDeck, setSampleOnDeck] = useState<Partial<Record<DeckId, number>>>({})
+  // Library files loaded onto a deck this session, shown muted ("played") so a set
+  // reads as done / playing / next. Session-only by design.
+  const [playedFiles, setPlayedFiles] = useState<ReadonlySet<string>>(() => new Set())
   // The item currently auditioning in the headphones (ADR-0027), or null. One at
   // a time — starting another preview, loading, or unmounting stops it.
   const [previewingId, setPreviewingId] = useState<number | null>(null)
@@ -424,7 +543,16 @@ export function MediaExplorer({
     samplesRef.current = samples
   }, [tracks, samples])
 
-  const filteredTracks = tracks.filter((track) =>
+  // The selected playlist, or null for All songs (also when the persisted name no
+  // longer names a playlist). A playlist view lists its files' rows in playlist order;
+  // a file with no row is skipped, and a pending row (no file) never shows.
+  const playlist = playlists.find((entry) => entry.name === mediaSource) ?? null
+  const songRows = useMemo(() => {
+    if (playlist == null) return tracks
+    const byFile = new Map(tracks.map((track) => [fileOf(track), track]))
+    return playlist.files.flatMap((file) => byFile.get(file) ?? [])
+  }, [playlist, tracks])
+  const filteredTracks = songRows.filter((track) =>
     matchesSearch(
       search,
       track.title,
@@ -434,14 +562,24 @@ export function MediaExplorer({
       track.model == null
         ? t('media.generate.imported')
         : t(`media.generate.engines.${track.model}`),
+      // As `#drone`, so `#drone` matches tags only and `drone` tags and text alike.
+      ...(track.state === 'ready' ? track.tags.map((tag) => '#' + tag) : []),
     ),
   )
-  const ready = filteredTracks.filter(
+  // The sorted, filtered order is both what renders and what the rotary walks.
+  const sortedTracks =
+    playlist == null
+      ? sortRows(filteredTracks, mediaSort)
+      : playlistSort === 'playlist'
+        ? filteredTracks
+        : sortRows(filteredTracks, playlistSort)
+  const ready = sortedTracks.filter(
     (track): track is GeneratedTrack & { state: 'ready' } =>
       track.state === 'ready',
   )
-  const highlightedReadyId =
-    ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)].id
+  const highlightedTrack =
+    ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)]
+  const highlightedReadyId = highlightedTrack?.id ?? null
 
   const filteredSamples = samples.filter((sample) =>
     matchesSearch(
@@ -452,16 +590,19 @@ export function MediaExplorer({
       sample.model,
       sampleModelLabel(sample.model),
       t(sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop'),
+      ...(sample.state === 'ready' ? sample.tags.map((tag) => '#' + tag) : []),
     ),
   )
-  const readySamples = filteredSamples.filter(
+  const sortedSamples = sortRows(filteredSamples, mediaSort)
+  const readySamples = sortedSamples.filter(
     (sample): sample is GeneratedSample & { state: 'ready' } =>
       sample.state === 'ready',
   )
-  const highlightedSampleId =
+  const highlightedSample =
     readySamples.length === 0
       ? null
-      : readySamples[Math.min(highlight, readySamples.length - 1)].id
+      : readySamples[Math.min(highlight, readySamples.length - 1)]
+  const highlightedSampleId = highlightedSample?.id ?? null
   const filteredFiles = files.filter((file) => matchesSearch(search, file.name))
   const highlightedFileIndex =
     filteredFiles.length === 0 ? -1 : Math.min(highlight, filteredFiles.length - 1)
@@ -545,7 +686,12 @@ export function MediaExplorer({
         throw new Error(t('media.undecodable', { title: label }))
       }
       const loaded = await onLoadTrack(deck, source, label)
-      if (!loaded) setGenerateError(t('media.undecodable', { title: label }))
+      if (!loaded) {
+        setGenerateError(t('media.undecodable', { title: label }))
+        return
+      }
+      setTrackOnDeck((current) => ({ ...current, [deck]: track.id }))
+      markPlayed(track.file)
     } catch (error) {
       // The click is fire-and-forget (`void loadGeneratedTrack`), so a rejected
       // read/decode/load would otherwise vanish and look like nothing happened.
@@ -568,6 +714,8 @@ export function MediaExplorer({
     try {
       await invoke('delete_generated_song', { name: track.file })
       dropTrack(track.id)
+      // The shell strips the file from every playlist too.
+      refreshPlaylists()
     } catch (error) {
       setSaveError(
         t('media.generate.deleteFailed', {
@@ -623,7 +771,12 @@ export function MediaExplorer({
       // decodeAudioData (inside the slot load) detaches its input — hand over a copy
       // so the sample can load again, or onto the other deck.
       const loaded = await onLoadSample(deck, wav.slice(0), sample.oneShot, label)
-      if (!loaded) setSampleError(t('media.samples.loadFailed', { title: label }))
+      if (!loaded) {
+        setSampleError(t('media.samples.loadFailed', { title: label }))
+        return
+      }
+      setSampleOnDeck((current) => ({ ...current, [deck]: sample.id }))
+      markPlayed(sample.file)
     } catch (error) {
       // The click is fire-and-forget (`void loadSample`), so a rejected read/decode/
       // load would otherwise vanish and look like nothing happened.
@@ -657,21 +810,17 @@ export function MediaExplorer({
   // The two libraries' re-list, each a thin {@link reListLibrary} call differing only
   // in the command, the ref, the setter, and the registry-entry → row mapping (a
   // sample carries `oneShot`; a song's model runs through `asTrackEngine`). Used at
-  // startup and by the folder watcher.
+  // startup, by the folder watcher, and to resync after a failed rate/rename.
   const refreshSongs = useCallback(
     () =>
       reListLibrary<GeneratedTrack, SongEntry>(
         'list_generated_songs',
         tracksRef,
         setTracks,
-        (entry) => ({
-          id: nextIdRef.current++,
-          state: 'ready',
-          title: entry.title,
-          prompt: entry.prompt,
-          model: asTrackEngine(entry.model),
-          file: entry.file,
-          recipe: entry.recipe,
+        (entry, kept) => ({
+          id: kept?.id ?? nextIdRef.current++,
+          wav: kept?.wav,
+          ...songRowFields(entry),
         }),
       ),
     [],
@@ -682,34 +831,258 @@ export function MediaExplorer({
         'list_generated_samples',
         samplesRef,
         setSamples,
-        (entry) => ({
-          id: nextIdRef.current++,
-          state: 'ready',
-          title: entry.title,
-          prompt: entry.prompt,
-          model: entry.model,
-          file: entry.file,
-          oneShot: entry.oneShot,
+        (entry, kept) => ({
+          id: kept?.id ?? nextIdRef.current++,
+          wav: kept?.wav,
+          ...sampleRowFields(entry),
         }),
       ),
     [],
   )
 
-  // Restore both lists at startup; the folder watcher keeps them live thereafter.
+  const refreshPlaylists = useCallback(() => {
+    if (!isTauri()) return
+    invoke<Playlist[]>('list_playlists')
+      .then((list) => setPlaylists(list ?? []))
+      .catch(() => {}) // a failed scan just means no refresh, as for the libraries
+  }, [])
+
+  /** Put a playlist the shell returned (or an optimistic one) in place of
+   * `previousName`, keeping the column in name order. */
+  function adoptPlaylist(previousName: string, stored: Playlist) {
+    setPlaylists((current) =>
+      [
+        ...current.filter((entry) => entry.name !== previousName && entry.name !== stored.name),
+        stored,
+      ].sort(byPlaylistName),
+    )
+  }
+
+  function playlistFailed(name: string, error: unknown) {
+    setSaveError(
+      t('media.playlists.failed', {
+        name,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    )
+    refreshPlaylists()
+  }
+
+  /** Create or replace a playlist with exactly `files` — create, add, remove and
+   * reorder alike send the whole list. Optimistic, then adopts the stored playlist
+   * (a new name comes back sanitised); a failure surfaces and re-lists. Resolves to
+   * the stored playlist, or undefined on failure. */
+  function savePlaylist(name: string, files: string[]): Promise<Playlist | undefined> {
+    setSaveError(null)
+    adoptPlaylist(name, { name, files })
+    return invoke<Playlist>('save_playlist', { name, files })
+      .then((stored) => {
+        adoptPlaylist(name, stored)
+        return stored
+      })
+      .catch((error: unknown) => {
+        playlistFailed(name, error)
+        return undefined
+      })
+  }
+
+  // Stable for the memoised source Select (see ui/Select).
+  const selectSource = useCallback((source: string) => {
+    setMediaSource(source)
+    setPlaylistSort('playlist')
+    setRenamingPlaylist(false)
+    setHighlight(0)
+    updateAppSettings({ mediaSource: source })
+  }, [])
+
+  /** A name that already names a playlist (ignoring case, as the shell's collision
+   * check does) — saving under it would replace that playlist's songs. */
+  const playlistNamed = (name: string) =>
+    playlists.find((entry) => entry.name.toLowerCase() === name.toLowerCase())
+
+  function createPlaylist(name: string) {
+    const existing = playlistNamed(name)
+    if (existing) {
+      selectSource(existing.name)
+      return
+    }
+    void savePlaylist(name, []).then((stored) => stored && selectSource(stored.name))
+  }
+
+  function renamePlaylist(from: string, to: string) {
+    setSaveError(null)
+    invoke<Playlist>('rename_playlist', { from, to })
+      .then((stored) => {
+        adoptPlaylist(from, stored)
+        if (mediaSource === from) selectSource(stored.name)
+      })
+      .catch((error: unknown) => playlistFailed(from, error))
+  }
+
+  function deletePlaylist(name: string) {
+    setSaveError(null)
+    invoke('delete_playlist', { name })
+      .then(() => {
+        setPlaylists((current) => current.filter((entry) => entry.name !== name))
+        selectSource('all')
+      })
+      .catch((error: unknown) => playlistFailed(name, error))
+  }
+
+  /** Add a dragged song file to a playlist (once — a repeat drop is a no-op). Only a
+   * file the songs library holds is accepted; drag data can come from anywhere. */
+  function dropOnPlaylist(target: Playlist, file: string) {
+    if (target.files.includes(file) || !tracks.some((track) => fileOf(track) === file)) return
+    void savePlaylist(target.name, insertFile(target.files, file))
+  }
+
+  /** A row of the open playlist dropped on another: it moves to the drop point.
+   * Anything else dragged in (not one of its rows) is ignored. */
+  function dropOnRow(target: Playlist, rowFile: string, after: boolean, file: string) {
+    const from = target.files.indexOf(file)
+    if (from < 0) return
+    const at = target.files.indexOf(rowFile) + (after ? 1 : 0)
+    // `at` counts the dragged row itself when it sits above the drop point.
+    const to = at > from ? at - 1 : at
+    if (to !== from) void savePlaylist(target.name, moveFile(target.files, from, to))
+  }
+
+  /** Set fields on a library row optimistically, persist them through the shell, and
+   * adopt the row the shell returns (its normalised values). A failure surfaces
+   * `failedKey` and re-lists to resync. A take with no file (outside Tauri, or a
+   * failed save) has no registry row, so it only changes in memory — the same branch
+   * removeTrack takes. */
+  function mutateTrack(
+    track: GeneratedTrack & { state: 'ready' },
+    fields: { rating?: number; title?: string; tags?: string[] },
+    command: string,
+    args: Record<string, unknown>,
+    failedKey: string,
+  ) {
+    const patch = (next: Partial<GeneratedTrack & { state: 'ready' }>) =>
+      setTracks((current) =>
+        current.map((row) =>
+          row.id === track.id && row.state === 'ready' ? { ...row, ...next } : row,
+        ),
+      )
+    patch(fields)
+    if (!isTauri() || !track.file) return
+    setSaveError(null)
+    invoke<SongEntry>(command, { name: track.file, ...args })
+      .then((entry) => patch(songRowFields(entry)))
+      .catch((error: unknown) => {
+        setSaveError(
+          t(failedKey, {
+            title: track.title,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        )
+        refreshSongs()
+      })
+  }
+
+  /** {@link mutateTrack} for the samples library. */
+  function mutateSample(
+    sample: GeneratedSample & { state: 'ready' },
+    fields: { rating?: number; title?: string; tags?: string[] },
+    command: string,
+    args: Record<string, unknown>,
+    failedKey: string,
+  ) {
+    const patch = (next: Partial<GeneratedSample & { state: 'ready' }>) =>
+      setSamples((current) =>
+        current.map((row) =>
+          row.id === sample.id && row.state === 'ready' ? { ...row, ...next } : row,
+        ),
+      )
+    patch(fields)
+    if (!isTauri() || !sample.file) return
+    setSampleSaveError(null)
+    invoke<SampleEntry>(command, { name: sample.file, ...args })
+      .then((entry) => patch(sampleRowFields(entry)))
+      .catch((error: unknown) => {
+        setSampleSaveError(
+          t(failedKey, {
+            title: sample.title,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        )
+        refreshSamples()
+      })
+  }
+
+  // 0 clears: the shell stores an unrated row as an absent rating (null on the wire).
+  const rateTrack = (track: GeneratedTrack & { state: 'ready' }, rating: number) =>
+    mutateTrack(
+      track,
+      { rating },
+      'rate_generated_song',
+      { rating: rating || null },
+      'media.rating.failed',
+    )
+  const rateSample = (sample: GeneratedSample & { state: 'ready' }, rating: number) =>
+    mutateSample(
+      sample,
+      { rating },
+      'rate_generated_sample',
+      { rating: rating || null },
+      'media.rating.failed',
+    )
+  const renameTrack = (track: GeneratedTrack & { state: 'ready' }, title: string) =>
+    mutateTrack(track, { title }, 'rename_generated_song', { title }, 'media.rename.failed')
+  const renameSample = (sample: GeneratedSample & { state: 'ready' }, title: string) =>
+    mutateSample(sample, { title }, 'rename_generated_sample', { title }, 'media.rename.failed')
+
+  // The whole list goes to the shell every time; the row adopts its normalised tags.
+  const tagTrack = (track: GeneratedTrack & { state: 'ready' }, tags: string[]) =>
+    mutateTrack(track, { tags }, 'tag_generated_song', { tags }, 'media.tags.failed')
+  const tagSample = (sample: GeneratedSample & { state: 'ready' }, tags: string[]) =>
+    mutateSample(sample, { tags }, 'tag_generated_sample', { tags }, 'media.tags.failed')
+
+  /** Rename the row open in the editor. Ids are unique across both libraries (one
+   * mint), so the editing id names exactly one row. */
+  function commitRename(title: string) {
+    const track = tracks.find((row) => row.id === editingId)
+    if (track?.state === 'ready') renameTrack(track, title)
+    const sample = samples.find((row) => row.id === editingId)
+    if (sample?.state === 'ready') renameSample(sample, title)
+  }
+
+  /** Replace the tagged row's tags (see {@link commitRename} for the id lookup). */
+  function commitTags(id: number, tags: string[]) {
+    const track = tracks.find((row) => row.id === id)
+    if (track?.state === 'ready') tagTrack(track, tags)
+    const sample = samples.find((row) => row.id === id)
+    if (sample?.state === 'ready') tagSample(sample, tags)
+  }
+
+  function markPlayed(file: string | null) {
+    if (file) setPlayedFiles((current) => new Set(current).add(file))
+  }
+
+  // Restore the lists at startup; the folder watcher keeps them live thereafter.
   useEffect(() => {
     refreshSongs()
     refreshSamples()
-  }, [refreshSongs, refreshSamples])
+    refreshPlaylists()
+  }, [refreshSongs, refreshSamples, refreshPlaylists])
 
   // Live-reload from the Rust folder watcher (ADR-0022): a deck auto-saving a sample,
   // or a file dropped in / deleted by hand, fires `library://changed`; re-list the
-  // named library. A no-op outside Tauri (the event bridge is absent).
+  // named library; an MCP agent's playlist write names 'playlists'. A songs change
+  // re-lists the playlists too, since the shell reconciles them against the folder.
+  // A no-op outside Tauri (the event bridge is absent).
   useEffect(
     () =>
-      subscribeLibraryChanged((library) =>
-        library === 'songs' ? refreshSongs() : refreshSamples(),
-      ),
-    [refreshSongs, refreshSamples],
+      subscribeLibraryChanged((library) => {
+        if (library === 'samples') {
+          refreshSamples()
+          return
+        }
+        if (library === 'songs') refreshSongs()
+        refreshPlaylists()
+      }),
+    [refreshSongs, refreshSamples, refreshPlaylists],
   )
 
   // An MCP agent's generation (Rust emits mcp://generation): mirror the same
@@ -802,6 +1175,105 @@ export function MediaExplorer({
     }),
   )
 
+  // Keys 1–5 rate the highlighted row and 0 clears it: audition with 🎧, press a
+  // number; `t` opens its tag panel on the add field. Handled here, not in
+  // shortcuts.ts (focus-only). Typing is left alone —
+  // the search, the compose fields, the rename editor — but a focused star radio
+  // isn't typing, so rating with the mouse doesn't disarm the keys.
+  useEffect(() => {
+    if (!open || (tab !== 'generate' && tab !== 'samples')) return
+    function onKeyDown(event: KeyboardEvent) {
+      if (!/^[0-5t]$/.test(event.key)) return
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      const target = event.target
+      if (
+        (target instanceof HTMLInputElement &&
+          target.type !== 'radio' &&
+          target.type !== 'checkbox') ||
+        target instanceof HTMLSelectElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return
+      }
+      if (event.key === 't') {
+        const row = tab === 'generate' ? highlightedTrack : highlightedSample
+        if (!row) return
+        // Or the `t` lands in the add field the panel focuses.
+        event.preventDefault()
+        setPlaylistPanelId(null)
+        setTagging({ id: row.id, focusAdd: true })
+        return
+      }
+      const rating = Number(event.key)
+      if (tab === 'generate') {
+        if (highlightedTrack) rateTrack(highlightedTrack, rating)
+      } else if (highlightedSample) {
+        rateSample(highlightedSample, rating)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
+
+  /** The deck this row was loaded onto from here and that still holds it, or null.
+   * "Still holds" is the store's read-back of the label the row was loaded with —
+   * the deck's track for a song, a loop slot for a sample — so an eject, another
+   * load onto that deck, or a rename (the deck keeps the old label) retires it.
+   * Without a store snapshot (no shell) the load itself is the only evidence. */
+  function deckHolding(
+    onDeck: Partial<Record<DeckId, number>>,
+    rowId: number,
+    holds: (deck: DeckSnap) => boolean,
+  ): DeckId | null {
+    return (
+      (['a', 'b'] as const).find((deck) => {
+        if (onDeck[deck] !== rowId) return false
+        const snap = interfaceState?.decks[deck === 'a' ? 0 : 1]
+        return interfaceState == null || (snap != null && holds(snap))
+      }) ?? null
+    )
+  }
+
+  const sortOptions = useMemo(
+    () =>
+      (['newest', 'rating', 'title'] as const).map((value) => ({
+        value,
+        label: t(`media.sort.${value}`),
+      })),
+    [t],
+  )
+  // In a playlist view "Newest" would just be the playlist order, so it gives way.
+  const playlistSortOptions = useMemo(
+    () =>
+      (['playlist', 'rating', 'title'] as const).map((value) => ({
+        value,
+        label: t(`media.sort.${value}`),
+      })),
+    [t],
+  )
+  const sourceOptions = useMemo(
+    () => [
+      { value: 'all', label: t('media.playlists.all') },
+      ...playlists.map((entry) => ({ value: entry.name, label: entry.name })),
+    ],
+    [playlists, t],
+  )
+  // Stable for the memoised Select (see ui/Select).
+  const changeSort = useCallback((value: string) => {
+    const next = value as MediaSort
+    setMediaSort(next)
+    setHighlight(0)
+    updateAppSettings({ mediaSort: next })
+  }, [])
+  // Never persisted: a playlist's own order is its default.
+  const changePlaylistSort = useCallback((value: string) => {
+    setPlaylistSort(value as PlaylistSort)
+    setHighlight(0)
+  }, [])
+  const playlistView = tab === 'generate' && playlist != null
+  const starLabel = (count: number) => t('media.rating.star', { count })
+
   /** Compose a short loop in the Samples tab → ~/Documents/LSDJ/generated_samples
    * (ADR-0022). Mirrors {@link generateTrack} but always SFX/Music and persists to the
    * sample library. A loop carries the seam surplus the engine folds on reload (the
@@ -863,6 +1335,8 @@ export function MediaExplorer({
                   file: null,
                   oneShot,
                   wav,
+                  rating: 0,
+                  tags: [],
                 }
               : sample,
           ),
@@ -972,6 +1446,8 @@ export function MediaExplorer({
                   file: null,
                   wav,
                   recipe: generation.recipe,
+                  rating: 0,
+                  tags: [],
                 }
               : track,
           ),
@@ -1125,6 +1601,168 @@ export function MediaExplorer({
     ))
   }
 
+  /** The inline rename editor that replaces a row's name. Enter and blur commit,
+   * Escape cancels; Enter/Escape just blur, so blur is the single commit path (an
+   * unmount can't commit twice). A trimmed-unchanged or empty title is a silent
+   * cancel — which is how Escape cancels: it puts the original title back into the
+   * (uncontrolled) field before blurring. */
+  function renameEditor(name: string, currentTitle: string) {
+    return (
+      <TextField
+        labelHidden
+        label={t('media.rename.label', { name })}
+        defaultValue={currentTitle}
+        autoFocus
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') event.currentTarget.value = currentTitle
+          if (event.key === 'Enter' || event.key === 'Escape') event.currentTarget.blur()
+        }}
+        onBlur={(event) => {
+          const next = event.currentTarget.value.trim()
+          setEditingId(null)
+          if (next && next !== currentTitle) commitRename(next)
+        }}
+      />
+    )
+  }
+
+  /** {@link renameEditor} for a playlist name (a new one, or the open one's rename):
+   * `onDone` gets the trimmed text on blur and treats empty or unchanged as a
+   * cancel. (The row editor stays separate: routing its commit through a callback
+   * argument trips the compiler's ref-in-render check.) */
+  function playlistNameEditor(current: string, onDone: (next: string) => void) {
+    return (
+      <TextField
+        labelHidden
+        label={t('media.playlists.nameLabel')}
+        defaultValue={current}
+        autoFocus
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') event.currentTarget.value = current
+          if (event.key === 'Enter' || event.key === 'Escape') event.currentTarget.blur()
+        }}
+        onBlur={(event) => onDone(event.currentTarget.value.trim())}
+      />
+    )
+  }
+
+  /** The row's "On A" badge while a deck holds it, else nothing. */
+  function onDeckBadge(deck: DeckId | null) {
+    return (
+      deck && (
+        <span className="media__on-deck">
+          {t('media.onDeck', { deck: deck.toUpperCase() })}
+        </span>
+      )
+    )
+  }
+
+  /** A ready row's tags as chips; a click searches for the tag. */
+  function tagChips(tags: string[]) {
+    return tags.map((tag) => (
+      <button
+        key={tag}
+        type="button"
+        className="media__tag"
+        aria-label={t('media.tags.filterBy', { tag })}
+        onClick={() => {
+          setSearch('#' + tag)
+          setHighlight(0)
+        }}
+      >
+        {`#${tag}`}
+      </button>
+    ))
+  }
+
+  /** A ready row's ⋯ menu; `playlistItems` (a saved song's) follow Tags…. The
+   * wrapper is the tag or playlist panel's anchor while this row's panel is open. */
+  function rowMenu(
+    id: number,
+    name: string,
+    onDelete: () => void,
+    onReuse?: () => void,
+    playlistItems: ActionMenuItem[] = [],
+  ) {
+    const items: ActionMenuItem[] = [
+      { label: t('media.menu.rename'), onSelect: () => setEditingId(id) },
+      { label: t('media.menu.tags'), onSelect: () => setTagging({ id, focusAdd: false }) },
+      ...playlistItems,
+    ]
+    if (onReuse) items.push({ label: t('media.generate.reuseSettings'), onSelect: onReuse })
+    items.push({ label: t('media.menu.delete'), onSelect: onDelete, danger: true })
+    return (
+      <span
+        className="media__menu"
+        ref={tagging?.id === id || playlistPanelId === id ? panelAnchorRef : null}
+      >
+        <ActionMenu label={t('media.menu.label', { name })} items={items} />
+      </span>
+    )
+  }
+
+  // The open tag panel's row — only while it renders in the visible tab — and the
+  // vocabulary it offers: every tag across both libraries, alphabetical.
+  const tabRows: Array<GeneratedTrack | GeneratedSample> =
+    tab === 'generate' ? tracks : tab === 'samples' ? samples : []
+  const taggingRow = tabRows.find((row) => row.id === tagging?.id)
+  // The open "Add to playlist…" panel's song (a saved one, on the Songs tab).
+  const playlistPanelRow = tracks.find((row) => row.id === playlistPanelId)
+  const playlistPanelFile =
+    tab === 'generate' && playlistPanelRow?.state === 'ready' ? playlistPanelRow.file : null
+
+  /** A saved song's playlist menu items: "Add to playlist…" everywhere, and in a
+   * playlist view Move up / Move down (in the stored order, so only while the view
+   * shows it) and Remove from playlist. */
+  function songPlaylistItems(id: number, file: string | null): ActionMenuItem[] {
+    if (file == null) return []
+    const items: ActionMenuItem[] = [
+      {
+        label: t('media.menu.addToPlaylist'),
+        onSelect: () => {
+          setTagging(null)
+          setPlaylistPanelId(id)
+        },
+      },
+    ]
+    if (!playlistView) return items
+    const index = playlist.files.indexOf(file)
+    const inOrder = playlistSort === 'playlist'
+    items.push(
+      {
+        label: t('media.menu.moveUp'),
+        disabled: !inOrder || index <= 0,
+        onSelect: () => void savePlaylist(playlist.name, moveFile(playlist.files, index, index - 1)),
+      },
+      {
+        label: t('media.menu.moveDown'),
+        disabled: !inOrder || index >= playlist.files.length - 1,
+        onSelect: () => void savePlaylist(playlist.name, moveFile(playlist.files, index, index + 1)),
+      },
+      {
+        label: t('media.menu.removeFromPlaylist'),
+        onSelect: () => void savePlaylist(playlist.name, removeFile(playlist.files, file)),
+      },
+    )
+    return items
+  }
+  // The open playlist's total length, once every song in it carries one.
+  const playlistSeconds = songRows.map((row) =>
+    row.state === 'ready' ? recipeSeconds(row.recipe) : null,
+  )
+  const playlistLength =
+    playlistSeconds.length > 0 && playlistSeconds.every((value) => value != null)
+      ? playlistSeconds.reduce<number>((sum, value) => sum + (value ?? 0), 0)
+      : null
+  const tagVocabulary =
+    taggingRow?.state === 'ready'
+      ? [
+          ...new Set(
+            [...tracks, ...samples].flatMap((row) => (row.state === 'ready' ? row.tags : [])),
+          ),
+        ].sort((a, b) => a.localeCompare(b))
+      : []
+
   /** Drag the top grip to resize: dragging up grows the tray. Pointer capture
    * keeps the gesture alive if the cursor leaves the thin handle. */
   function startResize(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1238,6 +1876,16 @@ export function MediaExplorer({
                   </Button>
                 )}
               </div>
+              {(tab === 'generate' || tab === 'samples') && (
+                <div className="media__sort">
+                  <Select
+                    label={t('media.sort.label')}
+                    value={playlistView ? playlistSort : mediaSort}
+                    options={playlistView ? playlistSortOptions : sortOptions}
+                    onChange={playlistView ? changePlaylistSort : changeSort}
+                  />
+                </div>
+              )}
               {(tab === 'generate' || tab === 'samples') && (
                 <Button
                   onClick={() =>
@@ -1380,7 +2028,106 @@ export function MediaExplorer({
               onSubmit={generateTrack}
             />
           ) : null}
-          {tracks.length === 0 ? (
+          <div className="media__songs">
+            <nav className="media__sources" aria-label={t('media.playlists.sources')}>
+              <Button
+                lit={playlist == null}
+                aria-pressed={playlist == null}
+                onClick={() => selectSource('all')}
+              >
+                {t('media.playlists.all')}
+              </Button>
+              {playlists.map((entry) => (
+                // The wrapper is the drop target (Button takes no class); it lights
+                // while a dragged song is over it.
+                <div
+                  key={entry.name}
+                  className={`media__source${
+                    dropSource === entry.name ? ' media__source--drop' : ''
+                  }`}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    setDropSource(entry.name)
+                  }}
+                  onDragLeave={() => setDropSource(null)}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    setDropSource(null)
+                    dropOnPlaylist(entry, event.dataTransfer.getData('text/plain'))
+                  }}
+                >
+                  <Button
+                    lit={playlist === entry}
+                    aria-pressed={playlist === entry}
+                    onClick={() => selectSource(entry.name)}
+                  >
+                    {entry.name}{' '}
+                    <span className="media__source-count">
+                      {t('media.playlists.count', { count: entry.files.length })}
+                    </span>
+                  </Button>
+                </div>
+              ))}
+              {creatingPlaylist ? (
+                playlistNameEditor('', (name) => {
+                  setCreatingPlaylist(false)
+                  if (name) createPlaylist(name)
+                })
+              ) : (
+                <Button onClick={() => setCreatingPlaylist(true)}>
+                  {t('media.playlists.new')}
+                </Button>
+              )}
+            </nav>
+            <div className="media__songs-list">
+              {/* The column's narrow-width stand-in (CSS shows one or the other). */}
+              <div className="media__source-select">
+                <Select
+                  label={t('media.playlists.source')}
+                  value={playlist?.name ?? 'all'}
+                  options={sourceOptions}
+                  onChange={selectSource}
+                />
+              </div>
+              {playlist != null && (
+                <div className="media__playlist-header">
+                  {renamingPlaylist ? (
+                    playlistNameEditor(playlist.name, (name) => {
+                      setRenamingPlaylist(false)
+                      if (name && name !== playlist.name) renamePlaylist(playlist.name, name)
+                    })
+                  ) : (
+                    <span
+                      className="media__playlist-name"
+                      onDoubleClick={() => setRenamingPlaylist(true)}
+                    >
+                      {playlist.name}
+                    </span>
+                  )}
+                  <span className="media__meta">
+                    {`${t('media.playlists.count', { count: songRows.length })}${
+                      playlistLength == null ? '' : ` · ${formatLength(playlistLength)}`
+                    }`}
+                  </span>
+                  <ActionMenu
+                    label={t('media.playlists.menuLabel')}
+                    items={[
+                      {
+                        label: t('media.menu.renamePlaylist'),
+                        onSelect: () => setRenamingPlaylist(true),
+                      },
+                      {
+                        label: t('media.menu.deletePlaylist'),
+                        onSelect: () => deletePlaylist(playlist.name),
+                        danger: true,
+                      },
+                    ]}
+                  />
+                </div>
+              )}
+          {playlist != null && songRows.length === 0 ? (
+            <p className="media__empty">{t('media.playlists.empty')}</p>
+          ) : tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
           ) : filteredTracks.length === 0 ? (
             <p className="media__empty" role="status">
@@ -1388,12 +2135,29 @@ export function MediaExplorer({
             </p>
           ) : (
             <ul className="media__list">
-              {filteredTracks.map((track) => {
+              {sortedTracks.map((track) => {
                 // Composed takes (those carrying a prompt) get a #id to tell same-title
                 // siblings apart; an imported file shows just its name. The title
                 // ellipsises in the row; the tag never shrinks.
                 const composed = track.prompt != null
                 const rowLabel = trackLabel(track)
+                const onDeck =
+                  track.state === 'ready'
+                    ? deckHolding(trackOnDeck, track.id, (deck) => deck.track?.title === rowLabel)
+                    : null
+                const played =
+                  onDeck == null && track.state === 'ready' && track.file != null
+                    ? playedFiles.has(track.file)
+                    : false
+                const length = track.state === 'ready' ? recipeSeconds(track.recipe) : null
+                // In a playlist view every row is saved and a drop target for reordering.
+                const playlistFile = playlist != null ? fileOf(track) : null
+                const dropSide =
+                  playlistFile != null && dropRow?.file === playlistFile
+                    ? dropRow.after
+                      ? ' media__item--drop-after'
+                      : ' media__item--drop-before'
+                    : ''
                 return (
                   <li
                     key={track.id}
@@ -1402,20 +2166,72 @@ export function MediaExplorer({
                       track.id === highlightedReadyId
                         ? ' media__item--highlighted'
                         : ''
-                    }`}
+                    }${played ? ' media__item--played' : ''}${dropSide}`}
+                    // Outside a playlist view nothing is accepted (no preventDefault).
+                    onDragOver={(event) => {
+                      if (playlistFile == null) return
+                      event.preventDefault()
+                      const after = dropsAfter(event)
+                      if (dropRow?.file !== playlistFile || dropRow.after !== after) {
+                        setDropRow({ file: playlistFile, after })
+                      }
+                    }}
+                    onDragLeave={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                        setDropRow(null)
+                      }
+                    }}
+                    onDrop={(event) => {
+                      if (playlist == null || playlistFile == null) return
+                      event.preventDefault()
+                      setDropRow(null)
+                      dropOnRow(
+                        playlist,
+                        playlistFile,
+                        dropsAfter(event),
+                        event.dataTransfer.getData('text/plain'),
+                      )
+                    }}
                   >
                     <span className="media__name">
                       {track.state === 'pending' && (
                         <span className="media__spinner" aria-hidden="true" />
                       )}
-                      <span className="media__name-text">
-                        {track.state === 'pending'
-                          ? t('media.generate.pending', { title: track.title })
-                          : track.title}
-                      </span>
+                      {track.state === 'pending' ? (
+                        <span className="media__name-text">
+                          {t('media.generate.pending', { title: track.title })}
+                        </span>
+                      ) : editingId === track.id ? (
+                        renameEditor(rowLabel, track.title)
+                      ) : (
+                        // A click highlights (the rotary/LOAD/number-key target, as in
+                        // the Folder tab); a double-click opens the rename editor.
+                        <button
+                          type="button"
+                          className="media__name--button"
+                          aria-label={t('media.highlight', { name: rowLabel })}
+                          aria-current={track.id === highlightedReadyId}
+                          onClick={() => setHighlight(ready.indexOf(track))}
+                          onDoubleClick={() => setEditingId(track.id)}
+                          // A saved song drags by its name onto a playlist (or within one).
+                          draggable={track.file != null}
+                          onDragStart={(event) => {
+                            if (track.file == null) return
+                            event.dataTransfer.setData('text/plain', track.file)
+                            event.dataTransfer.effectAllowed = 'copyMove'
+                          }}
+                          onDragEnd={() => {
+                            setDropSource(null)
+                            setDropRow(null)
+                          }}
+                        >
+                          <span className="media__name-text">{track.title}</span>
+                        </button>
+                      )}
                       {track.state === 'ready' && composed && (
                         <span className="media__name-tag">{`#${track.id}`}</span>
                       )}
+                      {onDeckBadge(onDeck)}
                       {track.state === 'ready' && track.prompt != null && (
                         <button
                           type="button"
@@ -1434,20 +2250,34 @@ export function MediaExplorer({
                           {prettyPrompt(track.prompt)}
                         </button>
                       )}
+                      {track.state === 'ready' && tagChips(track.tags)}
                     </span>
-                    <span className="media__meta">
-                      {track.model == null
-                        ? t('media.generate.imported')
-                        : t(`media.generate.engines.${track.model}`)}
-                    </span>
-                    {track.state === 'ready' && hasVersionedRecipe(track.recipe) && (
-                      <Button
-                        aria-label={t('media.generate.reuseSettingsFor', { name: rowLabel })}
-                        onClick={() => recallSongRecipe(track)}
-                      >
-                        {t('media.generate.reuseSettings')}
-                      </Button>
+                    {track.state === 'ready' && (
+                      <Rating
+                        value={track.rating}
+                        onChange={(rating) => rateTrack(track, rating)}
+                        label={t('media.rating.label', { name: rowLabel })}
+                        starLabel={starLabel}
+                        clearHint={t('media.rating.clearHint')}
+                      />
                     )}
+                    <span className="media__meta">
+                      {`${
+                        track.model == null
+                          ? t('media.generate.imported')
+                          : t(`media.generate.engines.${track.model}`)
+                      }${length == null ? '' : ` · ${formatLength(length)}`}`}
+                    </span>
+                    {track.state === 'ready' &&
+                      rowMenu(
+                        track.id,
+                        rowLabel,
+                        () => void removeTrack(track),
+                        hasVersionedRecipe(track.recipe)
+                          ? () => recallSongRecipe(track)
+                          : undefined,
+                        songPlaylistItems(track.id, track.file),
+                      )}
                     {track.state === 'ready' && (
                       <Button
                         aria-label={
@@ -1466,10 +2296,17 @@ export function MediaExplorer({
                         (deck) => void loadGeneratedTrack(deck, track),
                         rowLabel,
                       )}
-                    {track.state === 'ready' && (
+                    {/* The only bare ✕ in the explorer: out of this playlist, never a
+                        delete (that lives in the ⋯ menu). */}
+                    {playlist != null && playlistFile != null && (
                       <Button
-                        aria-label={t('media.remove', { name: rowLabel })}
-                        onClick={() => void removeTrack(track)}
+                        aria-label={t('media.playlists.removeFrom', {
+                          name: rowLabel,
+                          playlist: playlist.name,
+                        })}
+                        onClick={() =>
+                          void savePlaylist(playlist.name, removeFile(playlist.files, playlistFile))
+                        }
                       >
                         ✕
                       </Button>
@@ -1479,6 +2316,8 @@ export function MediaExplorer({
               })}
             </ul>
           )}
+            </div>
+          </div>
           {generateError && (
             <p className="media__error" role="alert">
               {t('media.generate.failed', { message: generateError })}
@@ -1571,9 +2410,19 @@ export function MediaExplorer({
             </p>
           ) : (
             <ul className="media__list">
-              {filteredSamples.map((sample) => {
+              {sortedSamples.map((sample) => {
                 const composed = sample.prompt != null
                 const rowLabel = sampleLabel(sample)
+                const onDeck =
+                  sample.state === 'ready'
+                    ? deckHolding(sampleOnDeck, sample.id, (deck) =>
+                        deck.loopLabels.includes(rowLabel),
+                      )
+                    : null
+                const played =
+                  onDeck == null && sample.state === 'ready' && sample.file != null
+                    ? playedFiles.has(sample.file)
+                    : false
                 return (
                   <li
                     key={sample.id}
@@ -1582,20 +2431,34 @@ export function MediaExplorer({
                       sample.id === highlightedSampleId
                         ? ' media__item--highlighted'
                         : ''
-                    }`}
+                    }${played ? ' media__item--played' : ''}`}
                   >
                     <span className="media__name">
                       {sample.state === 'pending' && (
                         <span className="media__spinner" aria-hidden="true" />
                       )}
-                      <span className="media__name-text">
-                        {sample.state === 'pending'
-                          ? t('media.generate.pending', { title: sample.title })
-                          : sample.title}
-                      </span>
+                      {sample.state === 'pending' ? (
+                        <span className="media__name-text">
+                          {t('media.generate.pending', { title: sample.title })}
+                        </span>
+                      ) : editingId === sample.id ? (
+                        renameEditor(rowLabel, sample.title)
+                      ) : (
+                        <button
+                          type="button"
+                          className="media__name--button"
+                          aria-label={t('media.highlight', { name: rowLabel })}
+                          aria-current={sample.id === highlightedSampleId}
+                          onClick={() => setHighlight(readySamples.indexOf(sample))}
+                          onDoubleClick={() => setEditingId(sample.id)}
+                        >
+                          <span className="media__name-text">{sample.title}</span>
+                        </button>
+                      )}
                       {sample.state === 'ready' && composed && (
                         <span className="media__name-tag">{`#${sample.id}`}</span>
                       )}
+                      {onDeckBadge(onDeck)}
                       {sample.state === 'ready' && sample.prompt != null && (
                         <button
                           type="button"
@@ -1614,12 +2477,24 @@ export function MediaExplorer({
                           {prettyPrompt(sample.prompt)}
                         </button>
                       )}
+                      {sample.state === 'ready' && tagChips(sample.tags)}
                     </span>
+                    {sample.state === 'ready' && (
+                      <Rating
+                        value={sample.rating}
+                        onChange={(rating) => rateSample(sample, rating)}
+                        label={t('media.rating.label', { name: rowLabel })}
+                        starLabel={starLabel}
+                        clearHint={t('media.rating.clearHint')}
+                      />
+                    )}
                     <span className="media__meta">
                       {`${sampleModelLabel(sample.model)} · ${t(
                         sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop',
                       )}`}
                     </span>
+                    {sample.state === 'ready' &&
+                      rowMenu(sample.id, rowLabel, () => void removeSample(sample))}
                     {sample.state === 'ready' && (
                       <Button
                         aria-label={
@@ -1635,14 +2510,6 @@ export function MediaExplorer({
                     )}
                     {sample.state === 'ready' &&
                       loadButtons((deck) => void loadSample(deck, sample), rowLabel)}
-                    {sample.state === 'ready' && (
-                      <Button
-                        aria-label={t('media.remove', { name: rowLabel })}
-                        onClick={() => void removeSample(sample)}
-                      >
-                        ✕
-                      </Button>
-                    )}
                   </li>
                 )
               })}
@@ -1712,6 +2579,89 @@ export function MediaExplorer({
             </p>
           )}
         </div>
+      )}
+      {playlistPanelFile != null && (
+        // Keyed by row, like the tag panel.
+        <ChecklistPanel
+          key={playlistPanelId}
+          open
+          anchorRef={panelAnchorRef}
+          onClose={() => {
+            setPlaylistPanelId(null)
+            panelAnchorRef.current?.querySelector('button')?.focus()
+          }}
+          label={t('media.playlists.addLabel', {
+            name: playlistPanelRow ? trackLabel(playlistPanelRow) : '',
+          })}
+          options={playlists.map((entry) => ({
+            value: entry.name,
+            label: entry.name,
+            checked: entry.files.includes(playlistPanelFile),
+          }))}
+          onToggle={(name) => {
+            const entry = playlists.find((candidate) => candidate.name === name)
+            if (!entry) return
+            void savePlaylist(
+              name,
+              entry.files.includes(playlistPanelFile)
+                ? removeFile(entry.files, playlistPanelFile)
+                : insertFile(entry.files, playlistPanelFile),
+            )
+          }}
+          add={{
+            label: t('media.playlists.addNew'),
+            placeholder: t('media.playlists.newPlaceholder'),
+            // An existing name gains the song rather than being replaced by it.
+            onAdd: (text) => {
+              const existing = playlistNamed(text)
+              void savePlaylist(
+                existing?.name ?? text,
+                existing ? insertFile(existing.files, playlistPanelFile) : [playlistPanelFile],
+              )
+            },
+          }}
+          emptyText={t('media.playlists.none')}
+        />
+      )}
+      {taggingRow?.state === 'ready' && (
+        // Keyed by row so moving to another row re-anchors and refocuses.
+        <ChecklistPanel
+          key={taggingRow.id}
+          open
+          anchorRef={panelAnchorRef}
+          onClose={() => {
+            setTagging(null)
+            // The anchor is a wrapper, so hand focus back to its ⋯ trigger.
+            panelAnchorRef.current?.querySelector('button')?.focus()
+          }}
+          label={t('media.tags.label', {
+            name: 'oneShot' in taggingRow ? sampleLabel(taggingRow) : trackLabel(taggingRow),
+          })}
+          options={tagVocabulary.map((tag) => ({
+            value: tag,
+            label: `#${tag}`,
+            checked: taggingRow.tags.includes(tag),
+          }))}
+          onToggle={(tag) =>
+            commitTags(
+              taggingRow.id,
+              taggingRow.tags.includes(tag)
+                ? taggingRow.tags.filter((current) => current !== tag)
+                : [...taggingRow.tags, tag],
+            )
+          }
+          add={{
+            label: t('media.tags.add'),
+            placeholder: t('media.tags.placeholder'),
+            onAdd: (text) => {
+              if (!taggingRow.tags.includes(text)) {
+                commitTags(taggingRow.id, [...taggingRow.tags, text])
+              }
+            },
+          }}
+          emptyText={t('media.tags.empty')}
+          initialFocus={tagging?.focusAdd ? 'add' : undefined}
+        />
       )}
       </div>
     </Panel>

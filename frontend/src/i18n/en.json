@@ -39,7 +39,7 @@
     },
     "tabs": {
       "crates": "Presets",
-      "generate": "Generate",
+      "generate": "Songs",
       "samples": "Samples",
       "folder": "Folder"
     },
@@ -58,10 +58,65 @@
     "loadShort": "→ {{deck}}",
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",
-    "remove": "Remove {{name}}",
     "preview": "Preview {{name}} in headphones",
     "previewStop": "Stop preview",
     "undecodable": "{{title}} could not be decoded",
+    "onDeck": "On {{deck}}",
+    "rating": {
+      "label": "Rating for {{name}}",
+      "star_one": "{{count}} star",
+      "star_other": "{{count}} stars",
+      "clearHint": "Click the current star to clear",
+      "failed": "Couldn't rate {{title}}: {{message}}"
+    },
+    "rename": {
+      "label": "New title for {{name}}",
+      "failed": "Couldn't rename {{title}}: {{message}}"
+    },
+    "menu": {
+      "label": "More actions for {{name}}",
+      "rename": "Rename",
+      "tags": "Tags…",
+      "delete": "Delete from library",
+      "addToPlaylist": "Add to playlist…",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeFromPlaylist": "Remove from playlist",
+      "renamePlaylist": "Rename playlist",
+      "deletePlaylist": "Delete playlist"
+    },
+    "tags": {
+      "label": "Tags for {{name}}",
+      "add": "Add a tag",
+      "placeholder": "Add a tag…",
+      "empty": "No tags yet — add one below.",
+      "filterBy": "Search for #{{tag}}",
+      "failed": "Couldn't tag {{title}}: {{message}}"
+    },
+    "sort": {
+      "label": "Sort",
+      "newest": "Newest",
+      "rating": "Top rated",
+      "title": "Title",
+      "playlist": "Playlist order"
+    },
+    "playlists": {
+      "sources": "Sources",
+      "source": "Source",
+      "all": "All songs",
+      "count_one": "{{count}} song",
+      "count_other": "{{count}} songs",
+      "new": "New playlist",
+      "nameLabel": "Playlist name",
+      "menuLabel": "Playlist actions",
+      "empty": "Drag songs here, or use ⋯ → Add to playlist.",
+      "addLabel": "Playlists for {{name}}",
+      "newPlaceholder": "New playlist…",
+      "addNew": "New playlist",
+      "none": "No playlists yet — name one below.",
+      "removeFrom": "Remove {{name}} from {{playlist}}",
+      "failed": "Couldn't save playlist {{name}}: {{message}}"
+    },
     "generate": {
       "title": "Title",
       "titlePlaceholder": "Random if blank",
@@ -112,7 +167,6 @@
         "seedInvalid": "Enter a whole-number seed from 0 to 2147483647."
       },
       "reuseSettings": "Reuse settings",
-      "reuseSettingsFor": "Reuse generation settings from {{name}}",
       "settingsApplied": "Loaded settings from {{title}}.",
       "recipeUnavailableLoras": "Recipe loaded without unavailable adapters: {{names}}.",
       "recipeUnsupported": "This song uses a newer recipe version that this app cannot load.",

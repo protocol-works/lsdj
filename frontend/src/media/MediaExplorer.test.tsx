@@ -101,7 +101,7 @@ beforeEach(() => {
 // Sets the Title field too (to the same string) so the take's name and #id label are
 // deterministic rather than a random title — most assertions key off the label.
 async function composeTrack(name: string) {
-  fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+  fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
   fireEvent.change(screen.getByLabelText('Title'), { target: { value: name } })
   fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: name } })
   await act(async () => {
@@ -121,6 +121,12 @@ async function composeSampleClip(name: string, oneShot = true) {
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
   })
+}
+
+/** Open a row's ⋯ menu and pick an item. */
+async function chooseMenuItem(name: string, item: string) {
+  fireEvent.click(await screen.findByRole('button', { name: `More actions for ${name}` }))
+  fireEvent.click(screen.getByRole('menuitem', { name: item }))
 }
 
 afterEach(() => {
@@ -229,18 +235,18 @@ describe('MediaExplorer', () => {
       { kind: 'bytes', wav: expect.any(ArrayBuffer) },
       'late night dub techno #1',
     )
-    // The row names the model that produced the take (the same label
-    // also lives in the engine dropdown, hence the class filter).
+    // The row names the model that produced the take, then its recipe length (the
+    // engine label also lives in the engine dropdown, hence the class filter).
     expect(
       screen
-        .getAllByText('Track (SA3 medium)')
+        .getAllByText('Track (SA3 medium) · 2:00')
         .some((element) => element.classList.contains('media__meta')),
     ).toBe(true)
   })
 
   it('persists Basic/Advanced mode and restores the hidden Advanced draft', () => {
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     const mode = screen.getByRole('radiogroup', { name: 'Generation mode' })
     expect(mode.closest('.media__generation-options')).toContainElement(
       document.querySelector('.ui-lora-control'),
@@ -264,7 +270,7 @@ describe('MediaExplorer', () => {
   it('sends complete Advanced SA3 text steering with a fixed seed', async () => {
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
     fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
     fireEvent.click(screen.getByRole('button', { name: 'No drums' }))
@@ -310,7 +316,7 @@ describe('MediaExplorer', () => {
     })
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
 
     await composeTrack('take one')
@@ -363,7 +369,7 @@ describe('MediaExplorer', () => {
     ])
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.click(screen.getByRole('button', { name: 'LoRA: Off' }))
     expect(screen.getByText('Incompatible adapters (1)')).toBeInTheDocument()
     // Apply both medium adapters from the contextual panel; trim only maqam.
@@ -408,7 +414,7 @@ describe('MediaExplorer', () => {
     ])
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.click(screen.getByRole('button', { name: 'LoRA: Off' }))
     const availableRow = screen.getByText('maqam').closest('.ui-lora-panel__adapter')
     expect(availableRow).not.toBeNull()
@@ -450,7 +456,7 @@ describe('MediaExplorer', () => {
   it('routes Magenta tracks to the render engine within its cap', async () => {
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     // A length past Magenta's cap must snap back into range when the
     // engine switches (the render worker caps at 3 minutes).
     fireEvent.change(screen.getByLabelText('Length'), {
@@ -476,7 +482,7 @@ describe('MediaExplorer', () => {
   it('hides SA3 mode and steering for Magenta while preserving the draft', async () => {
     const fetchMock = stubFetch()
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
     fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
     fireEvent.click(screen.getByRole('button', { name: 'No vocals' }))
@@ -552,7 +558,7 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     const bus = createControlBus()
     renderExplorer({}, [], bus)
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     await screen.findByText('Track 12')
     scrollIntoView.mockClear()
     scrolledRows = []
@@ -803,7 +809,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Advanced' }))
     fireEvent.click(screen.getByRole('switch', { name: 'Guidance: Off' }))
     fireEvent.click(screen.getByRole('button', { name: 'No vocals' }))
@@ -856,7 +862,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Open songs folder' }))
     })
@@ -885,7 +891,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     await screen.findByText('Midnight drive')
 
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search songs' }), {
@@ -908,7 +914,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     await screen.findByText('Dub')
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search songs' }), {
       target: { value: 'none' },
@@ -938,7 +944,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     // The composed take comes back as its title + a kept-visible #id tag…
     // (scoped to the name: this take's title equals its prompt, which the prompt
     // line also renders.)
@@ -951,7 +957,9 @@ describe('MediaExplorer', () => {
     expect(
       screen.getAllByText('Imported').some((el) => el.classList.contains('media__meta')),
     ).toBe(true)
-    expect(screen.queryByRole('button', { name: /Reuse generation settings/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for late night dub #1' }))
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Reuse settings' })).toBeNull()
   })
 
   it('promotes saved Basic settings to Advanced with the used seed fixed', async () => {
@@ -980,12 +988,8 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: 'Reuse generation settings from Basic keeper #1',
-      }),
-    )
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+    await chooseMenuItem('Basic keeper #1', 'Reuse settings')
 
     expect(screen.getByRole('radio', { name: 'Advanced' })).toBeChecked()
     const guidance = screen.getByRole('switch', { name: 'Guidance: Off' })
@@ -1060,13 +1064,9 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Keep title' } })
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: 'Reuse generation settings from Recipe take #1',
-      }),
-    )
+    await chooseMenuItem('Recipe take #1', 'Reuse settings')
 
     expect(screen.getByLabelText('Title')).toHaveValue('Keep title')
     expect(screen.getByLabelText('Track prompt')).toHaveValue('warm dub')
@@ -1129,15 +1129,11 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.change(screen.getByLabelText('Track prompt'), {
       target: { value: 'current draft' },
     })
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: 'Reuse generation settings from Future #1',
-      }),
-    )
+    await chooseMenuItem('Future #1', 'Reuse settings')
     expect(screen.getByLabelText('Track prompt')).toHaveValue('current draft')
     expect(screen.getByRole('status')).toHaveTextContent('newer recipe version')
   })
@@ -1154,7 +1150,7 @@ describe('MediaExplorer', () => {
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     const onLoadTrack = vi.fn(async () => true)
     renderExplorer({ onLoadTrack })
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     const loadButton = await screen.findByRole('button', {
       name: 'Load keeper #1 to deck A',
     })
@@ -1171,7 +1167,7 @@ describe('MediaExplorer', () => {
     )
   })
 
-  it('deletes a take via ✕, moving the file to the Trash and pruning the registry', async () => {
+  it('deletes a take from the ⋯ menu, moving the file to the Trash and pruning the registry', async () => {
     const calls: { cmd: string; args: unknown }[] = []
     const invoke = vi.fn(async (cmd: string, args?: unknown) => {
       calls.push({ cmd, args })
@@ -1182,12 +1178,12 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const removeButton = await screen.findByRole('button', { name: 'Remove keeper #1' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'More actions for keeper #1' }))
     await act(async () => {
-      fireEvent.click(removeButton)
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete from library' }))
     })
-    expect(screen.queryByRole('button', { name: 'Remove keeper #1' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'More actions for keeper #1' })).toBeNull()
     const deleteCall = calls.find((c) => c.cmd === 'delete_generated_song')
     expect(deleteCall?.args).toEqual({ name: 'keeper #1.wav' })
   })
@@ -1202,14 +1198,14 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
-    const removeButton = await screen.findByRole('button', { name: 'Remove keeper #1' })
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'More actions for keeper #1' }))
     await act(async () => {
-      fireEvent.click(removeButton)
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete from library' }))
     })
     // The disk delete failed, so the row stays (matching disk) and the error shows —
     // it must not vanish and then reappear on the next launch's scan.
-    expect(screen.getByRole('button', { name: 'Remove keeper #1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'More actions for keeper #1' })).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('delete keeper')
     expect(screen.getByRole('alert')).toHaveTextContent('Trash is unavailable')
   })
@@ -1224,7 +1220,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     // Inline on the title's line (CSS truncates it to one row), with the full
     // text on the hover tooltip; collapsed at first.
     const promptLine = await screen.findByRole('button', {
@@ -1252,7 +1248,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     await screen.findByText('My Take', { selector: '.media__name-text' })
     // The prompt is re-indented, not the minified original.
     const expected = JSON.stringify(JSON.parse(minified), null, 2)
@@ -1272,7 +1268,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Porcelain Halo' } })
     fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: '{"a":1}' } })
     await act(async () => {
@@ -1317,7 +1313,7 @@ describe('MediaExplorer', () => {
     })
     vi.stubGlobal('__TAURI__', { core: { invoke } })
     renderExplorer()
-    fireEvent.click(screen.getByRole('tab', { name: 'Generate' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
     // Title left blank — only a prompt is given.
     fireEvent.change(screen.getByLabelText('Track prompt'), {
       target: { value: 'rolling sub bass' },
@@ -1488,6 +1484,1060 @@ describe('MediaExplorer', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Choose folder' }))
     })
     expect(screen.getByRole('alert')).toHaveTextContent('cannot read folder: denied')
+  })
+})
+
+describe('library curation', () => {
+  type Song = {
+    file: string
+    title: string
+    prompt: string | null
+    model: string | null
+    recipe?: unknown
+    rating?: number
+    tags?: string[]
+  }
+  const dub: Song = { file: 'dub.wav', title: 'Dub', prompt: 'dub', model: 'track', rating: 3 }
+
+  /** Stub the shell with a mutable songs registry. `respond` answers any other
+   * command (return undefined to fall through); `calls` records every invoke. */
+  function stubShell(
+    songs: () => Song[],
+    respond: (cmd: string, args: Record<string, unknown>) => unknown = () => undefined,
+    samples: () => unknown[] = () => [],
+  ) {
+    const calls: { cmd: string; args: Record<string, unknown> }[] = []
+    let onLibraryChanged: ((e: { payload: unknown }) => void) | null = null
+    const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => {
+      calls.push({ cmd, args })
+      const answer = respond(cmd, args)
+      if (answer !== undefined) return answer
+      if (cmd === 'list_generated_songs') return songs()
+      if (cmd === 'list_generated_samples') return samples()
+      return undefined
+    })
+    const listen = vi.fn(async (event: string, handler: (e: { payload: unknown }) => void) => {
+      if (event === 'library://changed') onLibraryChanged = handler
+      return () => {}
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke }, event: { listen } })
+    return {
+      calls,
+      commands: (name: string) => calls.filter((call) => call.cmd === name),
+      changed: (library: string) => onLibraryChanged?.({ payload: { library } }),
+    }
+  }
+
+  async function openGenerate(firstTitle: string) {
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+    await screen.findByText(firstTitle, { selector: '.media__name-text' })
+  }
+
+  const rowTitles = () =>
+    [...document.querySelectorAll('.media__list .media__name-text')].map(
+      (element) => element.textContent,
+    )
+  const ratingOf = (name: string) =>
+    within(screen.getByRole('radiogroup', { name: `Rating for ${name}` }))
+
+  describe('stars', () => {
+    it('shows the registry rating on each row', async () => {
+      stubShell(() => [dub, { ...dub, file: 'raw.wav', title: 'Raw', rating: undefined }])
+      renderExplorer()
+      await openGenerate('Dub')
+      expect(ratingOf('Dub #1').getByRole('radio', { name: '3 stars' })).toBeChecked()
+      expect(
+        ratingOf('Raw #2').getAllByRole('radio').some((radio) => (radio as HTMLInputElement).checked),
+      ).toBe(false)
+    })
+
+    it('rates through the shell and adopts the returned entry', async () => {
+      const shell = stubShell(
+        () => [dub],
+        (cmd, args) =>
+          cmd === 'rate_generated_song'
+            ? { ...dub, title: 'Dub (shell)', rating: args.rating as number }
+            : undefined,
+      )
+      renderExplorer()
+      await openGenerate('Dub')
+      await act(async () => {
+        fireEvent.click(ratingOf('Dub #1').getByRole('radio', { name: '4 stars' }))
+      })
+      expect(shell.commands('rate_generated_song').map((call) => call.args)).toEqual([
+        { name: 'dub.wav', rating: 4 },
+      ])
+      expect(ratingOf('Dub (shell) #1').getByRole('radio', { name: '4 stars' })).toBeChecked()
+    })
+
+    it('clears with a click on the current star', async () => {
+      const shell = stubShell(
+        () => [dub],
+        (cmd) => (cmd === 'rate_generated_song' ? { ...dub, rating: undefined } : undefined),
+      )
+      renderExplorer()
+      await openGenerate('Dub')
+      await act(async () => {
+        fireEvent.click(ratingOf('Dub #1').getByRole('radio', { name: '3 stars' }))
+      })
+      expect(shell.commands('rate_generated_song')[0].args).toEqual({
+        name: 'dub.wav',
+        rating: null,
+      })
+      expect(ratingOf('Dub #1').getByRole('radio', { name: '3 stars' })).not.toBeChecked()
+    })
+
+    it('shows a failed rating and re-lists to resync', async () => {
+      const shell = stubShell(
+        () => [dub],
+        (cmd) => (cmd === 'rate_generated_song' ? Promise.reject(new Error('locked')) : undefined),
+      )
+      renderExplorer()
+      await openGenerate('Dub')
+      await act(async () => {
+        fireEvent.click(ratingOf('Dub #1').getByRole('radio', { name: '5 stars' }))
+      })
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't rate Dub: locked")
+      expect(shell.commands('list_generated_songs')).toHaveLength(2)
+      expect(ratingOf('Dub #1').getByRole('radio', { name: '3 stars' })).toBeChecked()
+    })
+
+    it('rates a sample through the samples command', async () => {
+      const sample = { file: 'riser.wav', title: 'Riser', prompt: 'riser', model: 'sfx', oneShot: true }
+      const shell = stubShell(
+        () => [],
+        (cmd) => (cmd === 'rate_generated_sample' ? { ...sample, rating: 2 } : undefined),
+        () => [sample],
+      )
+      renderExplorer()
+      fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+      await screen.findByText('Riser', { selector: '.media__name-text' })
+      await act(async () => {
+        fireEvent.click(ratingOf('Riser #1').getByRole('radio', { name: '2 stars' }))
+      })
+      expect(shell.commands('rate_generated_sample')[0].args).toEqual({
+        name: 'riser.wav',
+        rating: 2,
+      })
+    })
+  })
+
+  describe('rename', () => {
+    function renameShell(respond?: (title: string) => unknown) {
+      return stubShell(
+        () => [dub],
+        (cmd, args) =>
+          cmd === 'rename_generated_song'
+            ? (respond?.(args.title as string) ?? { ...dub, title: args.title })
+            : undefined,
+      )
+    }
+    const editor = () => screen.getByRole('textbox', { name: 'New title for Dub #1' })
+    const openEditor = () => chooseMenuItem('Dub #1', 'Rename')
+
+    it('opens an editor prefilled with the title and commits on Enter', async () => {
+      const shell = renameShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      await openEditor()
+      expect(editor()).toHaveValue('Dub')
+      expect(editor()).toHaveFocus()
+      fireEvent.change(editor(), { target: { value: '  Dub Plate  ' } })
+      await act(async () => {
+        fireEvent.keyDown(editor(), { key: 'Enter' })
+      })
+      expect(shell.commands('rename_generated_song').map((call) => call.args)).toEqual([
+        { name: 'dub.wav', title: 'Dub Plate' },
+      ])
+      expect(screen.queryByRole('textbox', { name: /New title/ })).toBeNull()
+      expect(rowTitles()).toEqual(['Dub Plate'])
+      // The session #id stays with the row through a rename.
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+
+    it('opens the editor on a double-click of the name', async () => {
+      renameShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      fireEvent.doubleClick(screen.getByRole('button', { name: 'Select Dub #1' }))
+      expect(editor()).toHaveValue('Dub')
+    })
+
+    it('cancels on Escape without calling the shell', async () => {
+      const shell = renameShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      await openEditor()
+      fireEvent.change(editor(), { target: { value: 'Something else' } })
+      await act(async () => {
+        fireEvent.keyDown(editor(), { key: 'Escape' })
+      })
+      expect(shell.commands('rename_generated_song')).toHaveLength(0)
+      expect(rowTitles()).toEqual(['Dub'])
+    })
+
+    it('sends nothing for an unchanged or empty title', async () => {
+      const shell = renameShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      await openEditor()
+      fireEvent.change(editor(), { target: { value: ' Dub ' } })
+      await act(async () => {
+        fireEvent.keyDown(editor(), { key: 'Enter' })
+      })
+      await openEditor()
+      fireEvent.change(editor(), { target: { value: '   ' } })
+      await act(async () => {
+        fireEvent.keyDown(editor(), { key: 'Enter' })
+      })
+      expect(shell.commands('rename_generated_song')).toHaveLength(0)
+      expect(rowTitles()).toEqual(['Dub'])
+    })
+
+    it('commits on blur', async () => {
+      const shell = renameShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      await openEditor()
+      fireEvent.change(editor(), { target: { value: 'Dub Siren' } })
+      await act(async () => {
+        fireEvent.blur(editor())
+      })
+      expect(shell.commands('rename_generated_song')[0].args).toEqual({
+        name: 'dub.wav',
+        title: 'Dub Siren',
+      })
+      expect(rowTitles()).toEqual(['Dub Siren'])
+    })
+
+    it('renames a sample through the samples command', async () => {
+      const sample = { file: 'fz.wav', title: 'A freeze 3', prompt: null, model: 'freeze', oneShot: false }
+      const shell = stubShell(
+        () => [],
+        (cmd, args) =>
+          cmd === 'rename_generated_sample' ? { ...sample, title: args.title } : undefined,
+        () => [sample],
+      )
+      renderExplorer()
+      fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+      await screen.findByText('A freeze 3', { selector: '.media__name-text' })
+      await chooseMenuItem('A freeze 3', 'Rename')
+      const field = screen.getByRole('textbox', { name: 'New title for A freeze 3' })
+      fireEvent.change(field, { target: { value: 'vocal chop' } })
+      await act(async () => {
+        fireEvent.keyDown(field, { key: 'Enter' })
+      })
+      expect(shell.commands('rename_generated_sample')[0].args).toEqual({
+        name: 'fz.wav',
+        title: 'vocal chop',
+      })
+      expect(rowTitles()).toEqual(['vocal chop'])
+    })
+
+    it('shows a failed rename and re-lists to resync', async () => {
+      const shell = renameShell(() => Promise.reject(new Error('too long')))
+      renderExplorer()
+      await openGenerate('Dub')
+      await openEditor()
+      fireEvent.change(editor(), { target: { value: 'Dub Siren' } })
+      await act(async () => {
+        fireEvent.keyDown(editor(), { key: 'Enter' })
+      })
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't rename Dub: too long")
+      expect(shell.commands('list_generated_songs')).toHaveLength(2)
+      expect(rowTitles()).toEqual(['Dub'])
+    })
+  })
+
+  describe('sort', () => {
+    // Registry order is oldest-first; the explorer shows newest-first.
+    const library: Song[] = [
+      { file: 'b.wav', title: 'beta', prompt: null, model: null, rating: 2 },
+      { file: 'g.wav', title: 'Gamma', prompt: null, model: null },
+      { file: 'a.wav', title: 'alpha', prompt: null, model: null, rating: 5 },
+    ]
+
+    it('reorders the list from the header select and persists the choice', async () => {
+      stubShell(() => library)
+      renderExplorer()
+      await openGenerate('alpha')
+      expect(rowTitles()).toEqual(['alpha', 'Gamma', 'beta'])
+      fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'rating' } })
+      expect(rowTitles()).toEqual(['alpha', 'beta', 'Gamma'])
+      fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'title' } })
+      expect(rowTitles()).toEqual(['alpha', 'beta', 'Gamma'])
+      expect(JSON.parse(localStorage.getItem('lsdj:v1')!).app.mediaSort).toBe('title')
+    })
+
+    it('restores the persisted sort and walks it with the rotary', async () => {
+      localStorage.setItem('lsdj:v1', JSON.stringify({ app: { mediaSort: 'rating' } }))
+      stubShell(() => library)
+      const bus = createControlBus()
+      const onLoadTrack = vi.fn(async () => true)
+      renderExplorer({ onLoadTrack }, [], bus)
+      await openGenerate('alpha')
+      expect(screen.getByLabelText('Sort')).toHaveValue('rating')
+      act(() => bus.publish({ kind: 'browse_scroll', steps: 1 }))
+      await act(async () => {
+        bus.publish({ kind: 'browse_load', deck: 'a' })
+      })
+      expect(onLoadTrack).toHaveBeenCalledWith('a', { kind: 'song', name: 'b.wav' }, 'beta')
+    })
+
+    it('hides the sort outside the song and sample libraries', () => {
+      renderExplorer()
+      expect(screen.queryByLabelText('Sort')).toBeNull()
+      fireEvent.click(screen.getByRole('tab', { name: 'Folder' }))
+      expect(screen.queryByLabelText('Sort')).toBeNull()
+    })
+  })
+
+  describe('highlight and number keys', () => {
+    const pair: Song[] = [dub, { file: 'raw.wav', title: 'Raw', prompt: 'raw', model: 'track' }]
+
+    it('highlights a row when its name is clicked', async () => {
+      stubShell(() => pair)
+      renderExplorer()
+      await openGenerate('Dub')
+      const name = screen.getByRole('button', { name: 'Select Dub #1' })
+      fireEvent.click(name)
+      expect(name).toHaveAttribute('aria-current', 'true')
+      expect(name.closest('li')).toHaveClass('media__item--highlighted')
+      expect(screen.getByRole('button', { name: 'Select Raw #2' })).toHaveAttribute(
+        'aria-current',
+        'false',
+      )
+    })
+
+    it('rates the highlighted row with 1–5 and clears it with 0', async () => {
+      const shell = stubShell(
+        () => pair,
+        (cmd, args) =>
+          cmd === 'rate_generated_song' ? { ...dub, rating: args.rating ?? undefined } : undefined,
+      )
+      renderExplorer()
+      await openGenerate('Dub')
+      fireEvent.click(screen.getByRole('button', { name: 'Select Dub #1' }))
+      await act(async () => {
+        fireEvent.keyDown(window, { key: '3' })
+      })
+      await act(async () => {
+        fireEvent.keyDown(window, { key: '0' })
+      })
+      // A modified key is someone else's shortcut.
+      await act(async () => {
+        fireEvent.keyDown(window, { key: '5', metaKey: true })
+      })
+      expect(shell.commands('rate_generated_song').map((call) => call.args)).toEqual([
+        { name: 'dub.wav', rating: 3 },
+        { name: 'dub.wav', rating: null },
+      ])
+    })
+
+    it('ignores number keys while typing in the search or the rename editor', async () => {
+      const shell = stubShell(() => pair)
+      renderExplorer()
+      await openGenerate('Dub')
+      fireEvent.keyDown(screen.getByRole('searchbox'), { key: '3' })
+      await chooseMenuItem('Dub #1', 'Rename')
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'New title for Dub #1' }), {
+        key: '4',
+      })
+      expect(shell.commands('rate_generated_song')).toHaveLength(0)
+    })
+  })
+
+  describe('row context', () => {
+    const deckSnap = (track: { title: string } | null) => ({
+      track: track && { ...track, bpm: null, durationSeconds: 120 },
+      loopLabels: [],
+    })
+    function storeReports(trackA: { title: string } | null) {
+      vi.mocked(useInterfaceStore).mockReturnValue({
+        pianoWindowOpen: false,
+        decks: [deckSnap(trackA), deckSnap(null)],
+      } as unknown as ReturnType<typeof useInterfaceStore>)
+    }
+
+    it('badges the row a deck holds, then mutes it once played', async () => {
+      stubShell(() => [dub])
+      storeReports(null)
+      renderExplorer()
+      await openGenerate('Dub')
+      // The store already reports the load by the time the deck call resolves.
+      storeReports({ title: 'Dub #1' })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Load Dub #1 to deck A' }))
+      })
+      const row = screen.getByText('Dub', { selector: '.media__name-text' }).closest('li')!
+      expect(within(row).getByText('On A')).toBeInTheDocument()
+      expect(row).not.toHaveClass('media__item--played')
+
+      // Ejected: the badge goes, the played mark stays. (Any re-render picks up the
+      // store; expanding the prompt is a convenient one.)
+      storeReports(null)
+      fireEvent.click(screen.getByRole('button', { name: 'Show the full prompt for Dub #1' }))
+      expect(within(row).queryByText('On A')).toBeNull()
+      expect(row).toHaveClass('media__item--played')
+    })
+
+    it('drops the badge when the deck holds a different track', async () => {
+      stubShell(() => [dub])
+      storeReports({ title: 'Dub #1' })
+      renderExplorer()
+      await openGenerate('Dub')
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Load Dub #1 to deck A' }))
+      })
+      expect(screen.getByText('On A')).toBeInTheDocument()
+      storeReports({ title: 'Something else' })
+      fireEvent.click(screen.getByRole('button', { name: 'Show the full prompt for Dub #1' }))
+      expect(screen.queryByText('On A')).toBeNull()
+    })
+
+    it('shows the recipe length in the meta column, blank without one', async () => {
+      stubShell(() => [
+        { ...dub, recipe: { version: 1, engine: 'track', prompt: 'dub', seconds: 120, loras: [] } },
+        { file: 'raw.wav', title: 'Raw', prompt: null, model: 'track' },
+      ])
+      renderExplorer()
+      await openGenerate('Dub')
+      const metas = [...document.querySelectorAll('.media__meta')].map((el) => el.textContent)
+      expect(metas).toEqual(['Track (SA3 medium)', 'Track (SA3 medium) · 2:00'])
+    })
+  })
+
+  describe('row menu and tags', () => {
+    const recipe = { version: 1, engine: 'track', prompt: 'dub', seconds: 120, loras: [] }
+    const tagged: Song = { ...dub, tags: ['dub', 'drone'] }
+    // Its prompt merely contains the word "drone"; it isn't tagged with it.
+    const raw: Song = { file: 'raw.wav', title: 'Raw', prompt: 'droney raw', model: 'track', tags: ['ambient'] }
+    const riser = { file: 'riser.wav', title: 'Riser', prompt: 'riser', model: 'sfx', oneShot: true, tags: ['riser'] }
+    const rowOf = (title: string) =>
+      screen.getByText(title, { selector: '.media__name-text' }).closest('li')!
+    const chipsOf = (title: string) =>
+      [...rowOf(title).querySelectorAll('.media__tag')].map((chip) => chip.textContent)
+    const tagShell = (respond?: (tags: string[]) => unknown) =>
+      stubShell(
+        () => [tagged, raw],
+        (cmd, args) =>
+          cmd === 'tag_generated_song'
+            ? (respond?.(args.tags as string[]) ?? { ...tagged, tags: args.tags })
+            : undefined,
+        () => [riser],
+      )
+
+    it('lists Rename, Tags…, Add to playlist…, Reuse settings and Delete from library in order', async () => {
+      stubShell(() => [{ ...dub, recipe }])
+      renderExplorer()
+      await openGenerate('Dub')
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Dub #1' }))
+      expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+        'Rename',
+        'Tags…',
+        'Add to playlist…',
+        'Reuse settings',
+        'Delete from library',
+      ])
+    })
+
+    it('gives a pending row no menu', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+      renderExplorer()
+      await composeTrack('wip')
+      expect(screen.getByText('wip — composing…')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /More actions/ })).toBeNull()
+    })
+
+    it('renders tag chips and searches for a tag when one is clicked', async () => {
+      tagShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      expect(chipsOf('Dub')).toEqual(['#dub', '#drone'])
+      expect(chipsOf('Raw')).toEqual(['#ambient'])
+      fireEvent.click(within(rowOf('Dub')).getByRole('button', { name: 'Search for #drone' }))
+      expect(screen.getByRole('searchbox')).toHaveValue('#drone')
+      // The prompt "droney raw" contains the word but not the tag.
+      expect(rowTitles()).toEqual(['Dub'])
+    })
+
+    it('matches a plain word against tags and prompt text alike', async () => {
+      tagShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'drone' } })
+      expect(rowTitles()).toEqual(['Raw', 'Dub'])
+    })
+
+    it('offers the vocabulary of both libraries alphabetically, with the row’s tags checked', async () => {
+      tagShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      await chooseMenuItem('Dub #1', 'Tags…')
+      const panel = within(screen.getByRole('dialog', { name: 'Tags for Dub #1' }))
+      expect(panel.getAllByRole('checkbox').map((box) => box.closest('label')!.textContent)).toEqual([
+        '#ambient',
+        '#drone',
+        '#dub',
+        '#riser',
+      ])
+      expect(panel.getByRole('checkbox', { name: '#drone' })).toBeChecked()
+      expect(panel.getByRole('checkbox', { name: '#dub' })).toBeChecked()
+      expect(panel.getByRole('checkbox', { name: '#ambient' })).not.toBeChecked()
+    })
+
+    it('sends the whole list on a toggle and adopts the shell’s tags', async () => {
+      const shell = tagShell((tags) => ({ ...tagged, tags: [...tags].sort() }))
+      renderExplorer()
+      await openGenerate('Dub')
+      await chooseMenuItem('Dub #1', 'Tags…')
+      await act(async () => {
+        fireEvent.click(screen.getByRole('checkbox', { name: '#ambient' }))
+      })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('checkbox', { name: '#dub' }))
+      })
+      expect(shell.commands('tag_generated_song').map((call) => call.args)).toEqual([
+        { name: 'dub.wav', tags: ['dub', 'drone', 'ambient'] },
+        { name: 'dub.wav', tags: ['ambient', 'drone'] },
+      ])
+      expect(chipsOf('Dub')).toEqual(['#ambient', '#drone'])
+      // No row carries #dub any more, so it leaves the vocabulary.
+      expect(screen.queryByRole('checkbox', { name: '#dub' })).toBeNull()
+    })
+
+    it('adds a typed tag on Enter and shows the normalised result', async () => {
+      const shell = tagShell(() => ({ ...tagged, tags: ['dub', 'drone', 'deep-house'] }))
+      renderExplorer()
+      await openGenerate('Dub')
+      await chooseMenuItem('Dub #1', 'Tags…')
+      const field = screen.getByRole('textbox', { name: 'Add a tag' })
+      fireEvent.change(field, { target: { value: '  Deep House ' } })
+      await act(async () => {
+        fireEvent.keyDown(field, { key: 'Enter' })
+      })
+      expect(shell.commands('tag_generated_song')[0].args).toEqual({
+        name: 'dub.wav',
+        tags: ['dub', 'drone', 'Deep House'],
+      })
+      expect(chipsOf('Dub')).toEqual(['#dub', '#drone', '#deep-house'])
+    })
+
+    it('shows a failed tag and re-lists to resync', async () => {
+      const shell = tagShell(() => Promise.reject(new Error('too many tags')))
+      renderExplorer()
+      await openGenerate('Dub')
+      await chooseMenuItem('Dub #1', 'Tags…')
+      await act(async () => {
+        fireEvent.click(screen.getByRole('checkbox', { name: '#riser' }))
+      })
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't tag Dub: too many tags")
+      expect(shell.commands('list_generated_songs')).toHaveLength(2)
+      expect(chipsOf('Dub')).toEqual(['#dub', '#drone'])
+    })
+
+    it('tags a sample through the samples command', async () => {
+      const shell = stubShell(
+        () => [],
+        (cmd, args) => (cmd === 'tag_generated_sample' ? { ...riser, tags: args.tags } : undefined),
+        () => [riser],
+      )
+      renderExplorer()
+      fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+      await chooseMenuItem('Riser #1', 'Tags…')
+      await act(async () => {
+        fireEvent.click(screen.getByRole('checkbox', { name: '#riser' }))
+      })
+      expect(shell.commands('tag_generated_sample')[0].args).toEqual({ name: 'riser.wav', tags: [] })
+    })
+
+    it('opens the highlighted row’s panel on the add field with t, not while typing', async () => {
+      tagShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      fireEvent.keyDown(screen.getByRole('searchbox'), { key: 't' })
+      expect(screen.queryByRole('dialog')).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Select Dub #1' }))
+      fireEvent.keyDown(window, { key: 't' })
+      expect(screen.getByRole('dialog', { name: 'Tags for Dub #1' })).toBeInTheDocument()
+      expect(screen.getByRole('textbox', { name: 'Add a tag' })).toHaveFocus()
+    })
+  })
+
+  describe('playlists', () => {
+    type Playlist = { name: string; files: string[] }
+    // Registry order is oldest-first, so All songs reads Gamma, Beta, Alpha.
+    const library: Song[] = [
+      { file: 'a.wav', title: 'Alpha', prompt: null, model: null },
+      { file: 'b.wav', title: 'Beta', prompt: null, model: null },
+      { file: 'c.wav', title: 'Gamma', prompt: null, model: null },
+    ]
+    const set: Playlist = { name: 'Set', files: ['a.wav', 'c.wav', 'b.wav'] }
+
+    /** The curation shell plus a mutable playlist store that answers like the Rust
+     * one: every write returns the stored playlist, a new name comes back sanitised. */
+    function playlistShell(
+      initial: Playlist[],
+      respond: (cmd: string, args: Record<string, unknown>) => unknown = () => undefined,
+    ) {
+      let lists = initial
+      const shell = stubShell(
+        () => library,
+        (cmd, args) => {
+          const answer = respond(cmd, args)
+          if (answer !== undefined) return answer
+          if (cmd === 'list_playlists') return lists
+          if (cmd === 'save_playlist') {
+            const stored = {
+              name: (args.name as string).replaceAll('/', '-'),
+              files: args.files as string[],
+            }
+            lists = [...lists.filter((entry) => entry.name !== stored.name), stored]
+            return stored
+          }
+          if (cmd === 'rename_playlist') {
+            const from = lists.find((entry) => entry.name === args.from)!
+            const stored = { ...from, name: args.to as string }
+            lists = [...lists.filter((entry) => entry !== from), stored]
+            return stored
+          }
+          if (cmd === 'delete_playlist') {
+            lists = lists.filter((entry) => entry.name !== args.name)
+            return null
+          }
+          return undefined
+        },
+      )
+      return { ...shell, setLists: (next: Playlist[]) => (lists = next) }
+    }
+
+    const sources = () => within(screen.getByRole('navigation', { name: 'Sources' }))
+    const sourceButton = (name: string) =>
+      sources().getByRole('button', { name: new RegExp(`^${name}( \\d+ songs?)?$`) })
+    async function openPlaylist(name: string) {
+      await openGenerate('Gamma')
+      await act(async () => {
+        fireEvent.click(await sources().findByRole('button', { name: new RegExp(`^${name} `) }))
+      })
+    }
+    const saves = (shell: ReturnType<typeof playlistShell>) =>
+      shell.commands('save_playlist').map((call) => call.args)
+    const dataTransfer = (file: string) => ({ getData: () => file, setData: vi.fn() })
+
+    it('names the tab Songs and lists the playlists in the source column', async () => {
+      playlistShell([set, { name: 'Warm-up', files: ['b.wav'] }])
+      renderExplorer()
+      expect(screen.getByRole('tab', { name: 'Songs' })).toBeInTheDocument()
+      await openGenerate('Gamma')
+      await sources().findByRole('button', { name: /^Warm-up / })
+      expect(sources().getAllByRole('button').map((button) => button.textContent)).toEqual([
+        'All songs',
+        'Set 3 songs',
+        'Warm-up 1 song',
+        'New playlist',
+      ])
+      expect(sourceButton('All songs')).toHaveAttribute('aria-pressed', 'true')
+      // The narrow-width stand-in offers the same choices.
+      expect(
+        [...(screen.getByLabelText('Source') as HTMLSelectElement).options].map(
+          (option) => option.text,
+        ),
+      ).toEqual(['All songs', 'Set', 'Warm-up'])
+    })
+
+    it('shows a playlist’s songs in its order, without pending rows, and the rotary walks it', async () => {
+      playlistShell([set])
+      vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+      const bus = createControlBus()
+      const onLoadTrack = vi.fn(async () => true)
+      renderExplorer({ onLoadTrack }, [], bus)
+      await composeTrack('wip')
+      await openPlaylist('Set')
+      expect(rowTitles()).toEqual(['Alpha', 'Gamma', 'Beta'])
+      expect(screen.queryByText('wip — composing…')).toBeNull()
+      expect(screen.getByText('Set', { selector: '.media__playlist-name' })).toBeInTheDocument()
+      expect(JSON.parse(localStorage.getItem('lsdj:v1')!).app.mediaSource).toBe('Set')
+      act(() => bus.publish({ kind: 'browse_scroll', steps: 1 }))
+      await act(async () => {
+        bus.publish({ kind: 'browse_load', deck: 'b' })
+      })
+      expect(onLoadTrack).toHaveBeenCalledWith('b', { kind: 'song', name: 'c.wav' }, 'Gamma')
+    })
+
+    it('selects a playlist from the narrow-width Select too', async () => {
+      playlistShell([set])
+      renderExplorer()
+      await openGenerate('Gamma')
+      await sources().findByRole('button', { name: /^Set / })
+      fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'Set' } })
+      expect(rowTitles()).toEqual(['Alpha', 'Gamma', 'Beta'])
+      expect(sourceButton('Set')).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('narrows a playlist with a search', async () => {
+      playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'ga' } })
+      expect(rowTitles()).toEqual(['Gamma'])
+    })
+
+    it('defaults to Playlist order, and a Title sort reorders the view without saving or persisting', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      expect(screen.getByLabelText('Sort')).toHaveValue('playlist')
+      fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'title' } })
+      expect(rowTitles()).toEqual(['Alpha', 'Beta', 'Gamma'])
+      expect(saves(shell)).toEqual([])
+      expect(JSON.parse(localStorage.getItem('lsdj:v1')!).app.mediaSort).toBeUndefined()
+      // Back in All songs the library sort applies, without Playlist order.
+      fireEvent.click(sourceButton('All songs'))
+      expect(screen.getByLabelText('Sort')).toHaveValue('newest')
+      expect(rowTitles()).toEqual(['Gamma', 'Beta', 'Alpha'])
+    })
+
+    it('shows the count and total length in the header, and an empty playlist’s hint', async () => {
+      const recipe = (seconds: number) => ({ version: 1, engine: 'track', prompt: 'x', seconds, loras: [] })
+      stubShell(
+        () => [
+          { ...library[0], recipe: recipe(60) },
+          { ...library[1], recipe: recipe(125) },
+          library[2],
+        ],
+        (cmd) =>
+          cmd === 'list_playlists'
+            ? [
+                { name: 'Timed', files: ['a.wav', 'b.wav'] },
+                { name: 'Empty', files: [] },
+              ]
+            : undefined,
+      )
+      renderExplorer()
+      await openPlaylist('Timed')
+      expect(screen.getByText('2 songs · 3:05')).toBeInTheDocument()
+      fireEvent.click(sourceButton('Empty'))
+      expect(
+        screen.getByText('Drag songs here, or use ⋯ → Add to playlist.'),
+      ).toBeInTheDocument()
+    })
+
+    it('✕ removes a song from the playlist and never deletes it', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Remove Gamma from Set' }))
+      })
+      expect(saves(shell)).toEqual([{ name: 'Set', files: ['a.wav', 'b.wav'] }])
+      expect(shell.commands('delete_generated_song')).toEqual([])
+      expect(rowTitles()).toEqual(['Alpha', 'Beta'])
+      expect(sourceButton('Set')).toHaveTextContent('Set 2 songs')
+    })
+
+    it('Remove from playlist in the menu does the same', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      await chooseMenuItem('Alpha', 'Remove from playlist')
+      await act(async () => {})
+      expect(saves(shell)).toEqual([{ name: 'Set', files: ['c.wav', 'b.wav'] }])
+      expect(shell.commands('delete_generated_song')).toEqual([])
+    })
+
+    it('shows no ✕ outside a playlist', async () => {
+      playlistShell([set])
+      renderExplorer()
+      await openGenerate('Gamma')
+      expect(screen.queryByRole('button', { name: /^Remove .* from / })).toBeNull()
+    })
+
+    it('Delete from library still deletes, then re-lists the playlists', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      // The shell strips the file from every playlist on delete.
+      shell.setLists([{ name: 'Set', files: ['a.wav', 'b.wav'] }])
+      await chooseMenuItem('Gamma', 'Delete from library')
+      await act(async () => {})
+      expect(shell.commands('delete_generated_song').map((call) => call.args)).toEqual([
+        { name: 'c.wav' },
+      ])
+      expect(shell.commands('list_playlists')).toHaveLength(2)
+      expect(sourceButton('Set')).toHaveTextContent('Set 2 songs')
+    })
+
+    it('Move up / Move down save the reordered list and are disabled at the ends', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Alpha' }))
+      expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeDisabled()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Move down' }))
+      })
+      expect(rowTitles()).toEqual(['Gamma', 'Alpha', 'Beta'])
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Beta' }))
+      expect(screen.getByRole('menuitem', { name: 'Move down' })).toBeDisabled()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Move up' }))
+      })
+      expect(saves(shell)).toEqual([
+        { name: 'Set', files: ['c.wav', 'a.wav', 'b.wav'] },
+        { name: 'Set', files: ['c.wav', 'b.wav', 'a.wav'] },
+      ])
+    })
+
+    it('Add to playlist… checks the playlists holding the song and toggles with the whole list', async () => {
+      const shell = playlistShell([set, { name: 'Warm-up', files: ['c.wav'] }])
+      renderExplorer()
+      await openGenerate('Gamma')
+      await sources().findByRole('button', { name: /^Warm-up / })
+      await chooseMenuItem('Beta', 'Add to playlist…')
+      const panel = within(screen.getByRole('dialog', { name: 'Playlists for Beta' }))
+      expect(panel.getByRole('checkbox', { name: 'Set' })).toBeChecked()
+      expect(panel.getByRole('checkbox', { name: 'Warm-up' })).not.toBeChecked()
+      await act(async () => {
+        fireEvent.click(panel.getByRole('checkbox', { name: 'Warm-up' }))
+      })
+      await act(async () => {
+        fireEvent.click(panel.getByRole('checkbox', { name: 'Set' }))
+      })
+      expect(saves(shell)).toEqual([
+        { name: 'Warm-up', files: ['c.wav', 'b.wav'] },
+        { name: 'Set', files: ['a.wav', 'c.wav'] },
+      ])
+      expect(panel.getByRole('checkbox', { name: 'Warm-up' })).toBeChecked()
+      expect(panel.getByRole('checkbox', { name: 'Set' })).not.toBeChecked()
+    })
+
+    it('creates a playlist holding just the song from the panel, adopting the sanitised name', async () => {
+      const shell = playlistShell([])
+      renderExplorer()
+      await openGenerate('Gamma')
+      await chooseMenuItem('Beta', 'Add to playlist…')
+      expect(screen.getByText('No playlists yet — name one below.')).toBeInTheDocument()
+      const field = screen.getByRole('textbox', { name: 'New playlist' })
+      fireEvent.change(field, { target: { value: 'Warm/up' } })
+      await act(async () => {
+        fireEvent.keyDown(field, { key: 'Enter' })
+      })
+      expect(saves(shell)).toEqual([{ name: 'Warm/up', files: ['b.wav'] }])
+      expect(sourceButton('Warm-up')).toHaveTextContent('Warm-up 1 song')
+      expect(sources().queryByRole('button', { name: /Warm\/up/ })).toBeNull()
+    })
+
+    it('adds to an existing playlist rather than replacing it when the panel names one', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openGenerate('Gamma')
+      await sources().findByRole('button', { name: /^Set / })
+      fireEvent.click(sourceButton('All songs'))
+      shell.setLists([{ name: 'Set', files: ['a.wav'] }])
+      await act(async () => {
+        shell.changed('playlists')
+      })
+      await chooseMenuItem('Beta', 'Add to playlist…')
+      const field = screen.getByRole('textbox', { name: 'New playlist' })
+      fireEvent.change(field, { target: { value: 'set' } })
+      await act(async () => {
+        fireEvent.keyDown(field, { key: 'Enter' })
+      })
+      expect(saves(shell)).toEqual([{ name: 'Set', files: ['a.wav', 'b.wav'] }])
+    })
+
+    it('offers no Add to playlist… on a song not saved to the library', async () => {
+      stubFetch()
+      renderExplorer()
+      await composeTrack('fresh')
+      fireEvent.click(await screen.findByRole('button', { name: 'More actions for fresh #1' }))
+      expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: 'Add to playlist…' })).toBeNull()
+    })
+
+    it('offers no Add to playlist… on a sample', async () => {
+      const riser = { file: 'riser.wav', title: 'Riser', prompt: null, model: 'sfx', oneShot: true }
+      stubShell(() => [], undefined, () => [riser])
+      renderExplorer()
+      fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'More actions for Riser' }))
+      expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument()
+      expect(screen.queryByRole('menuitem', { name: 'Add to playlist…' })).toBeNull()
+    })
+
+    it('drags a song by its name: dragstart carries the file', async () => {
+      playlistShell([set])
+      renderExplorer()
+      await openGenerate('Gamma')
+      const transfer = dataTransfer('')
+      fireEvent.dragStart(screen.getByRole('button', { name: 'Select Beta' }), {
+        dataTransfer: transfer,
+      })
+      expect(screen.getByRole('button', { name: 'Select Beta' })).toHaveAttribute('draggable', 'true')
+      expect(transfer.setData).toHaveBeenCalledWith('text/plain', 'b.wav')
+    })
+
+    it('a drop on a playlist in the column appends the song once', async () => {
+      const shell = playlistShell([{ name: 'Warm-up', files: ['c.wav'] }])
+      renderExplorer()
+      await openGenerate('Gamma')
+      const target = await sources().findByRole('button', { name: /^Warm-up / })
+      fireEvent.dragOver(target, { dataTransfer: dataTransfer('a.wav') })
+      expect(target.closest('.media__source')).toHaveClass('media__source--drop')
+      await act(async () => {
+        fireEvent.drop(target, { dataTransfer: dataTransfer('a.wav') })
+      })
+      expect(target.closest('.media__source')).not.toHaveClass('media__source--drop')
+      await act(async () => {
+        fireEvent.drop(sourceButton('Warm-up'), { dataTransfer: dataTransfer('a.wav') })
+      })
+      // Text that isn't a library song is ignored too.
+      await act(async () => {
+        fireEvent.drop(sourceButton('Warm-up'), { dataTransfer: dataTransfer('elsewhere') })
+      })
+      expect(saves(shell)).toEqual([{ name: 'Warm-up', files: ['c.wav', 'a.wav'] }])
+    })
+
+    it('a drop on a row inside a playlist reorders and saves', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      const alphaRow = screen.getByRole('button', { name: 'Select Alpha' }).closest('li')!
+      fireEvent.dragOver(alphaRow, { dataTransfer: dataTransfer('b.wav') })
+      expect(alphaRow).toHaveClass('media__item--drop-before')
+      await act(async () => {
+        fireEvent.drop(alphaRow, { dataTransfer: dataTransfer('b.wav') })
+      })
+      expect(saves(shell)).toEqual([{ name: 'Set', files: ['b.wav', 'a.wav', 'c.wav'] }])
+      expect(rowTitles()).toEqual(['Beta', 'Alpha', 'Gamma'])
+      expect(alphaRow).not.toHaveClass('media__item--drop-before')
+    })
+
+    it('creates a playlist from the column and selects it', async () => {
+      const shell = playlistShell([])
+      renderExplorer()
+      await openGenerate('Gamma')
+      fireEvent.click(sourceButton('New playlist'))
+      const field = screen.getByRole('textbox', { name: 'Playlist name' })
+      fireEvent.change(field, { target: { value: 'Peak' } })
+      await act(async () => {
+        fireEvent.keyDown(field, { key: 'Enter' })
+      })
+      expect(saves(shell)).toEqual([{ name: 'Peak', files: [] }])
+      expect(sourceButton('Peak')).toHaveAttribute('aria-pressed', 'true')
+      expect(screen.getByText('Drag songs here, or use ⋯ → Add to playlist.')).toBeInTheDocument()
+    })
+
+    it('Escape or a blank name cancels a new playlist', async () => {
+      const shell = playlistShell([])
+      renderExplorer()
+      await openGenerate('Gamma')
+      fireEvent.click(sourceButton('New playlist'))
+      const field = screen.getByRole('textbox', { name: 'Playlist name' })
+      fireEvent.change(field, { target: { value: 'Peak' } })
+      fireEvent.keyDown(field, { key: 'Escape' })
+      fireEvent.click(sourceButton('New playlist'))
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Playlist name' }), { key: 'Enter' })
+      expect(saves(shell)).toEqual([])
+      expect(sourceButton('New playlist')).toBeInTheDocument()
+    })
+
+    it('renames the open playlist from its menu, following it in the column and the selection', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      fireEvent.click(screen.getByRole('button', { name: 'Playlist actions' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Rename playlist' }))
+      const field = screen.getByRole('textbox', { name: 'Playlist name' })
+      fireEvent.change(field, { target: { value: 'Closing set' } })
+      await act(async () => {
+        fireEvent.keyDown(field, { key: 'Enter' })
+      })
+      expect(shell.commands('rename_playlist').map((call) => call.args)).toEqual([
+        { from: 'Set', to: 'Closing set' },
+      ])
+      expect(sourceButton('Closing set')).toHaveAttribute('aria-pressed', 'true')
+      expect(sources().queryByRole('button', { name: /^Set / })).toBeNull()
+      expect(rowTitles()).toEqual(['Alpha', 'Gamma', 'Beta'])
+      expect(JSON.parse(localStorage.getItem('lsdj:v1')!).app.mediaSource).toBe('Closing set')
+    })
+
+    it('a double-click on the header name renames too; unchanged is a cancel', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      fireEvent.doubleClick(screen.getByText('Set', { selector: '.media__playlist-name' }))
+      fireEvent.keyDown(screen.getByRole('textbox', { name: 'Playlist name' }), { key: 'Enter' })
+      expect(shell.commands('rename_playlist')).toEqual([])
+    })
+
+    it('deletes the open playlist and returns to All songs', async () => {
+      const shell = playlistShell([set])
+      renderExplorer()
+      await openPlaylist('Set')
+      fireEvent.click(screen.getByRole('button', { name: 'Playlist actions' }))
+      await act(async () => {
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete playlist' }))
+      })
+      expect(shell.commands('delete_playlist').map((call) => call.args)).toEqual([{ name: 'Set' }])
+      expect(sourceButton('All songs')).toHaveAttribute('aria-pressed', 'true')
+      expect(sources().queryByRole('button', { name: /^Set / })).toBeNull()
+      expect(rowTitles()).toEqual(['Gamma', 'Beta', 'Alpha'])
+    })
+
+    it('falls back to All songs when the persisted playlist is gone', async () => {
+      localStorage.setItem('lsdj:v1', JSON.stringify({ app: { mediaSource: 'Lost' } }))
+      playlistShell([set])
+      renderExplorer()
+      await openGenerate('Gamma')
+      await sources().findByRole('button', { name: /^Set / })
+      expect(sourceButton('All songs')).toHaveAttribute('aria-pressed', 'true')
+      expect(rowTitles()).toEqual(['Gamma', 'Beta', 'Alpha'])
+    })
+
+    it('re-lists on a library://changed playlists event', async () => {
+      const shell = playlistShell([])
+      renderExplorer()
+      await openGenerate('Gamma')
+      shell.setLists([{ name: 'Agent set', files: ['a.wav'] }])
+      await act(async () => {
+        shell.changed('playlists')
+      })
+      expect(sourceButton('Agent set')).toHaveTextContent('Agent set 1 song')
+    })
+
+    it('shows a failed save and re-lists', async () => {
+      const shell = playlistShell([set], (cmd) =>
+        cmd === 'save_playlist' ? Promise.reject(new Error('disk full')) : undefined,
+      )
+      renderExplorer()
+      await openPlaylist('Set')
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Remove Gamma from Set' }))
+      })
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        "Couldn't save playlist Set: disk full",
+      )
+      expect(shell.commands('list_playlists')).toHaveLength(2)
+      expect(rowTitles()).toEqual(['Alpha', 'Gamma', 'Beta'])
+    })
+  })
+
+  it('rebuilds a re-listed row from the registry, keeping its id', async () => {
+    let songs: Song[] = [{ ...dub, rating: undefined }]
+    const shell = stubShell(() => songs)
+    renderExplorer()
+    await openGenerate('Dub')
+    expect(screen.getByText('#1')).toBeInTheDocument()
+
+    // An out-of-band write (an MCP rating, a hand edit) lands; the watcher fires.
+    songs = [{ ...dub, title: 'Dub v2', rating: 4 }]
+    await act(async () => {
+      shell.changed('songs')
+    })
+    expect(rowTitles()).toEqual(['Dub v2'])
+    expect(screen.getByText('#1')).toBeInTheDocument()
+    expect(ratingOf('Dub v2 #1').getByRole('radio', { name: '4 stars' })).toBeChecked()
   })
 })
 
