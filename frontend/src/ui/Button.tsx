@@ -1,6 +1,8 @@
-import type { ButtonHTMLAttributes } from 'react'
+import type { ComponentProps } from 'react'
 
-type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className'> & {
+// ComponentProps (not ButtonHTMLAttributes) so callers can pass a `ref` — React 19
+// forwards it as an ordinary prop (e.g. an ActionMenu trigger anchoring its panel).
+type ButtonProps = Omit<ComponentProps<'button'>, 'className'> & {
   variant?: 'primary' | 'default'
   /** LED-style active state for toggle buttons (e.g. channel CUE). */
   lit?: boolean
