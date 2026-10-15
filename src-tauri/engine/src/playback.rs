@@ -39,11 +39,11 @@ use crate::CHANNELS;
 /// Interleaved-stereo samples per frame.
 const SAMPLES_PER_FRAME: usize = CHANNELS as usize;
 
-/// Varispeed envelope (ADR-0014): ±8 %, the classic DJ range. Mirrors
-/// `TRACK_RATE_RANGE` in `frontend/src/audio/track.ts`. The engine boundary holds
-/// the envelope rather than trusting callers, exactly like the Web Audio
-/// `setTrackRate`.
-pub const TRACK_RATE_RANGE: f64 = 0.08;
+/// The widest varispeed envelope the performer can select (ADR-0014, amended
+/// 2026-10-15): ±50 %. Mirrors the largest `TEMPO_RANGES` entry in
+/// `frontend/src/audio/track.ts`; the webview clamps to the chosen range, and the
+/// engine boundary holds this outer envelope rather than trusting callers.
+pub const TRACK_RATE_RANGE: f64 = 0.5;
 
 /// The shortest honest loop in frames (ADR-0015/0016): sub-quantum regions are
 /// where implementations differ, and a near-zero loop is a buzz, not a loop.
@@ -51,7 +51,7 @@ pub const TRACK_RATE_RANGE: f64 = 0.08;
 /// engine's fixed [`crate::SAMPLE_RATE`].
 pub const MIN_TRACK_LOOP_FRAMES: u64 = (0.05 * crate::SAMPLE_RATE as f64) as u64;
 
-/// Clamp a varispeed rate into the ±8 % envelope (`clampRate` in `track.ts`). A
+/// Clamp a varispeed rate into the widest envelope (`clampRate` in `track.ts`). A
 /// non-finite or non-positive rate falls back to 1.0 (as-recorded).
 pub fn clamp_rate(rate: f64) -> f64 {
     if !rate.is_finite() || rate <= 0.0 {
@@ -283,7 +283,7 @@ impl BufferSource {
         self.pending_slip = 0.0;
     }
 
-    /// Set the varispeed rate, clamped to the ±8 % envelope (ADR-0014). Non-RT;
+    /// Set the varispeed rate, clamped to the widest envelope (ADR-0014). Non-RT;
     /// the RT path reads it per sample. Mirrors `setTrackRate` holding the
     /// envelope at the boundary.
     pub fn set_rate(&mut self, rate: f64) {
@@ -665,7 +665,7 @@ mod tests {
     #[test]
     fn loop_folds_fractional_playhead() {
         let mut src = BufferSource::new(ramp_buffer(20_000));
-        src.set_rate(1.0 + TRACK_RATE_RANGE); // +8 %, a non-integer step
+        src.set_rate(1.0 + TRACK_RATE_RANGE); // +50 %, a non-integer step
         src.play();
         src.seek(2_000.0);
         src.set_loop(2_000, 5_000);
@@ -821,7 +821,7 @@ mod tests {
         assert!((s.playhead - 52.5).abs() < 0.5, "playhead advanced at the rate, got {}", s.playhead);
     }
 
-    /// (T10) `clamp_rate` holds the ±8 % envelope and falls back to 1.0 on garbage.
+    /// (T10) `clamp_rate` holds the outer envelope and falls back to 1.0 on garbage.
     #[test]
     fn clamp_rate_holds_the_envelope() {
         assert_eq!(clamp_rate(1.0), 1.0);

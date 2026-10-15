@@ -6,6 +6,7 @@ import { EQ_BANDS, type EqBand } from './audio/eq'
 import { FX_KINDS, type FxKind } from './audio/fx'
 import { LOOP_LENGTH_OPTIONS } from './audio/loops'
 import { TRIM_RANGE_DB } from './audio/master'
+import { TEMPO_RANGES, type TempoRange } from './audio/track'
 import { clampMediaHeight } from './media/mediaTray'
 import type { MediaSort } from './media/sortRows'
 import type { GenerationMode } from './generation/songGeneration'
@@ -46,6 +47,9 @@ export type AppSettings = {
   /** The Songs tab's source: 'all', or a playlist name (the explorer falls back to
    * 'all' when no playlist has it). Absent = 'all'. */
   mediaSource: string
+  /** Varispeed envelope for SYNC, the tempo knob, and the FLX4 slider
+   * (ADR-0014). Absent = ±8 %. */
+  tempoRange: TempoRange
 }
 
 /** The settings that moved to shell-side persistence (ADR-0020 phase A:
@@ -331,6 +335,8 @@ export function loadAppSettings(): Partial<AppSettings> {
   if (typeof stored.mediaSource === 'string' && stored.mediaSource !== '') {
     settings.mediaSource = stored.mediaSource
   }
+  const tempoRange = TEMPO_RANGES.find((range) => range === stored.tempoRange)
+  if (tempoRange !== undefined) settings.tempoRange = tempoRange
   return settings
 }
 

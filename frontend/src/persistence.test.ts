@@ -174,6 +174,14 @@ describe('persistence', () => {
     expect(loadAppSettings().mediaSort).toBeUndefined()
   })
 
+  it('keeps only a known tempo range', () => {
+    expect(loadAppSettings().tempoRange).toBeUndefined()
+    updateAppSettings({ tempoRange: 0.16 })
+    expect(loadAppSettings().tempoRange).toBe(0.16)
+    updateAppSettings({ tempoRange: 0.2 as never })
+    expect(loadAppSettings().tempoRange).toBeUndefined()
+  })
+
   it('round-trips the media source and drops a blank or non-string one', () => {
     expect(loadAppSettings().mediaSource).toBeUndefined()
     updateAppSettings({ mediaSource: 'Warm-up' })

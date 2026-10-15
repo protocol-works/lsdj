@@ -1459,9 +1459,13 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Beat-match (sync) a deck's track to the other deck's tempo. Both \
-                       decks need a known BPM — a library track can carry `bpm: null` \
-                       (no analysis; see get_state), which cannot beat-match. \
+        description = "Beat-match (sync) a deck's track to the other deck's tempo, reading \
+                       half- or double-time BPMs as the same clock. Both decks need a \
+                       known BPM — a library track can carry `bpm: null` (no analysis; \
+                       see get_state), which cannot beat-match. The webview refuses \
+                       without telling this tool when the needed rate is outside the \
+                       tempo range (Settings → Audio): confirm with get_state, where \
+                       `track.bpm × transport.rate` should now match the other deck. \
                        deck 0 = A, 1 = B."
     )]
     async fn sync_deck(&self, Parameters(DeckArgs { deck }): Parameters<DeckArgs>) -> String {

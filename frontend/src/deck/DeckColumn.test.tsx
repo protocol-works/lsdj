@@ -76,7 +76,7 @@ vi.mock('../audio/interfaceStore', async (importOriginal) => {
 })
 import { initialDeckState, type DeckState } from './deckState'
 import { GENERATE_PROMPT_MAX_LENGTH } from './useDeck'
-import type { DeckMode, LoopState, TrackState } from './useDeck'
+import type { DeckMode, LoopState, SyncResult, TrackState } from './useDeck'
 
 const noop = () => {}
 
@@ -298,8 +298,10 @@ function renderPanel(
         onLeavePlayback={handlers.onLeavePlayback ?? noop}
         onSeekTrack={(handlers.onSeekTrack as (s: number) => void) ?? noop}
         onSetTrackRate={(handlers.onSetTrackRate as (r: number) => void) ?? noop}
+        tempoRange={0.08}
         onSyncTrack={
-          (handlers.onSyncTrack as () => 'synced') ?? (() => 'synced' as const)
+          (handlers.onSyncTrack as () => { status: 'synced' }) ??
+          (() => ({ status: 'synced' }) as const)
         }
         onHotCuePad={(handlers.onHotCuePad as (i: number) => void) ?? noop}
         onClearHotCue={(handlers.onClearHotCue as (i: number) => void) ?? noop}
@@ -491,7 +493,8 @@ describe('DeckColumn', () => {
           onLeavePlayback={noop}
           onSeekTrack={noop as (s: number) => void}
           onSetTrackRate={noop as (r: number) => void}
-          onSyncTrack={() => 'synced' as const}
+          tempoRange={0.08}
+          onSyncTrack={() => ({ status: 'synced' }) as const}
           onHotCuePad={noop}
           onClearHotCue={noop}
           onLoopIn={noop}
@@ -1110,7 +1113,8 @@ describe('DeckColumn', () => {
             onLeavePlayback={noop}
             onSeekTrack={noop as (s: number) => void}
             onSetTrackRate={noop as (r: number) => void}
-            onSyncTrack={() => 'synced' as const}
+            tempoRange={0.08}
+            onSyncTrack={() => ({ status: 'synced' }) as const}
             onHotCuePad={noop}
             onClearHotCue={noop}
             onLoopIn={noop}
@@ -1661,19 +1665,21 @@ describe('DeckColumn playback mode (M19)', () => {
     expect(onSetTrackRate).toHaveBeenCalledWith(1.02)
   })
 
-  it('SYNC names its refusal reason', () => {
-    const onSyncTrack = vi.fn(() => 'out_of_range' as const)
+  it('SYNC names its refusal reason and how far out it landed', () => {
+    const onSyncTrack = vi.fn(
+      (): SyncResult => ({ status: 'out_of_range', requiredPercent: 15.4 }),
+    )
     renderPlayback(aTrack(), {
       onSyncTrack: onSyncTrack as unknown as () => void,
     })
     fireEvent.click(screen.getByRole('button', { name: 'Sync' }))
     expect(onSyncTrack).toHaveBeenCalled()
     expect(
-      screen.getByText('Sync refused — tempo out of range'),
+      screen.getByText('Sync refused — needs +15 %, tempo range is ±8 %'),
     ).toBeInTheDocument()
 
     // A missing target is its own message — never the wrong blame.
-    onSyncTrack.mockReturnValue('no_tempo' as never)
+    onSyncTrack.mockReturnValue({ status: 'no_tempo' })
     fireEvent.click(screen.getByRole('button', { name: 'Sync' }))
     expect(
       screen.getByText('Sync refused — no tempo to sync to'),

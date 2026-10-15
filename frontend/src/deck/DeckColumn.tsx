@@ -30,7 +30,6 @@ import { TransportButton } from '../ui/TransportButton'
 import { XYPad } from '../ui/XYPad'
 import { moveRadial } from '../ui/netGeometry'
 import { isDeckOperable, type DeckState } from './deckState'
-import { TRACK_RATE_RANGE } from '../audio/track'
 import { sweepPosition } from './padWeights'
 import {
   MAX_PRESET_NAME_LENGTH,
@@ -94,6 +93,11 @@ const LOOP_BEAT_FRACTIONS: ReadonlyArray<[number, string]> = [
  * fraction (½, ¼, ⅛) once halved (M23). Null without a confident grid
  * or for a region that isn't a clean beat length — the honesty rule
  * keeps a count off a free or tail-clamped loop. */
+/** "+15" / "-12": the signed whole percent a SYNC refusal names. */
+function signedPercent(percent: number): string {
+  return `${percent > 0 ? '+' : ''}${percent.toFixed(0)}`
+}
+
 function loopBeatLabel(
   loop: { start: number; end: number },
   grid: { bpm: number } | null,
@@ -158,6 +162,9 @@ type DeckColumnProps = {
   onSeekTrack: (seconds: number) => void
   /** Varispeed (M20): the tempo knob's rate, clamped upstream. */
   onSetTrackRate: (rate: number) => void
+  /** The varispeed envelope (Settings): the tempo knob's throw and what
+   * SYNC may ask for. */
+  tempoRange: number
   /** SYNC: match the other deck's tempo; refusals name their reason. */
   onSyncTrack: () => SyncResult
   /** Hot cues and the track loop (M21, ADR-0015): pads mean position
@@ -204,6 +211,7 @@ export function DeckColumn({
   onLeavePlayback,
   onSeekTrack,
   onSetTrackRate,
+  tempoRange,
   onSyncTrack,
   onHotCuePad,
   onClearHotCue,
@@ -276,7 +284,7 @@ export function DeckColumn({
   // never haunts the next track's panel.
   const [syncRefusal, setSyncRefusal] = useState<{
     loadId: number
-    reason: Exclude<SyncResult, 'synced'>
+    result: Exclude<SyncResult, { status: 'synced' }>
   } | null>(null)
   const [generateEngine, setGenerateEngine] = useState<GenerateEngine>('sfx')
   const [generateOneShot, setGenerateOneShot] = useState(true)
@@ -595,8 +603,8 @@ export function DeckColumn({
               label={t('deck.track.tempo')}
               accent={deckId}
               value={track.rate}
-              min={1 - TRACK_RATE_RANGE}
-              max={1 + TRACK_RATE_RANGE}
+              min={1 - tempoRange}
+              max={1 + tempoRange}
               step={0.001}
               resetValue={1}
               onChange={onSetTrackRate}
@@ -606,9 +614,9 @@ export function DeckColumn({
               onClick={() => {
                 const result = onSyncTrack()
                 setSyncRefusal(
-                  result === 'synced'
+                  result.status === 'synced'
                     ? null
-                    : { loadId: track.loadId, reason: result },
+                    : { loadId: track.loadId, result },
                 )
               }}
             >
@@ -617,11 +625,12 @@ export function DeckColumn({
           </div>
           {syncRefusal && syncRefusal.loadId === track.loadId && (
             <p className="deck__error" role="alert">
-              {t(
-                syncRefusal.reason === 'no_tempo'
-                  ? 'deck.track.syncNoTempo'
-                  : 'deck.track.syncOutOfRange',
-              )}
+              {syncRefusal.result.status === 'no_tempo'
+                ? t('deck.track.syncNoTempo')
+                : t('deck.track.syncOutOfRange', {
+                    required: signedPercent(syncRefusal.result.requiredPercent),
+                    range: Math.round(tempoRange * 100),
+                  })}
             </p>
           )}
           {/* Hot cues (M21, ADR-0015): pads mean position. SHIFT+click

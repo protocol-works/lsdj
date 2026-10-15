@@ -41,7 +41,7 @@ function fakeDeck(state: Partial<DeckState> = {}): DeckControls {
     nudgeTrack: vi.fn(),
     setTrackRate: vi.fn(),
     nudgeTrackPhase: vi.fn(),
-    syncTrack: vi.fn(() => 'synced' as const),
+    syncTrack: vi.fn(() => ({ status: 'synced' }) as const),
     hotCuePad: vi.fn(),
     clearHotCue: vi.fn(),
     loopIn: vi.fn(),
@@ -362,6 +362,15 @@ describe('applyAppIntent', () => {
     // Low MIDI values are the slow end — orientation measured on the
     // device after the chart assumption shipped inverted.
     expect(deck.setTrackRate).toHaveBeenCalledWith(0.92)
+    // The slider's throw follows the chosen tempo range.
+    applyAppIntent(
+      { kind: 'track_rate', deck: 'a', value: 1 },
+      decks(deck),
+      noHandlers,
+      null,
+      0.16,
+    )
+    expect(deck.setTrackRate).toHaveBeenLastCalledWith(expect.closeTo(1.16, 5))
 
     const live = fakeDeck({ playing: true })
     applyAppIntent(
