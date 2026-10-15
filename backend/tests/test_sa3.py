@@ -216,7 +216,9 @@ class TestGenerate:
         # allowance is per adapter.
         base = sa3.TIMEOUT_SECONDS + 60.0
         assert sa3.timeout_for(60.0, lora_count=1) == base + sa3.LORA_TIMEOUT_SECONDS
-        assert sa3.timeout_for(60.0, lora_count=4) == base + 4 * sa3.LORA_TIMEOUT_SECONDS
+        assert (
+            sa3.timeout_for(60.0, lora_count=4) == base + 4 * sa3.LORA_TIMEOUT_SECONDS
+        )
         assert sa3.timeout_for(60.0, lora_count=0) == base
 
     def test_no_checkout_raises_unavailable(self, monkeypatch, tmp_path):

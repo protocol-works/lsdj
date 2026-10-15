@@ -237,4 +237,5 @@ fresh install and later top-ups:
   ([`sa3-pin.json`](../sa3-pin.json)) as a tarball (`curl`), extracts it (`tar`),
   and runs [`scripts/sa3-install.sh`](../scripts/sa3-install.sh) — build+warm
   steps with no git, no tty, no system Python 3.11 (`install.sh -y --python
-  3.11`). Both families' weights move there with `just migrate-models`.
+  3.11`). The script is compiled into the binary (like the pin), so the packaged
+  app needs no source tree to run it. Both families' weights move there with `just migrate-models`.

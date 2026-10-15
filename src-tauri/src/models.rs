@@ -511,11 +511,23 @@ fn sa3_pin() -> Sa3Pin {
     serde_json::from_str(PIN).expect("sa3-pin.json is valid JSON")
 }
 
-fn sa3_install_script() -> PathBuf {
-    if let Some(path) = std::env::var_os("LSDJ_SA3_INSTALL_SH") {
-        return PathBuf::from(path);
-    }
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/sa3-install.sh")
+/// The SA3 build+warm script, compiled in like the pin: a released binary has no
+/// source tree to read it from, and a `CARGO_MANIFEST_DIR` path names the build
+/// machine's checkout (a missing script is bash's exit 127).
+const SA3_INSTALL_SH: &str = include_str!("../../scripts/sa3-install.sh");
+
+/// The command that runs the SA3 build+warm script against `checkout`: the
+/// compiled-in script, or the file `script` names (the `LSDJ_SA3_INSTALL_SH`
+/// override, and the test stub).
+fn sa3_install_command(checkout: &Path, script: Option<&Path>) -> Command {
+    let mut cmd = Command::new("bash");
+    match script {
+        Some(script) => cmd.arg(script),
+        // `bash -c <script> <$0> <$1>`: the checkout still lands in `$1`.
+        None => cmd.args(["-c", SA3_INSTALL_SH, "sa3-install.sh"]),
+    };
+    cmd.arg(checkout);
+    cmd
 }
 
 /// Shared install state: at most one install runs at a time; the running stage's
@@ -821,7 +833,8 @@ fn install_sa3(progress: &Progress, shared: &InstallShared, update: bool) -> Res
         _ => (fetch_sa3_checkout(progress, shared)?, true),
     };
     cancelled(shared)?;
-    run_sa3_installer(progress, shared, &checkout, &sa3_install_script())?;
+    let script = std::env::var_os("LSDJ_SA3_INSTALL_SH").map(PathBuf::from);
+    run_sa3_installer(progress, shared, sa3_install_command(&checkout, script.as_deref()))?;
     if fetched {
         // Stamp the fetched source so a later pin bump shows as "update available".
         write_source_stamp(&checkout, &pinned_source());
@@ -830,17 +843,14 @@ fn install_sa3(progress: &Progress, shared: &InstallShared, update: bool) -> Res
 }
 
 /// Run the SA3 build+warm script (`install.sh -y --python 3.11` + warm). Takes
-/// the checkout + script paths so the run is testable against a stub without
+/// the fully-built command so the run is testable against a stub without
 /// touching the process environment.
 fn run_sa3_installer(
     progress: &Progress,
     shared: &InstallShared,
-    checkout: &Path,
-    script: &Path,
+    cmd: Command,
 ) -> Result<(), String> {
     progress("install", None, None);
-    let mut cmd = Command::new("bash");
-    cmd.arg(script).arg(checkout);
     // The script's stdout (warming N/3 …) is English and un-keyed; the "install"
     // stage label carries the wording. stderr is drained to the app log already.
     stream_child(shared, "sa3-install", cmd, |_line| {})
@@ -1207,11 +1217,76 @@ printf '{"event":"done"}\n'
         let progress = move |stage: &str, _message: Option<String>, _file: Option<String>| {
             sink.lock().unwrap().push(stage.to_string());
         };
-        let result = run_sa3_installer(&progress, &shared(), &checkout, &stub);
+        let cmd = sa3_install_command(&checkout, Some(&stub));
+        let result = run_sa3_installer(&progress, &shared(), cmd);
 
         assert!(result.is_ok(), "sa3 install failed: {result:?}");
         assert!(marker.exists(), "the installer script did not run");
         assert!(events.lock().unwrap().iter().any(|stage| stage == "install"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn the_default_sa3_installer_needs_no_source_tree() {
+        // A released binary runs far from the checkout it was built in, so the
+        // default command must carry the script itself. Stub only the upstream
+        // build/Python tools so the real installer builds, warms, and stamps a
+        // fresh checkout without downloading anything.
+        let tmp = std::env::temp_dir().join(format!("lsdj-sa3embed-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let checkout = tmp.join("checkout with spaces");
+        let mlx = checkout.join("optimized").join("mlx");
+        std::fs::create_dir_all(&mlx).unwrap();
+        write_exec(&mlx.join("install.sh"), r#"#!/bin/sh
+set -eu
+printf '%s\n' "$@" >> build-args
+mkdir -p .venv/bin
+cat > .venv/bin/python <<'PYTHON'
+#!/bin/sh
+set -eu
+printf '%s\t' "$@" >> warm-args
+printf '\n' >> warm-args
+PYTHON
+chmod +x .venv/bin/python
+"#);
+
+        assert!(!mlx.join(".venv").exists());
+        assert!(!mlx.join(WARMED_STAMP).exists());
+        let cmd = sa3_install_command(&checkout, None);
+        let manifest_dir = std::ffi::OsStr::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            cmd.get_args().all(|arg| !Path::new(arg).starts_with(manifest_dir)),
+            "the default installer still points into the source tree"
+        );
+        let noop = |_: &str, _: Option<String>, _: Option<String>| {};
+        let result = run_sa3_installer(&noop, &shared(), cmd);
+
+        assert!(result.is_ok(), "embedded sa3 install failed: {result:?}");
+        let build_args = std::fs::read_to_string(mlx.join("build-args")).unwrap();
+        assert_eq!(build_args.lines().collect::<Vec<_>>(), ["-y", "--python", "3.11"]);
+        assert!(mlx.join(".venv").join("bin").join("python").is_file());
+        let warm_args = std::fs::read_to_string(mlx.join("warm-args")).unwrap();
+        let calls: Vec<_> = warm_args.lines().collect();
+        assert_eq!(calls.len(), 3, "every DiT must be warmed exactly once");
+        for (call, (dit, decoder)) in calls.iter().zip([
+            ("sm-sfx", "same-s"), ("sm-music", "same-s"), ("medium", "same-l"),
+        ]) {
+            let args: Vec<_> = call.trim_end_matches('\t').split('\t').collect();
+            assert_eq!(args.len(), 13);
+            assert_eq!(&args[..12], [
+                "scripts/sa3_mlx.py", "--prompt", "setup warm-up", "--dit", dit,
+                "--decoder", decoder, "--seconds", "1", "--steps", "1", "--out",
+            ]);
+            assert_eq!(Path::new(args[12]).file_name().unwrap(), "warm.wav");
+        }
+        assert!(mlx.join(WARMED_STAMP).is_file());
+
+        // The second run exercises the already-warmed path: neither build nor
+        // Python should run again, so both argument logs must stay unchanged.
+        let result = run_sa3_installer(&noop, &shared(), sa3_install_command(&checkout, None));
+        assert!(result.is_ok(), "repeated sa3 install failed: {result:?}");
+        assert_eq!(std::fs::read_to_string(mlx.join("build-args")).unwrap(), build_args);
+        assert_eq!(std::fs::read_to_string(mlx.join("warm-args")).unwrap(), warm_args);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
