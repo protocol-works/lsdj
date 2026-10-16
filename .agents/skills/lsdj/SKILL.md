@@ -122,7 +122,9 @@ material, e.g. `banger`, `deep-house`). Prefer higher-rated material, and
 when asked for a vibe, honour matching tags before guessing from prompts.
 `rate_song` / `rate_sample(file, rating)` set a rating (omit `rating` to
 clear) — only when the DJ asks. A row the DJ already rated is refused unless
-you pass `overwrite: true`; read the refusal and ask before overriding. `list_playlists` shows their sets;
+you pass `overwrite: true`; read the refusal and ask before overriding.
+`delete_song(file)` moves a song to the Trash (recoverable) and out of every
+playlist — only when the DJ asks; confirm the list before a bulk cull. `list_playlists` shows their sets;
 `save_playlist(name, files)` creates or replaces one with the whole ordered
 list of song files (e.g. five top-rated tracks, warm-up to peak), and it
 appears in the Media Explorer as you write it.

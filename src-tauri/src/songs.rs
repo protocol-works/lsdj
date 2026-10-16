@@ -241,6 +241,10 @@ impl SongLibrary {
     pub fn remove(&self, name: &str) -> Result<(), String> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         let target = library::scoped_path(&self.dir, name)?;
+        // The folder also holds registry.json and the playlists: only a song goes.
+        if !library::is_audio_file(&target) {
+            return Err(format!("{name} is not a song"));
+        }
         trash::delete(&target).map_err(|e| format!("cannot move song to Trash: {e}"))?;
         let mut entries: Vec<SongEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != name);
@@ -816,6 +820,15 @@ mod tests {
         assert!(songs.crop("Dub.wav", 0.0, 9.0, false).is_err());
         assert!(songs.crop("Dub.wav", 1.0, 0.5, true).is_err());
         assert_eq!(songs.list().unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn remove_refuses_the_registry_and_other_non_song_files() {
+        let (dir, songs) = temp_library("remove-guard");
+        assert!(songs.remove("registry.json").is_err());
+        assert!(dir.join("registry.json").exists());
+        assert_eq!(songs.list().unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

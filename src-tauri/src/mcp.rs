@@ -468,6 +468,12 @@ struct LoadFromLibraryArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeleteSongArgs {
+    /// The library `file` name (from list_songs).
+    file: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct RateArgs {
     /// The library `file` name (from list_songs / list_samples).
     file: String,
@@ -1438,6 +1444,25 @@ impl McpHandler {
             .scan_library(move |app| app.state::<SongLibrary>().rate(&file, rating, overwrite))
             .await;
         self.library_write_result(rated, "songs", "could not rate the song")
+    }
+
+    #[tool(
+        description = "Delete a generated song (by its `file` from list_songs): moves it to \
+                       the OS Trash (recoverable from Finder) and drops it from the library \
+                       and every playlist. Only when the DJ asks."
+    )]
+    async fn delete_song(
+        &self,
+        Parameters(DeleteSongArgs { file }): Parameters<DeleteSongArgs>,
+    ) -> String {
+        let label = file.clone();
+        match self
+            .scan_library(move |app| app.state::<SongLibrary>().remove(&file))
+            .await
+        {
+            Ok(()) => format!("moved {label} to the Trash"),
+            Err(e) => format!("could not delete the song: {e}"),
+        }
     }
 
     #[tool(
