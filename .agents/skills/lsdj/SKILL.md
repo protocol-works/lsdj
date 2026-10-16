@@ -123,6 +123,9 @@ when asked for a vibe, honour matching tags before guessing from prompts.
 `rate_song` / `rate_sample(file, rating)` set a rating (omit `rating` to
 clear) — only when the DJ asks. A row the DJ already rated is refused unless
 you pass `overwrite: true`; read the refusal and ask before overriding.
+`rename_song` / `rename_sample(file, title)` change the display title;
+`tag_song` / `tag_sample(file, tags)` replace the WHOLE tag list (read the
+row's `tags` first to add one) — both only when the DJ asks.
 `delete_song(file)` moves a song to the Trash (recoverable) and out of every
 playlist — only when the DJ asks; confirm the list before a bulk cull. `list_playlists` shows their sets;
 `save_playlist(name, files)` creates or replaces one with the whole ordered

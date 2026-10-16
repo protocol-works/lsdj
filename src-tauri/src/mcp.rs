@@ -468,6 +468,24 @@ struct LoadFromLibraryArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RenameArgs {
+    /// The library `file` name (from list_songs / list_samples).
+    file: String,
+    /// The new display title (the file on disk keeps its name).
+    title: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TagArgs {
+    /// The library `file` name (from list_songs / list_samples).
+    file: String,
+    /// The row's WHOLE tag list, replacing what is there — read the current `tags`
+    /// first to add or remove one. Lowercased, `#` dropped, spaces become `-`;
+    /// an empty list clears them.
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DeleteSongArgs {
     /// The library `file` name (from list_songs).
     file: String,
@@ -1483,6 +1501,66 @@ impl McpHandler {
             .scan_library(move |app| app.state::<SampleLibrary>().rate(&file, rating, overwrite))
             .await;
         self.library_write_result(rated, "samples", "could not rate the sample")
+    }
+
+    #[tool(
+        description = "Rename a generated song's display title (by its `file` from \
+                       list_songs); the file keeps its name. Returns the updated row. \
+                       Only when the DJ asks."
+    )]
+    async fn rename_song(
+        &self,
+        Parameters(RenameArgs { file, title }): Parameters<RenameArgs>,
+    ) -> String {
+        let renamed = self
+            .scan_library(move |app| app.state::<SongLibrary>().rename(&file, &title))
+            .await;
+        self.library_write_result(renamed, "songs", "could not rename the song")
+    }
+
+    #[tool(
+        description = "Set a generated song's tags (by its `file` from list_songs). \
+                       `tags` is the WHOLE list and replaces the current one, so read \
+                       the row's `tags` first to add or remove one. Returns the updated row."
+    )]
+    async fn tag_song(
+        &self,
+        Parameters(TagArgs { file, tags }): Parameters<TagArgs>,
+    ) -> String {
+        let tagged = self
+            .scan_library(move |app| app.state::<SongLibrary>().tag(&file, tags))
+            .await;
+        self.library_write_result(tagged, "songs", "could not tag the song")
+    }
+
+    #[tool(
+        description = "Rename a generated sample's display title (by its `file` from \
+                       list_samples); the file keeps its name. Returns the updated row. \
+                       Only when the DJ asks."
+    )]
+    async fn rename_sample(
+        &self,
+        Parameters(RenameArgs { file, title }): Parameters<RenameArgs>,
+    ) -> String {
+        let renamed = self
+            .scan_library(move |app| app.state::<SampleLibrary>().rename(&file, &title))
+            .await;
+        self.library_write_result(renamed, "samples", "could not rename the sample")
+    }
+
+    #[tool(
+        description = "Set a generated sample's tags (by its `file` from list_samples). \
+                       `tags` is the WHOLE list and replaces the current one, so read \
+                       the row's `tags` first to add or remove one. Returns the updated row."
+    )]
+    async fn tag_sample(
+        &self,
+        Parameters(TagArgs { file, tags }): Parameters<TagArgs>,
+    ) -> String {
+        let tagged = self
+            .scan_library(move |app| app.state::<SampleLibrary>().tag(&file, tags))
+            .await;
+        self.library_write_result(tagged, "samples", "could not tag the sample")
     }
 
     #[tool(
