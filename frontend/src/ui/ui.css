@@ -1577,6 +1577,17 @@
   --wave-accent: var(--color-deck-b);
 }
 
+/* A playback deck's close-up is grabbable: drag to cue (paused) or
+   nudge phase (playing). No browser panning under the finger. */
+.ui-zoomstrip--grabbable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.ui-zoomstrip--grabbable:active {
+  cursor: grabbing;
+}
+
 /* Vertical close-up: the canvas swaps its axes (time downward). */
 .ui-zoomstrip--vertical {
   width: 5.5rem;
