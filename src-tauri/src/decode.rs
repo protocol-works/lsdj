@@ -58,6 +58,92 @@ impl DecodedTrack {
 /// without one). Errors are strings for the command boundary; they surface
 /// to the webview as an explicit load failure (ADR-0030: no silent refusal).
 pub fn decode_to_48k(bytes: Vec<u8>, extension: Option<&str>) -> Result<DecodedTrack, String> {
+    decode_at(bytes, extension, TARGET_RATE)
+}
+
+/// The rate Stable Audio 3 takes init audio at (the generation server's WAV gate).
+const SA3_RATE: u32 = 44_100;
+
+/// The longest source clip the generation server accepts: its
+/// `MAX_INIT_AUDIO_BYTES` covers one full-length track (`TRACK_MAX_SECONDS`).
+pub const MAX_SOURCE_SECONDS: f64 = 380.0;
+
+/// A cut of a library file ready to send as Stable Audio 3 init audio.
+pub struct SourceClip {
+    /// 44.1 kHz 16-bit stereo PCM WAV — the only shape the server accepts.
+    pub wav: Vec<u8>,
+    /// The clip's length; output seconds line up with it (the CLI aligns init
+    /// audio at 0, trimming or zero-padding it to the requested length).
+    pub seconds: f64,
+}
+
+/// Cut `start..end` seconds (`None` = to the end; an `end` past the file
+/// clamps to it) of any decodable file into a [`SourceClip`]. A 44.1 kHz
+/// 16-bit source round-trips bit-exactly, so the model sees the take itself,
+/// not a resampled copy.
+pub fn source_clip(
+    bytes: Vec<u8>,
+    extension: Option<&str>,
+    start: f64,
+    end: Option<f64>,
+) -> Result<SourceClip, String> {
+    if !start.is_finite() || start < 0.0 {
+        return Err("source_start must be 0 seconds or more".to_string());
+    }
+    if end.is_some_and(|end| !end.is_finite() || end <= start) {
+        return Err("source_end must be after source_start".to_string());
+    }
+    let track = decode_at(bytes, extension, SA3_RATE)?;
+    let rate = SA3_RATE as f64;
+    let total = track.frames();
+    let first = (start * rate).round() as usize;
+    let last = end.map_or(total, |end| ((end * rate).round() as usize).min(total));
+    if first >= last {
+        return Err(format!(
+            "source_start {start:.1}s is past the song's end ({:.1}s)",
+            total as f64 / rate
+        ));
+    }
+    let seconds = (last - first) as f64 / rate;
+    if seconds > MAX_SOURCE_SECONDS {
+        return Err(format!(
+            "the source window is {seconds:.0}s; a source can be at most \
+             {MAX_SOURCE_SECONDS:.0}s — narrow it with source_start/source_end"
+        ));
+    }
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: SA3_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut cursor = Cursor::new(Vec::with_capacity((last - first) * 4 + 44));
+    let mut writer =
+        hound::WavWriter::new(&mut cursor, spec).map_err(|e| format!("cannot write clip: {e}"))?;
+    for frame in first..last {
+        for sample in [track.left[frame], track.right[frame]] {
+            let pcm = (sample * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            writer
+                .write_sample(pcm)
+                .map_err(|e| format!("cannot write clip: {e}"))?;
+        }
+    }
+    writer
+        .finalize()
+        .map_err(|e| format!("cannot write clip: {e}"))?;
+    Ok(SourceClip {
+        wav: cursor.into_inner(),
+        seconds,
+    })
+}
+
+/// [`decode_to_48k`] at any `target_rate` (the returned track's
+/// `duration_seconds` assumes 48 kHz, so callers at another rate count frames).
+fn decode_at(
+    bytes: Vec<u8>,
+    extension: Option<&str>,
+    target_rate: u32,
+) -> Result<DecodedTrack, String> {
     let mut hint = Hint::new();
     if let Some(ext) = extension {
         hint.with_extension(ext);
@@ -136,20 +222,25 @@ pub fn decode_to_48k(bytes: Vec<u8>, extension: Option<&str>) -> Result<DecodedT
     if left.is_empty() {
         return Err("no audio frames decoded".to_string());
     }
-    if sample_rate == TARGET_RATE {
+    if sample_rate == target_rate {
         return Ok(DecodedTrack { left, right });
     }
-    resample_to_48k(&left, &right, sample_rate)
+    resample(&left, &right, sample_rate, target_rate)
 }
 
-/// Offline stereo resample `source_rate` → 48 kHz (rubato FFT, the ADR-0029
-/// crate). Fixed-input blocks; the tail is zero-padded through, and the
+/// Offline stereo resample `source_rate` → `target_rate` (rubato FFT, the
+/// ADR-0029 crate). Fixed-input blocks; the tail is zero-padded through, and the
 /// output is trimmed by the resampler's delay to the expected length so the
 /// track neither shifts nor grows.
-fn resample_to_48k(left: &[f32], right: &[f32], source_rate: u32) -> Result<DecodedTrack, String> {
+fn resample(
+    left: &[f32],
+    right: &[f32],
+    source_rate: u32,
+    target_rate: u32,
+) -> Result<DecodedTrack, String> {
     let mut resampler = rubato::Fft::<f32>::new(
         source_rate as usize,
-        TARGET_RATE as usize,
+        target_rate as usize,
         RESAMPLE_CHUNK_FRAMES,
         2,
         2,
@@ -158,7 +249,7 @@ fn resample_to_48k(left: &[f32], right: &[f32], source_rate: u32) -> Result<Deco
     .map_err(|e| format!("cannot resample {source_rate} Hz audio: {e}"))?;
     let frames_in = left.len();
     let expected_frames =
-        (frames_in as f64 * TARGET_RATE as f64 / source_rate as f64).round() as usize;
+        (frames_in as f64 * target_rate as f64 / source_rate as f64).round() as usize;
     let delay = resampler.output_delay();
 
     let mut input = vec![0.0f32; RESAMPLE_CHUNK_FRAMES * 2];
@@ -266,6 +357,37 @@ mod tests {
         let bytes = wav_bytes(48_000, 1, 4_800, 220.0);
         let decoded = decode_to_48k(bytes, Some("wav")).expect("decodes");
         assert_eq!(decoded.left, decoded.right);
+    }
+
+    #[test]
+    fn source_clip_cuts_a_window_bit_exactly() {
+        let bytes = wav_bytes(44_100, 2, 44_100 * 3, 440.0);
+        let clip = source_clip(bytes.clone(), Some("wav"), 1.0, Some(2.0)).expect("clips");
+        assert!((clip.seconds - 1.0).abs() < 1e-9);
+        // Same 44-byte header shape, and the PCM is the source's second second.
+        assert_eq!(
+            &clip.wav[44..],
+            &bytes[44 + 44_100 * 4..44 + 2 * 44_100 * 4]
+        );
+        // An end past the file clamps; a start past it refuses.
+        let tail = source_clip(bytes.clone(), Some("wav"), 2.5, Some(99.0)).expect("clamps");
+        assert!((tail.seconds - 0.5).abs() < 1e-9);
+        assert!(source_clip(bytes.clone(), Some("wav"), 3.5, None).is_err());
+        assert!(source_clip(bytes, Some("wav"), 1.0, Some(1.0)).is_err());
+    }
+
+    #[test]
+    fn source_clip_resamples_and_widens_mono() {
+        let clip = source_clip(wav_bytes(48_000, 1, 48_000, 220.0), Some("wav"), 0.0, None)
+            .expect("clips");
+        assert_eq!(clip.wav.len(), 44 + 44_100 * 4);
+        let spec = hound::WavReader::new(Cursor::new(&clip.wav))
+            .expect("wav")
+            .spec();
+        assert_eq!(
+            (spec.channels, spec.sample_rate, spec.bits_per_sample),
+            (2, 44_100, 16)
+        );
     }
 
     #[test]

@@ -170,7 +170,11 @@ pub trait RegistryEntry {
 /// is `file` (an error if there is none — a stale row must not be resurrected), let
 /// `apply` change it, save, and return the updated row. The caller holds its
 /// library's lock; rating, renaming, and tagging are all this one write.
-pub fn update_entry<T>(dir: &Path, file: &str, apply: impl FnOnce(&mut T)) -> Result<T, String>
+pub fn update_entry<T>(
+    dir: &Path,
+    file: &str,
+    apply: impl FnOnce(&mut T) -> Result<(), String>,
+) -> Result<T, String>
 where
     T: RegistryEntry + Clone + Serialize + DeserializeOwned,
 {
@@ -179,7 +183,7 @@ where
         .iter_mut()
         .find(|e| e.file() == file)
         .ok_or_else(|| format!("no library entry named {file}"))?;
-    apply(entry);
+    apply(entry)?;
     let updated = entry.clone();
     save_registry(dir, &entries)?;
     Ok(updated)
@@ -190,6 +194,22 @@ where
 pub fn validate_rating(rating: Option<u8>) -> Result<(), String> {
     match rating {
         Some(stars) if !(1..=5).contains(&stars) => Err(format!("rating must be 1–5, got {stars}")),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse to replace a rating already on a row unless the caller asked to: the
+/// DJ rates in the app while an agent works, and a blind write would erase their
+/// number. Rating an unrated row, or restating the same stars, always passes.
+pub fn check_rating_overwrite(
+    current: Option<u8>,
+    next: Option<u8>,
+    overwrite: bool,
+) -> Result<(), String> {
+    match current {
+        Some(stars) if !overwrite && current != next => Err(format!(
+            "already rated {stars} stars; pass overwrite: true to replace that rating"
+        )),
         _ => Ok(()),
     }
 }

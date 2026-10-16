@@ -86,13 +86,29 @@ deck's live stream. Slot contents are in `get_state` `loopLabels`.
 - `generate_sample(prompt, seconds, kind, one_shot?, loras?)` — kinds `sfx` /
   `music` (Stable Audio 3) / `magenta`; lands in the samples library
   (`list_samples`, `load_sample`).
-- `generate_track(deck, prompt, seconds, loras?)` — long-form SA3, **async**:
+- `generate_track(deck, prompt, seconds, loras?, title?, seed?)` — long-form SA3, **async**:
   it returns immediately with a job id and an ETA (generation runs at ~2.3 s
   of audio per second; a LoRA stack adds a ~130 s one-off merge). Keep
   mixing; poll `generation_status` (running/done/failed, newest first) or
   watch `get_state` for the deck to flip to playback when the track
   auto-loads. The human sees the pending row in the Media Explorer, so
-  announce what you're generating and why.
+  announce what you're generating and why. Optional `title` names the take
+  (the library otherwise picks a random two-word name) and `seed` repeats
+  one; a finished job's `file` in `generation_status` is the library row.
+- **Fix a take instead of re-rolling it** (audio-to-audio): pass
+  `source_song` (a `file` from `list_songs`), optionally cut to
+  `source_start` / `source_end` seconds (max 380 s). Then one of:
+  - `continue: true` + `seconds` — keep the window as is and extend it to
+    `seconds`. "Grow the first 90 s": `source_end: 90, seconds: 213`.
+  - `inpaint_range: [start, end]` — regenerate only those output seconds,
+    keeping the rest (re-decoded, so close but not sample-identical);
+    output 0 is `source_start`. Re-prompt for the
+    new part ("falls to throat singing, then slams back").
+  - neither — remix the whole window; `init_noise_level` 0.4–0.8 keeps its
+    character, 1 regenerates fully. Reuse the source's `loras` to keep its
+    sound.
+  `seconds` defaults to the window's length except for `continue`. The
+  source and range land in the new take's recipe.
 - **LoRA styles:** `list_loras` → pass `loras: [{"name": "<base>/<slug>",
   "strength": 1.0}]` (max 4, strength 0–4, ~1 = as trained). Adapters are
   per-base-model: `medium/…` adapters ride `generate_track` only, `small/…`
@@ -105,7 +121,8 @@ deck's live stream. Slot contents are in `get_state` `loopLabels`.
 material, e.g. `banger`, `deep-house`). Prefer higher-rated material, and
 when asked for a vibe, honour matching tags before guessing from prompts.
 `rate_song` / `rate_sample(file, rating)` set a rating (omit `rating` to
-clear) — only when the DJ asks. `list_playlists` shows their sets;
+clear) — only when the DJ asks. A row the DJ already rated is refused unless
+you pass `overwrite: true`; read the refusal and ask before overriding. `list_playlists` shows their sets;
 `save_playlist(name, files)` creates or replaces one with the whole ordered
 list of song files (e.g. five top-rated tracks, warm-up to peak), and it
 appears in the Media Explorer as you write it.

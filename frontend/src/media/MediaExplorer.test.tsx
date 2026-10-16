@@ -1927,7 +1927,7 @@ describe('library curation', () => {
         () => [riser],
       )
 
-    it('lists Rename, Tags…, Add to playlist…, Reuse settings and Delete from library in order', async () => {
+    it('lists Rename, Tags…, Add to playlist…, Use as source, Reuse settings and Delete from library in order', async () => {
       stubShell(() => [{ ...dub, recipe }])
       renderExplorer()
       await openGenerate('Dub')
@@ -1936,9 +1936,70 @@ describe('library curation', () => {
         'Rename',
         'Tags…',
         'Add to playlist…',
+        'Use as source',
         'Reuse settings',
         'Delete from library',
       ])
+    })
+
+    it('continues a saved song: Use as source cuts the window and posts it as init audio', async () => {
+      const oneSecondClip = new ArrayBuffer(44 + 44_100 * 4)
+      const shell = stubShell(
+        () => [dub],
+        (cmd) =>
+          cmd === 'song_source_clip'
+            ? oneSecondClip
+            : cmd === 'save_generated_song'
+              ? { ...dub, file: 'more.wav', title: 'More' }
+              : undefined,
+      )
+      const fetchMock = stubFetch()
+      renderExplorer()
+      await openGenerate('Dub')
+      await chooseMenuItem('Dub #1', 'Use as source')
+      expect(screen.getByRole('radio', { name: 'Continue' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      )
+      fireEvent.change(screen.getByLabelText('To (s)'), { target: { value: '1' } })
+      fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: 'more dub' } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+      })
+
+      expect(shell.commands('song_source_clip')[0].args).toEqual({
+        name: 'dub.wav',
+        start: 0,
+        end: 1,
+      })
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe('/api/generate')
+      const form = init.body as FormData
+      expect(JSON.parse(form.get('request') as string)).toMatchObject({
+        prompt: 'more dub',
+        seconds: 120,
+        kind: 'track',
+        inpaint_range: [1, 120],
+      })
+      expect(form.get('init_audio')).toBeInstanceOf(Blob)
+    })
+
+    it('refuses a source window whose end is not after its start', async () => {
+      stubShell(() => [dub])
+      const fetchMock = stubFetch()
+      renderExplorer()
+      await openGenerate('Dub')
+      await chooseMenuItem('Dub #1', 'Use as source')
+      fireEvent.change(screen.getByLabelText('From (s)'), { target: { value: '30' } })
+      fireEvent.change(screen.getByLabelText('To (s)'), { target: { value: '10' } })
+      fireEvent.change(screen.getByLabelText('Track prompt'), { target: { value: 'more dub' } })
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+      })
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The source window needs From before To, in seconds.',
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
     })
 
     it('gives a pending row no menu', async () => {

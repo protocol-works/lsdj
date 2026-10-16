@@ -44,7 +44,9 @@ MAX_CFG = 20.0
 MIN_APG = 0.0
 MAX_APG = 1.0
 MAX_SEED = 2**31 - 1
-MAX_INIT_AUDIO_BYTES = 16 * 1024 * 1024
+# An init clip as long as the longest track (44.1 kHz 16-bit stereo, plus header
+# slack), so a whole take can be inpainted; audio past `seconds` is trimmed anyway.
+MAX_INIT_AUDIO_BYTES = int(TRACK_MAX_SECONDS * 44_100) * 4 + 64 * 1024
 MAX_GENERATE_METADATA_BYTES = 64 * 1024
 
 # Measured small-DiT generation is ~1.5 s; the margin covers a cold

@@ -158,10 +158,21 @@ impl SampleLibrary {
     }
 
     /// Set or clear (`None`) a sample's 1–5 star rating; returns the updated row.
-    pub fn rate(&self, name: &str, rating: Option<u8>) -> Result<SampleEntry, String> {
+    /// `overwrite: false` refuses to replace an existing rating
+    /// ([`library::check_rating_overwrite`]) — the agent's default.
+    pub fn rate(
+        &self,
+        name: &str,
+        rating: Option<u8>,
+        overwrite: bool,
+    ) -> Result<SampleEntry, String> {
         library::validate_rating(rating)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        library::update_entry(&self.dir, name, |e: &mut SampleEntry| e.rating = rating)
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            library::check_rating_overwrite(e.rating, rating, overwrite)?;
+            e.rating = rating;
+            Ok(())
+        })
     }
 
     /// Change a sample's display title, never its file (see
@@ -169,14 +180,20 @@ impl SampleLibrary {
     pub fn rename(&self, name: &str, title: &str) -> Result<SampleEntry, String> {
         let title = library::validate_title(title)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        library::update_entry(&self.dir, name, |e: &mut SampleEntry| e.title = title)
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            e.title = title;
+            Ok(())
+        })
     }
 
     /// Replace a sample's tags with the normalised `tags`; returns the updated row.
     pub fn tag(&self, name: &str, tags: Vec<String>) -> Result<SampleEntry, String> {
         let tags = library::normalise_tags(&tags)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        library::update_entry(&self.dir, name, |e: &mut SampleEntry| e.tags = tags)
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            e.tags = tags;
+            Ok(())
+        })
     }
 }
 
@@ -279,10 +296,10 @@ mod tests {
                 b"RIFF test bytes",
             )
             .unwrap();
-        samples.rate("Riff.wav", Some(2)).unwrap();
+        samples.rate("Riff.wav", Some(2), true).unwrap();
         samples.rename("Riff.wav", "Gritty riff").unwrap();
         samples.tag("Riff.wav", vec!["Drone".to_string()]).unwrap();
-        assert!(samples.rate("Riff.wav", Some(6)).is_err());
+        assert!(samples.rate("Riff.wav", Some(6), true).is_err());
         assert!(samples.rename("Riff.wav", "a\nb").is_err());
         assert!(samples.tag("missing.wav", vec![]).is_err());
         drop(samples);

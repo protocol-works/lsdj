@@ -614,6 +614,21 @@ pub async fn read_generated_song(
     library.read(&name).map(tauri::ipc::Response::new)
 }
 
+/// Cut `start..end` seconds (`end` omitted = to the end) of a persisted song into
+/// the 44.1 kHz 16-bit stereo WAV Stable Audio 3 takes as init audio, for the
+/// Generate tab's audio-to-audio source. Binary, like [`read_generated_song`].
+#[tauri::command]
+pub async fn song_source_clip(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    start: f64,
+    end: Option<f64>,
+) -> Result<tauri::ipc::Response, String> {
+    library
+        .source_clip(&name, start, end)
+        .map(|clip| tauri::ipc::Response::new(clip.wav))
+}
+
 /// Delete a persisted song: move it to the OS Trash (recoverable), drop it from the
 /// registry and from every playlist, so the take list and the folder stay in sync
 /// without a restart. `async`
@@ -636,7 +651,7 @@ pub async fn rate_generated_song(
     name: String,
     rating: Option<u8>,
 ) -> Result<SongEntry, String> {
-    library.rate(&name, rating)
+    library.rate(&name, rating, true)
 }
 
 /// Retitle a song and return the updated row. Only the registry title changes — the
@@ -778,7 +793,7 @@ pub async fn rate_generated_sample(
     name: String,
     rating: Option<u8>,
 ) -> Result<SampleEntry, String> {
-    library.rate(&name, rating)
+    library.rate(&name, rating, true)
 }
 
 /// Retitle a sample (registry title only, never the file) and return the updated row.

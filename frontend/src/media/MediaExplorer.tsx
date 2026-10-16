@@ -21,7 +21,11 @@ import {
 import { useInterfaceStore } from '../audio/interfaceStore'
 import { useControlBus } from '../control/busContext'
 import { CrateBrowser } from '../crates/CrateBrowser'
-import { postMagentaRender, postSa3Generate } from '../generation/client'
+import {
+  postMagentaRender,
+  postSa3Generate,
+  postSa3GenerateWithSource,
+} from '../generation/client'
 import {
   adaptersForKind,
   stackForKind,
@@ -32,14 +36,23 @@ import {
   APG_DEFAULT,
   CFG_DEFAULT,
   DEFAULT_SA3_STEERING,
+  SOURCE_MODES,
+  SOURCE_NOISE_DEFAULT,
   buildSongGeneration,
+  clipSeconds,
   mintSa3Seed,
   parseFixedSeed,
   parseGenerationRecipe,
+  sourceDraftOf,
+  sourceWindow,
+  withSource,
   type GenerationMode,
   type Sa3SteeringDraft,
+  type SongGenerationBuild,
   type SongGenerationEngine,
   type SongGenerationRecipeV1,
+  type SourceDraft,
+  type TrackGenerationRequest,
 } from '../generation/songGeneration'
 import { Sa3AdvancedControls } from '../generation/Sa3AdvancedControls'
 import { loadAppSettings, updateAppSettings } from '../persistence'
@@ -54,6 +67,7 @@ import { PianoIcon } from '../ui/PianoIcon'
 import { Rating } from '../ui/Rating'
 import { Select } from '../ui/Select'
 import { SegmentedControl } from '../ui/SegmentedControl'
+import { Slider } from '../ui/Slider'
 import { TextField } from '../ui/TextField'
 import { insertFile, moveFile, removeFile } from './playlistOrder'
 import { randomSongTitle } from './songTitle'
@@ -451,6 +465,8 @@ export function MediaExplorer({
     seed: { ...DEFAULT_SA3_STEERING.seed },
   }))
   const [recipeNotice, setRecipeNotice] = useState<string | null>(null)
+  // A library song the next Track take grows from (audio-to-audio), or none.
+  const [source, setSource] = useState<SourceDraft | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
   // The installed SA3 LoRA adapters (issue #66) and each form's stack: the
   // adapters riding the next generation, each at a trim strength. The racks
@@ -1391,7 +1407,7 @@ export function MediaExplorer({
       requestEngine === 'magenta'
         ? []
         : stackForKind(trackStack.stack, loras, requestEngine)
-    let generation
+    let generation: SongGenerationBuild
     try {
       generation = buildSongGeneration(
         generationMode,
@@ -1407,6 +1423,12 @@ export function MediaExplorer({
       )
     } catch {
       setGenerateError(t('media.generate.advanced.seedInvalid'))
+      return
+    }
+    const requestSource = requestEngine === 'track' ? source : null
+    const window = requestSource ? sourceWindow(requestSource) : null
+    if (typeof window === 'string') {
+      setGenerateError(t(`media.generate.source.errors.${window}`))
       return
     }
     const id = nextIdRef.current++
@@ -1430,10 +1452,35 @@ export function MediaExplorer({
     ])
     void (async () => {
       try {
-        const wav =
-          'kind' in generation.request
-            ? await postSa3Generate(generation.request)
-            : await postMagentaRender(generation.request)
+        let wav: ArrayBuffer
+        if (requestSource && window) {
+          // The shell cuts the window to the WAV shape SA3 takes; its length
+          // decides the output length (remix/replace) or where continuing starts.
+          const clip = await invoke<ArrayBuffer>('song_source_clip', {
+            name: requestSource.file,
+            start: window.start,
+            end: window.end ?? null,
+          })
+          const clipLength = clipSeconds(clip)
+          const sourced = withSource(generation, requestSource, window.start, clipLength)
+          if (typeof sourced === 'string') {
+            throw new Error(
+              t(`media.generate.source.errors.${sourced}`, {
+                seconds: clipLength.toFixed(1),
+              }),
+            )
+          }
+          generation = sourced
+          wav = await postSa3GenerateWithSource(
+            sourced.request as TrackGenerationRequest,
+            clip,
+          )
+        } else {
+          wav =
+            'kind' in generation.request
+              ? await postSa3Generate(generation.request)
+              : await postMagentaRender(generation.request)
+        }
         setTracks((current) =>
           current.map((track) =>
             track.id === id
@@ -1541,14 +1588,26 @@ export function MediaExplorer({
       return
     }
     const { recipe } = parsed
-    if (!ENGINE_LENGTHS[recipe.engine].includes(recipe.seconds)) {
+    // A sourced take's length comes from its window, so it need not be a preset.
+    const presetLength = ENGINE_LENGTHS[recipe.engine].includes(recipe.seconds)
+    if (!presetLength && !recipe.source) {
       setRecipeNotice(t('media.generate.recipeInvalid'))
       return
     }
 
     setPrompt(recipe.prompt)
     setEngine(recipe.engine)
-    setSeconds(recipe.seconds)
+    if (presetLength) setSeconds(recipe.seconds)
+    const sourceFile = recipe.source?.file
+    setSource(
+      recipe.source
+        ? sourceDraftOf(
+            recipe.source,
+            tracks.find((row) => row.state === 'ready' && row.file === sourceFile)?.title ??
+              recipe.source.file,
+          )
+        : null,
+    )
     const availableNames = new Set(
       recipe.engine === 'track'
         ? adaptersForKind(loras, 'track').map((adapter) => adapter.name)
@@ -1710,6 +1769,32 @@ export function MediaExplorer({
   const playlistPanelRow = tracks.find((row) => row.id === playlistPanelId)
   const playlistPanelFile =
     tab === 'generate' && playlistPanelRow?.state === 'ready' ? playlistPanelRow.file : null
+
+  /** "Use as source": the next Track take grows from this saved song. */
+  function sourceMenuItems(track: GeneratedTrack): ActionMenuItem[] {
+    if (track.state !== 'ready' || track.file == null) return []
+    const { file, title: songTitle } = track
+    return [
+      {
+        label: t('media.menu.useAsSource'),
+        onSelect: () => {
+          setSource({
+            file,
+            title: songTitle,
+            mode: 'continue',
+            start: '',
+            end: '',
+            noiseLevel: SOURCE_NOISE_DEFAULT,
+            replaceStart: '',
+            replaceEnd: '',
+          })
+          setEngine('track')
+          if (!ENGINE_LENGTHS.track.includes(seconds)) setSeconds(ENGINE_LENGTHS.track[1])
+          setGenerateError(null)
+        },
+      },
+    ]
+  }
 
   /** A saved song's playlist menu items: "Add to playlist…" everywhere, and in a
    * playlist view Move up / Move down (in the stored order, so only while the view
@@ -2028,6 +2113,78 @@ export function MediaExplorer({
               onSubmit={generateTrack}
             />
           ) : null}
+          {engine === 'track' && source ? (
+            <div
+              className="media__generation-options"
+              role="group"
+              aria-label={t('media.generate.source.label', { title: source.title })}
+            >
+              <SegmentedControl
+                label={t('media.generate.source.label', { title: source.title })}
+                value={source.mode}
+                options={SOURCE_MODES.map((mode) => ({
+                  value: mode,
+                  label: t(`media.generate.source.modes.${mode}`),
+                }))}
+                onChange={(mode) => setSource({ ...source, mode })}
+              />
+              <TextField
+                type="number"
+                min={0}
+                step="any"
+                label={t('media.generate.source.from')}
+                value={source.start}
+                onChange={(event) => setSource({ ...source, start: event.target.value })}
+              />
+              <TextField
+                type="number"
+                min={0}
+                step="any"
+                label={t('media.generate.source.to')}
+                placeholder={t('media.generate.source.toEnd')}
+                value={source.end}
+                onChange={(event) => setSource({ ...source, end: event.target.value })}
+              />
+              {source.mode === 'remix' ? (
+                <Slider
+                  label={t('media.generate.source.noise')}
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={source.noiseLevel}
+                  onChange={(noiseLevel) => setSource({ ...source, noiseLevel })}
+                />
+              ) : null}
+              {source.mode === 'replace' ? (
+                <>
+                  <TextField
+                    type="number"
+                    min={0}
+                    step="any"
+                    label={t('media.generate.source.replaceFrom')}
+                    value={source.replaceStart}
+                    onChange={(event) =>
+                      setSource({ ...source, replaceStart: event.target.value })
+                    }
+                  />
+                  <TextField
+                    type="number"
+                    min={0}
+                    step="any"
+                    label={t('media.generate.source.replaceTo')}
+                    value={source.replaceEnd}
+                    onChange={(event) =>
+                      setSource({ ...source, replaceEnd: event.target.value })
+                    }
+                  />
+                </>
+              ) : null}
+              <Button onClick={() => setSource(null)}>{t('media.generate.source.clear')}</Button>
+              <p className="media__generation-hint">
+                {t(`media.generate.source.hints.${source.mode}`)}
+              </p>
+            </div>
+          ) : null}
           <div className="media__songs">
             <nav className="media__sources" aria-label={t('media.playlists.sources')}>
               <Button
@@ -2291,7 +2448,10 @@ export function MediaExplorer({
                         hasVersionedRecipe(track.recipe)
                           ? () => recallSongRecipe(track)
                           : undefined,
-                        songPlaylistItems(track.id, track.file),
+                        [
+                          ...songPlaylistItems(track.id, track.file),
+                          ...sourceMenuItems(track),
+                        ],
                       )}
                     {track.state === 'ready' && (
                       <Button

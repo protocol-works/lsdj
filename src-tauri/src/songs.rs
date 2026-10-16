@@ -57,6 +57,27 @@ pub struct GenerationRecipe {
     pub seconds: f64,
     pub loras: Vec<GenerationLora>,
     pub sa3: Option<Sa3SteeringRecipe>,
+    /// The library take this one grew from (audio-to-audio); absent for a take
+    /// composed from text alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceRecipe>,
+}
+
+/// Where an audio-to-audio take came from: the source `file`, the window of it
+/// sent as init audio, and how the model was told to use it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SourceRecipe {
+    pub file: String,
+    /// `"remix"`, `"replace"` or `"continue"`.
+    pub mode: String,
+    pub start: f64,
+    pub end: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_noise_level: Option<f64>,
+    /// Output seconds regenerated; everything outside is the source, kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inpaint_range: Option<[f64; 2]>,
 }
 
 /// One row of the song registry — what the webview shows and loads from. `serde`
@@ -184,6 +205,21 @@ impl SongLibrary {
         library::read_scoped(&self.dir, name, library::MAX_AUDIO_BYTES)
     }
 
+    /// Cut `start..end` seconds of a song into Stable Audio 3 init audio (scoped
+    /// like [`Self::read`]; see [`crate::decode::source_clip`]).
+    pub fn source_clip(
+        &self,
+        name: &str,
+        start: f64,
+        end: Option<f64>,
+    ) -> Result<crate::decode::SourceClip, String> {
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_string);
+        crate::decode::source_clip(self.read(name)?, extension.as_deref(), start, end)
+    }
+
     /// Move a song to the OS Trash (recoverable) and drop it from the registry, so the
     /// take list and the folder stay in sync without waiting for the next scan.
     pub fn remove(&self, name: &str) -> Result<(), String> {
@@ -197,10 +233,21 @@ impl SongLibrary {
     }
 
     /// Set or clear (`None`) a song's 1–5 star rating; returns the updated row.
-    pub fn rate(&self, name: &str, rating: Option<u8>) -> Result<SongEntry, String> {
+    /// `overwrite: false` refuses to replace an existing rating
+    /// ([`library::check_rating_overwrite`]) — the agent's default.
+    pub fn rate(
+        &self,
+        name: &str,
+        rating: Option<u8>,
+        overwrite: bool,
+    ) -> Result<SongEntry, String> {
         library::validate_rating(rating)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        library::update_entry(&self.dir, name, |e: &mut SongEntry| e.rating = rating)
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| {
+            library::check_rating_overwrite(e.rating, rating, overwrite)?;
+            e.rating = rating;
+            Ok(())
+        })
     }
 
     /// Change a song's display title — never its file, the identity everything
@@ -208,14 +255,20 @@ impl SongLibrary {
     pub fn rename(&self, name: &str, title: &str) -> Result<SongEntry, String> {
         let title = library::validate_title(title)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        library::update_entry(&self.dir, name, |e: &mut SongEntry| e.title = title)
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| {
+            e.title = title;
+            Ok(())
+        })
     }
 
     /// Replace a song's tags with the normalised `tags`; returns the updated row.
     pub fn tag(&self, name: &str, tags: Vec<String>) -> Result<SongEntry, String> {
         let tags = library::normalise_tags(&tags)?;
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        library::update_entry(&self.dir, name, |e: &mut SongEntry| e.tags = tags)
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| {
+            e.tags = tags;
+            Ok(())
+        })
     }
 
     /// Every playlist, reconciled against the songs on disk.
@@ -356,6 +409,7 @@ mod tests {
                 apg: Some(1.0),
                 seed: 42,
             }),
+            source: None,
         };
         let row = SongEntry {
             file: "dub.wav".to_string(),
@@ -381,19 +435,23 @@ mod tests {
             title: "Basic".to_string(),
             prompt: Some("dub".to_string()),
             model: Some("track".to_string()),
-            recipe: Some(serde_json::to_value(GenerationRecipe {
-                version: 1,
-                prompt: "dub".to_string(),
-                engine: "track".to_string(),
-                seconds: 120.0,
-                loras: vec![],
-                sa3: Some(Sa3SteeringRecipe {
-                    negative_prompt: String::new(),
-                    cfg: None,
-                    apg: None,
-                    seed: 55,
-                }),
-            }).unwrap()),
+            recipe: Some(
+                serde_json::to_value(GenerationRecipe {
+                    version: 1,
+                    prompt: "dub".to_string(),
+                    engine: "track".to_string(),
+                    seconds: 120.0,
+                    loras: vec![],
+                    sa3: Some(Sa3SteeringRecipe {
+                        negative_prompt: String::new(),
+                        cfg: None,
+                        apg: None,
+                        seed: 55,
+                    }),
+                    source: None,
+                })
+                .unwrap(),
+            ),
             rating: None,
             tags: Vec::new(),
         };
@@ -476,6 +534,7 @@ mod tests {
                 apg: Some(1.0),
                 seed: 42,
             }),
+            source: None,
         };
 
         let first = SongLibrary::new(dir.clone());
@@ -525,7 +584,7 @@ mod tests {
     #[test]
     fn rate_rename_and_tag_round_trip_through_a_fresh_instance() {
         let (dir, songs) = temp_library("curate");
-        songs.rate("Dub.wav", Some(4)).unwrap();
+        songs.rate("Dub.wav", Some(4), true).unwrap();
         let renamed = songs.rename("Dub.wav", "  Late Night Dub ").unwrap();
         assert_eq!(renamed.title, "Late Night Dub");
         let tagged = songs
@@ -545,7 +604,19 @@ mod tests {
         assert_eq!(rows[0].rating, Some(4));
         assert_eq!(rows[0].tags, ["deep-house"]);
 
-        let cleared = SongLibrary::new(dir.clone()).rate("Dub.wav", None).unwrap();
+        // Without `overwrite` a different rating is refused and the stored one
+        // kept; restating the same stars passes.
+        let guarded = SongLibrary::new(dir.clone());
+        assert!(guarded.rate("Dub.wav", Some(2), false).is_err());
+        assert!(guarded.rate("Dub.wav", None, false).is_err());
+        assert_eq!(
+            guarded.rate("Dub.wav", Some(4), false).unwrap().rating,
+            Some(4)
+        );
+
+        let cleared = SongLibrary::new(dir.clone())
+            .rate("Dub.wav", None, true)
+            .unwrap();
         assert_eq!(cleared.rating, None);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -553,10 +624,10 @@ mod tests {
     #[test]
     fn curation_rejects_bad_input_and_unknown_files_without_writing() {
         let (dir, songs) = temp_library("reject");
-        songs.rate("Dub.wav", Some(3)).unwrap();
-        assert!(songs.rate("Dub.wav", Some(0)).is_err());
-        assert!(songs.rate("Dub.wav", Some(6)).is_err());
-        assert!(songs.rate("nope.wav", Some(3)).is_err());
+        songs.rate("Dub.wav", Some(3), true).unwrap();
+        assert!(songs.rate("Dub.wav", Some(0), true).is_err());
+        assert!(songs.rate("Dub.wav", Some(6), true).is_err());
+        assert!(songs.rate("nope.wav", Some(3), true).is_err());
         assert!(songs.rename("Dub.wav", "").is_err());
         assert!(songs.rename("Dub.wav", "   ").is_err());
         assert!(songs.rename("Dub.wav", &"x".repeat(201)).is_err());

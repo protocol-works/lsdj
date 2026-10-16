@@ -83,7 +83,8 @@
       "moveDown": "Move down",
       "removeFromPlaylist": "Remove from playlist",
       "renamePlaylist": "Rename playlist",
-      "deletePlaylist": "Delete playlist"
+      "deletePlaylist": "Delete playlist",
+      "useAsSource": "Use as source"
     },
     "tags": {
       "label": "Tags for {{name}}",
@@ -180,7 +181,32 @@
       "saveFailed": "Couldn't save {{title}} to the songs folder: {{message}}",
       "openFolderFailed": "Couldn't open the songs folder: {{message}}",
       "deleteFailed": "Couldn't delete {{title}}: {{message}}",
-      "empty": "No tracks yet — compose one from a prompt."
+      "empty": "No tracks yet — compose one from a prompt.",
+      "source": {
+        "label": "Source: {{title}}",
+        "modes": {
+          "continue": "Continue",
+          "replace": "Replace",
+          "remix": "Remix"
+        },
+        "from": "From (s)",
+        "to": "To (s)",
+        "toEnd": "End of song",
+        "noise": "Change",
+        "replaceFrom": "Replace from (s)",
+        "replaceTo": "Replace to (s)",
+        "clear": "Clear source",
+        "hints": {
+          "continue": "Keeps the window as is and extends it to the Length above.",
+          "replace": "Regenerates only these seconds of the window, counted from its start. The rest stays.",
+          "remix": "Redraws the whole window with the prompt. Lower change keeps more of the source."
+        },
+        "errors": {
+          "windowInvalid": "The source window needs From before To, in seconds.",
+          "replaceInvalid": "Replace needs From before To, both within the {{seconds}} s window.",
+          "continueTooShort": "Continue needs a Length longer than the {{seconds}} s window."
+        }
+      }
     },
     "samples": {
       "prompt": "Loop prompt",

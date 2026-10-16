@@ -803,6 +803,7 @@ pub fn run() {
             commands::list_generated_songs,
             commands::save_generated_song,
             commands::read_generated_song,
+            commands::song_source_clip,
             commands::delete_generated_song,
             commands::rate_generated_song,
             commands::rename_generated_song,
