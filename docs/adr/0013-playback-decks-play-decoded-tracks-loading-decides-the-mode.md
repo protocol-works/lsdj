@@ -72,6 +72,8 @@ Realtime deck holding a stale buffer).
   will slice the buffer at the playhead — deferred past M19; until
   then both are disabled on a playback deck, because the ring history
   holds the dead stream and must never leak into a capture.
+  (Update: style sampling now slices the track — 10 s ending at the
+  playhead, or starting there near the top; freeze capture still waits.)
   End of track is explicit: silence, position parked at the end,
   state visible.
 - **The parked worker idles warm.** Entering playback sends `stop`

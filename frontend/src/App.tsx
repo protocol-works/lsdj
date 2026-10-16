@@ -1016,6 +1016,8 @@ function App() {
         <BeatView
           getSourceA={deckA.getZoomSource}
           getSourceB={deckB.getZoomSource}
+          deckA={deckA}
+          deckB={deckB}
         />
       )}
       <div className="app__booth">
@@ -1039,7 +1041,7 @@ function App() {
           generateError={deckA.generateError}
           bpm={deckA.bpm}
           onSampleOtherDeck={handleSampleForA}
-          canSample={deckB.state.playing}
+          canSample={deckB.mode === 'playback' ? deckB.track !== null : deckB.state.playing}
           onSavePreset={handleSavePreset}
           mode={deckA.mode}
           track={deckA.track}
@@ -1064,6 +1066,8 @@ function App() {
               vertical={beatView === 'vertical'}
               getSourceA={deckA.getZoomSource}
               getSourceB={deckB.getZoomSource}
+              deckA={deckA}
+              deckB={deckB}
             />
           )}
           <MixerStrip
@@ -1095,7 +1099,7 @@ function App() {
           generateError={deckB.generateError}
           bpm={deckB.bpm}
           onSampleOtherDeck={handleSampleForB}
-          canSample={deckA.state.playing}
+          canSample={deckA.mode === 'playback' ? deckA.track !== null : deckA.state.playing}
           onSavePreset={handleSavePreset}
           mode={deckB.mode}
           track={deckB.track}

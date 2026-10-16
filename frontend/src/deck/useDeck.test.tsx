@@ -20,6 +20,7 @@ import type {
 } from '../audio/types'
 import type { DeckSnap, InterfaceState } from '../audio/nativeEngine'
 import { useDeck, type SyncResult } from './useDeck'
+import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 
 /** The captured native transport: the latest `sidecar://status` callback, the
  * latest PCM `Channel` instance, and the `core.invoke` spy recording every
@@ -1340,14 +1341,12 @@ describe('useDeck playback mode (M19)', () => {
     expect(channel.captureLoop).not.toHaveBeenCalled()
   })
 
-  it('refuses a style sample for the same reason', async () => {
+  it('samples the track for style — the engine slices the buffer at the playhead', async () => {
     const { result, channel } = await loadedDeck()
-    let sample: Float32Array | null = new Float32Array(2)
     await act(async () => {
-      sample = await result.current.captureStyleSample()
+      await result.current.captureStyleSample()
     })
-    expect(sample).toBeNull()
-    expect(channel.captureSample).not.toHaveBeenCalled()
+    expect(channel.captureSample).toHaveBeenCalledWith(STYLE_SAMPLE_SECONDS)
   })
 
   it('drops a straggler PCM chunk while parked — the live meters never see it', async () => {

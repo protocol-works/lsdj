@@ -736,6 +736,15 @@ describe('DeckColumn', () => {
     )
   })
 
+  it('puts the transport above the style pad on a realtime deck', () => {
+    renderPanel({ connection: 'open' })
+    const play = screen.getByRole('button', { name: 'Play' })
+    const pad = screen.getByLabelText('Style pad')
+    expect(
+      play.compareDocumentPosition(pad) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
   it('selects a Color FX by name and reports knob moves', () => {
     const onSetFx = vi.fn()
     const onSetFxAmount = vi.fn()
@@ -1611,6 +1620,21 @@ describe('DeckColumn playback mode (M19)', () => {
     ).toBeInTheDocument()
     expect(screen.getByText('Warehouse Anthem')).toBeInTheDocument()
     expect(screen.getByText('Track — paused')).toBeInTheDocument()
+  })
+
+  it('puts play beside the overview up top, and the loops under the FX', () => {
+    renderPlayback(aTrack())
+    const before = (a: HTMLElement, b: HTMLElement) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const play = screen.getByRole('button', { name: 'Play' })
+    const overview = screen.getByRole('slider', { name: 'Track overview a' })
+    const fx = screen.getByRole('group', { name: 'Color FX' })
+    const loops = screen.getByRole('group', { name: 'Loops' })
+    expect(before(play, overview)).toBe(true)
+    expect(before(overview, screen.getByRole('button', { name: 'Sync' }))).toBe(true)
+    expect(before(fx, loops)).toBe(true)
+    expect(loops).toContainElement(screen.getByRole('button', { name: 'Loop in' }))
+    expect(loops).toContainElement(screen.getByRole('button', { name: 'Loop slot 1' }))
   })
 
   it('reads the transport from the track, not the worker', () => {

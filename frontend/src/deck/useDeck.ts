@@ -1296,13 +1296,10 @@ export function useDeck(
 
   const captureStyleSample = useCallback(
     () =>
-      // The worklet history holds the dead stream in playback mode;
-      // sampling a track will slice the buffer instead — deferred past
-      // M19 (ADR-0013).
-      modeRef.current === 'playback'
-        ? Promise.resolve(null)
-        : (channelRef.current?.captureSample(STYLE_SAMPLE_SECONDS) ??
-          Promise.resolve(null)),
+      // One call for both modes: on a playback deck the engine slices the
+      // track around the playhead instead of the (dead) live history.
+      channelRef.current?.captureSample(STYLE_SAMPLE_SECONDS) ??
+      Promise.resolve(null),
     [],
   )
 

@@ -62,7 +62,31 @@
   background: var(--color-led-ok);
 }
 
-.deck__fx {
+/* Sections (show-prep pass): each block of the deck is a ui-panel module
+   with its silkscreen label — one step quieter than the deck's own frame,
+   with a tighter inner rhythm, so the column reads as stacked modules. */
+.deck > .ui-panel {
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-color: var(--color-border);
+}
+
+/* The transport module heads the deck: the one block framed in the deck's
+   accent, on the raised surface, so play + the overview are found first. */
+.deck > .deck__transport-panel {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-raised);
+}
+
+.deck--a > .deck__transport-panel {
+  border-color: var(--color-deck-a-dim);
+}
+
+.deck--b > .deck__transport-panel {
+  border-color: var(--color-deck-b-dim);
+}
+
+.deck__fx-row {
   display: flex;
   align-items: flex-end;
   gap: var(--space-3);
@@ -77,6 +101,7 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
 /* Hot cues + track loop (M21) */
@@ -96,12 +121,6 @@
 
 .deck__loop-slots {
   display: flex;
-  gap: var(--space-2);
-}
-
-.deck__generate {
-  display: flex;
-  flex-direction: column;
   gap: var(--space-2);
 }
 
@@ -447,26 +466,53 @@
   color: var(--color-deck-b);
 }
 
-/* Playback mode (M19): track title beside the deck-local exit. */
+/* Playback mode (M19): a row of track controls or readouts. */
 .deck__track-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Tempo, SYNC, and the deck-local exit spread across the row. */
+.deck__track-row--spread {
+  justify-content: space-between;
+}
+
+/* The track title takes the row's slack, ellipsised, beside the clock. */
+.deck__track-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .deck__transport {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
+}
+
+.deck__overview {
+  flex: 1;
+  min-width: 0;
 }
 
 .deck__health {
   flex: 1;
+  min-width: 0;
   display: grid;
   grid-template-columns: 1fr auto auto auto;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: end;
+}
+
+/* The readouts sit beside the play button in a narrow column: keep each
+   label on one line so the row holds one height and the meter takes the
+   slack. */
+.deck__health .ui-stat__label {
+  white-space: nowrap;
 }
 
 .deck__error {

@@ -387,6 +387,16 @@ impl BufferSource {
         }
     }
 
+    /// A style-sample window of the track (M15 on a Playback deck): `frames` of
+    /// interleaved stereo ending at the audible playhead, or starting there when
+    /// fewer than `min_frames` precede it (the top of the track). Clamped to the
+    /// buffer; `None` when even that is shorter than `min_frames`. Non-RT (copies).
+    pub fn sample_window(&self, frames: usize, min_frames: usize) -> Option<Vec<f32>> {
+        let (start, end) =
+            sample_window_bounds(self.folded_playhead() as usize, frames, min_frames, self.duration_frames as usize)?;
+        Some(self.samples[start * SAMPLES_PER_FRAME..end * SAMPLES_PER_FRAME].to_vec())
+    }
+
     /// Min/max overview of the buffer across both channels (`trackPeaks` in
     /// `track.ts`) — the static overview a decoded track can afford that the live
     /// stream cannot. Buckets cover the buffer evenly; a short final bucket still
@@ -482,6 +492,25 @@ impl BufferSource {
     }
 }
 
+/// The `[start, end)` frame bounds of a style-sample window (see
+/// [`BufferSource::sample_window`]): `frames` ending at `playhead`, or starting at
+/// it when fewer than `min_frames` precede it; clamped to `duration`. `None` when
+/// the clamped window is shorter than `min_frames`.
+pub fn sample_window_bounds(
+    playhead: usize,
+    frames: usize,
+    min_frames: usize,
+    duration: usize,
+) -> Option<(usize, usize)> {
+    let playhead = playhead.min(duration);
+    let (start, end) = if playhead >= min_frames {
+        (playhead.saturating_sub(frames), playhead)
+    } else {
+        (playhead, playhead.saturating_add(frames).min(duration))
+    };
+    (end - start >= min_frames).then_some((start, end))
+}
+
 /// A deck's active source (ADR-0013): the live Magenta stream's ring consumer
 /// (Slices 1–3) or one decoded track. Loading decides the mode — there is no
 /// toggle.
@@ -495,6 +524,30 @@ pub(crate) enum DeckSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The style-sample window ends at the playhead, starts there near the top of
+    /// the track, clamps to the buffer, and refuses a window under the floor.
+    #[test]
+    fn sample_window_bounds_follow_the_playhead() {
+        // Mid-track: the 10 frames ending at the playhead.
+        assert_eq!(sample_window_bounds(50, 10, 3, 100), Some((40, 50)));
+        // Fewer than `frames` but at least the floor precede it: take what is there.
+        assert_eq!(sample_window_bounds(5, 10, 3, 100), Some((0, 5)));
+        // Under the floor precede it: the window starting at the playhead instead.
+        assert_eq!(sample_window_bounds(2, 10, 3, 100), Some((2, 12)));
+        // ...clamped to the track end.
+        assert_eq!(sample_window_bounds(0, 10, 3, 6), Some((0, 6)));
+        // Too short either way: refused.
+        assert_eq!(sample_window_bounds(1, 10, 3, 3), None);
+        // A playhead past the end clamps to it.
+        assert_eq!(sample_window_bounds(500, 10, 3, 100), Some((90, 100)));
+        // The slice is the exact frames in that window.
+        let mut src = BufferSource::new(ramp_buffer(100));
+        src.seek(50.0);
+        let window = src.sample_window(10, 3).expect("a window");
+        assert_eq!(window.len(), 20);
+        assert_eq!((window[0], window[19]), (40.0, -49.0));
+    }
 
     /// Build an interleaved-stereo buffer whose L channel is a ramp `0, 1, 2, …`
     /// and R is its negation, so a frame's identity is unambiguous (frame `i` is
