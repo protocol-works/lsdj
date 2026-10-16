@@ -12,10 +12,11 @@
 //! the sample back into a slot the way it was made.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::media::{AnalyzedLibrary, TrackInfo};
 use crate::library;
 
 /// One row of the sample registry — what the webview shows and loads from. Mirrors
@@ -47,6 +48,9 @@ pub struct SampleEntry {
     /// The DJ's own normalised words for the sample (`library::normalise_tags`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// BPM + key, filled in the background ([`crate::analysis::media`]).
+    #[serde(flatten)]
+    pub info: TrackInfo,
 }
 
 impl library::RegistryEntry for SampleEntry {
@@ -75,6 +79,8 @@ pub struct NewSample {
 pub struct SampleLibrary {
     dir: std::path::PathBuf,
     lock: Mutex<()>,
+    /// Kicks the background BPM/key pass ([`crate::analysis::media::spawn`]).
+    analyzer: OnceLock<mpsc::Sender<()>>,
 }
 
 impl SampleLibrary {
@@ -82,6 +88,7 @@ impl SampleLibrary {
         Self {
             dir,
             lock: Mutex::new(()),
+            analyzer: OnceLock::new(),
         }
     }
 
@@ -104,6 +111,7 @@ impl SampleLibrary {
         if reconciled != existing {
             library::save_registry(&self.dir, &reconciled)?;
         }
+        self.kick_analysis();
         Ok(reconciled)
     }
 
@@ -131,12 +139,20 @@ impl SampleLibrary {
             one_shot: new.one_shot,
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         };
         let mut entries: Vec<SampleEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != file);
         entries.push(entry.clone());
         library::save_registry(&self.dir, &entries)?;
+        self.kick_analysis();
         Ok(entry)
+    }
+
+    fn kick_analysis(&self) {
+        if let Some(kick) = self.analyzer.get() {
+            let _ = kick.send(());
+        }
     }
 
     /// Read one sample's bytes, scoped to the folder (`name` is a plain filename). The
@@ -195,6 +211,68 @@ impl SampleLibrary {
             Ok(())
         })
     }
+
+    /// Save `start..end` seconds of sample `name` as a NEW file and registry row
+    /// titled "<title> (crop)", carrying everything but the rating over; the
+    /// original is untouched. `name` must be a row in the registry.
+    pub fn crop(&self, name: &str, start: f64, end: f64) -> Result<SampleEntry, String> {
+        let original = {
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            library::load_registry::<SampleEntry>(&self.dir)
+                .into_iter()
+                .find(|e| e.file == name)
+                .ok_or_else(|| format!("no library entry named {name}"))?
+        };
+        let title = library::crop_title(&original.title);
+        // Decoded outside the lock: a long take takes a moment to cut, and a
+        // rating or a re-list must not wait on it.
+        let file = library::write_crop(&self.dir, name, &title, start, end)?;
+        let entry = SampleEntry {
+            file,
+            title,
+            rating: None,
+            // A crop can sit in a different key: re-analyse it.
+            info: TrackInfo::default(),
+            ..original
+        };
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries: Vec<SampleEntry> = library::load_registry(&self.dir);
+        // A re-list may already have adopted the new file as hand-added.
+        entries.retain(|e| e.file != entry.file);
+        entries.push(entry.clone());
+        library::save_registry(&self.dir, &entries)?;
+        Ok(entry)
+    }
+}
+
+impl AnalyzedLibrary for SampleLibrary {
+    const LIBRARY: &'static str = "samples";
+
+    fn set_analyzer(&self, kick: mpsc::Sender<()>) {
+        let _ = self.analyzer.set(kick);
+    }
+
+    fn pending_analysis(&self) -> Vec<String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::load_registry::<SampleEntry>(&self.dir)
+            .into_iter()
+            .filter(|e| !e.info.is_current())
+            .map(|e| e.file)
+            .collect()
+    }
+
+    fn read(&self, name: &str) -> Result<Vec<u8>, String> {
+        SampleLibrary::read(self, name)
+    }
+
+    fn set_info(&self, name: &str, info: TrackInfo) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            e.info = info;
+            Ok(())
+        })
+        .map(|_| ())
+    }
 }
 
 /// Reconcile a loaded registry against the filenames on disk: keep known entries (in
@@ -218,6 +296,7 @@ fn reconcile(existing: Vec<SampleEntry>, disk: &[String]) -> Vec<SampleEntry> {
                 one_shot: false,
                 rating: None,
                 tags: Vec::new(),
+                info: TrackInfo::default(),
             });
         }
     }
@@ -237,6 +316,7 @@ mod tests {
             one_shot,
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         }
     }
 

@@ -339,7 +339,8 @@ export function parseGenerationRecipe(value: unknown): ParsedGenerationRecipe {
       typeof choice.name !== 'string' ||
       !choice.name ||
       loraNames.has(choice.name) ||
-      !isBoundedNumber(choice.strength, 0, 2)
+      // The backend's (and the MCP's) 0-4 range; the rack clamps to its own 2.
+      !isBoundedNumber(choice.strength, 0, 4)
     ) {
       return { status: 'invalid' }
     }

@@ -284,6 +284,37 @@ pub fn read_scoped(dir: &Path, name: &str, max_bytes: u64) -> Result<Vec<u8>, St
     std::fs::read(&target).map_err(|e| format!("cannot read file: {e}"))
 }
 
+/// The title a crop of `title` is recorded under.
+pub fn crop_title(title: &str) -> String {
+    format!("{title} (crop)")
+}
+
+/// Cut `start..end` seconds of library file `name` (scoped like [`read_scoped`])
+/// into a fresh WAV beside it, named after `title`, and return the new file's name.
+/// The original is only read. See [`crate::decode::crop_wav`].
+pub fn write_crop(
+    dir: &Path,
+    name: &str,
+    title: &str,
+    start: f64,
+    end: f64,
+) -> Result<String, String> {
+    use std::io::Write;
+    let bytes = read_scoped(dir, name, MAX_AUDIO_BYTES)?;
+    let extension = Path::new(name).extension().and_then(|ext| ext.to_str());
+    let wav = crate::decode::crop_wav(bytes, extension, start, end)?;
+    let (mut file, path) = create_unique_wav(dir, &safe_stem(title, "crop"))?;
+    if let Err(e) = file.write_all(&wav) {
+        // Never leave a truncated crop for the folder scan to list.
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("cannot write crop: {e}"));
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| "written crop has no filename".to_string())
+}
+
 /// Resolve `name` to a regular file that is a DIRECT CHILD of `dir`, rejecting paths,
 /// `..`, and symlinks that escape the folder. The read/delete boundary: `name` comes
 /// from the webview, so without this a crafted name could reach any file the user

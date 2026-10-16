@@ -36,3 +36,22 @@ describe('sortRows', () => {
     expect(ids(input)).toEqual([1, 2])
   })
 })
+
+describe('sortRows by analysis', () => {
+  type Analysed = { id: number; state: 'ready'; title: string; bpm?: number; key?: string }
+  const analysed: Analysed[] = [
+    { id: 1, state: 'ready', title: 'a', bpm: 128, key: '10A' },
+    { id: 2, state: 'ready', title: 'b' },
+    { id: 3, state: 'ready', title: 'c', bpm: 96, key: '8B' },
+    { id: 4, state: 'ready', title: 'd', bpm: 128, key: '8A' },
+    { id: 5, state: 'ready', title: 'e', key: '1B' },
+  ]
+
+  it('sorts by BPM ascending with unknown last and ties newest-first', () => {
+    expect(sortRows(analysed, 'bpm').map((row) => row.id)).toEqual([3, 1, 4, 2, 5])
+  })
+
+  it('sorts by Camelot wheel position (1A … 12B) with unknown last', () => {
+    expect(sortRows(analysed, 'key').map((row) => row.id)).toEqual([5, 4, 3, 1, 2])
+  })
+})

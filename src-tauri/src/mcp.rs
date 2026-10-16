@@ -1315,7 +1315,10 @@ impl McpHandler {
                        each has a `file` (pass to load_track) plus title + prompt. \
                        `rating` is 1–5 when the DJ has rated it: prefer higher-rated \
                        material. `tags` are the DJ's own words for the material — \
-                       honour them when asked for a vibe."
+                       honour them when asked for a vibe. `bpm` and `key` (Camelot, \
+                       e.g. 8A, with `keyName` e.g. A min) appear once background \
+                       analysis has run, and stay absent when it wasn't confident — \
+                       use them for tempo and harmonic matching."
     )]
     async fn list_songs(&self) -> String {
         match self.scan_library(|app| app.state::<SongLibrary>().list()).await {
@@ -1330,7 +1333,7 @@ impl McpHandler {
                        pad — each has a `file` (pass to load_sample). `rating` is 1–5 \
                        when the DJ has rated it: prefer higher-rated material. `tags` \
                        are the DJ's own words for the material — honour them when \
-                       asked for a vibe."
+                       asked for a vibe. `bpm`/`key`/`keyName` as in list_songs."
     )]
     async fn list_samples(&self) -> String {
         match self.scan_library(|app| app.state::<SampleLibrary>().list()).await {

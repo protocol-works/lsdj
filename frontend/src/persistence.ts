@@ -328,7 +328,9 @@ export function loadAppSettings(): Partial<AppSettings> {
   if (
     stored.mediaSort === 'newest' ||
     stored.mediaSort === 'rating' ||
-    stored.mediaSort === 'title'
+    stored.mediaSort === 'title' ||
+    stored.mediaSort === 'bpm' ||
+    stored.mediaSort === 'key'
   ) {
     settings.mediaSort = stored.mediaSort
   }

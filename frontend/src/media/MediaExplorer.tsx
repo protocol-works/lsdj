@@ -72,6 +72,7 @@ import { TextField } from '../ui/TextField'
 import { insertFile, moveFile, removeFile } from './playlistOrder'
 import { randomSongTitle } from './songTitle'
 import { sortRows, type MediaSort } from './sortRows'
+import { CropPanel } from './CropPanel'
 import './media.css'
 
 // The tray toggle's shortcut, shown in its tooltip. ⌘ on macOS (the primary
@@ -96,6 +97,11 @@ type SongEntry = {
   rating?: number
   /** Absent when untagged. */
   tags?: string[]
+  /** Background analysis (Rust `analysis::media::TrackInfo`); absent until it
+   * runs, and when it wasn't confident. `key` is Camelot ("8A"). */
+  bpm?: number
+  key?: string
+  keyName?: string
 }
 
 // One row of the on-disk sample registry (Rust `samples::SampleEntry`, camelCase):
@@ -108,6 +114,9 @@ type SampleEntry = {
   oneShot: boolean
   rating?: number
   tags?: string[]
+  bpm?: number
+  key?: string
+  keyName?: string
 }
 
 type GeneratedTrack =
@@ -145,6 +154,9 @@ type GeneratedTrack =
       rating: number
       // The registry's tags. Carried for the tag chips (curation phase 4).
       tags: string[]
+      // The registry's analysis, as on SongEntry.
+      bpm?: number
+      key?: string
     }
 
 // A take in the Samples tab — the loop counterpart of GeneratedTrack. Carries
@@ -178,9 +190,11 @@ type GeneratedSample =
       // Bytes held only for a clip composed THIS session in the Samples tab; a
       // restored sample (incl. a deck-saved freeze/pad) reads them from disk on load.
       wav?: ArrayBuffer
-      // As on a GeneratedTrack: 0 = unrated, and the registry's tags.
+      // As on a GeneratedTrack: 0 = unrated, the registry's tags and analysis.
       rating: number
       tags: string[]
+      bpm?: number
+      key?: string
     }
 
 // One playlist (Rust `playlists::Playlist`): an ordered list of song files, already
@@ -223,8 +237,28 @@ const ENGINES = Object.keys(ENGINE_LENGTHS) as TrackEngine[]
 const TRACK_ENGINES: SongGenerationEngine[] = ['track', 'magenta']
 const SAMPLE_ENGINES: SampleEngine[] = ['sfx', 'music']
 
+/** A row's analysis for its meta line (" · 124 BPM · 8A"), '' with no verdict. */
+function analysisMeta(
+  row: { state: string; bpm?: number; key?: string },
+  bpmLabel: (bpm: number) => string,
+): string {
+  const parts = [row.bpm == null ? null : bpmLabel(Math.round(row.bpm)), row.key]
+  return parts.map((part) => (part ? ` · ${part}` : '')).join('')
+}
+
 function formatLength(seconds: number): string {
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  const whole = Math.round(seconds)
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
+}
+
+/** A recalled recipe's length for the Length menu: kept as is when the engine
+ * can render it (the menu grows a custom option), else the nearest preset. */
+function recallLength(engine: TrackEngine, seconds: number): number {
+  const presets = ENGINE_LENGTHS[engine]
+  if (seconds > 0 && seconds <= presets[presets.length - 1]) return seconds
+  return presets.reduce((best, length) =>
+    Math.abs(length - seconds) < Math.abs(best - seconds) ? length : best,
+  )
 }
 
 /** A registry `model` string back into a known engine, or null ("none") for a file
@@ -264,6 +298,18 @@ function fileOf(row: { state: string; file?: string | null }): string | null {
   return row.state === 'ready' ? (row.file ?? null) : null
 }
 
+/** Every tag the ready rows carry, alphabetically, once each. */
+function tagsOf(rows: Array<{ state: string; tags?: string[] }>): string[] {
+  return [...new Set(rows.flatMap((row) => (row.state === 'ready' ? (row.tags ?? []) : [])))].sort(
+    (a, b) => a.localeCompare(b),
+  )
+}
+
+/** Whether a row carries every tag in `filter` (a pending row carries none). */
+function hasTags(row: { state: string; tags?: string[] }, filter: string[]): boolean {
+  return filter.every((tag) => row.state === 'ready' && (row.tags ?? []).includes(tag))
+}
+
 function hasVersionedRecipe(value: unknown): boolean {
   return (
     value != null &&
@@ -292,6 +338,8 @@ function songRowFields(entry: SongEntry) {
     recipe: entry.recipe,
     rating: entry.rating ?? 0,
     tags: entry.tags ?? [],
+    bpm: entry.bpm,
+    key: entry.key,
   }
 }
 
@@ -306,6 +354,8 @@ function sampleRowFields(entry: SampleEntry) {
     oneShot: entry.oneShot,
     rating: entry.rating ?? 0,
     tags: entry.tags ?? [],
+    bpm: entry.bpm,
+    key: entry.key,
   }
 }
 
@@ -447,6 +497,9 @@ export function MediaExplorer({
   const pianoWindowOpen = interfaceState?.pianoWindowOpen ?? false
   const [tab, setTab] = useState<MediaTab>('crates')
   const [search, setSearch] = useState('')
+  // Tags every listed row must carry. One set for both tabs; each tab applies only
+  // the tags its own rows use, so a samples-only tag never empties the songs list.
+  const [tagFilter, setTagFilter] = useState<string[]>([])
   // True only while the top grip is being dragged, to drop the height
   // transition so the tray tracks the cursor instead of easing behind it.
   const [dragging, setDragging] = useState(false)
@@ -510,6 +563,8 @@ export function MediaExplorer({
   const [tagging, setTagging] = useState<{ id: number; focusAdd: boolean } | null>(null)
   // The row whose "Add to playlist…" panel is open, or null — one at a time.
   const [playlistPanelId, setPlaylistPanelId] = useState<number | null>(null)
+  // The row whose Crop… panel is open, or null.
+  const [croppingId, setCroppingId] = useState<number | null>(null)
   // The menu wrapper of the row whose tag or playlist panel is open, that panel's
   // anchor (ActionMenu keeps its trigger ref internal).
   const panelAnchorRef = useRef<HTMLSpanElement>(null)
@@ -568,7 +623,10 @@ export function MediaExplorer({
     const byFile = new Map(tracks.map((track) => [fileOf(track), track]))
     return playlist.files.flatMap((file) => byFile.get(file) ?? [])
   }, [playlist, tracks])
+  const songTags = tagsOf(songRows)
+  const songTagFilter = tagFilter.filter((tag) => songTags.includes(tag))
   const filteredTracks = songRows.filter((track) =>
+    hasTags(track, songTagFilter) &&
     matchesSearch(
       search,
       track.title,
@@ -597,7 +655,10 @@ export function MediaExplorer({
     ready.length === 0 ? null : ready[Math.min(highlight, ready.length - 1)]
   const highlightedReadyId = highlightedTrack?.id ?? null
 
+  const sampleTags = tagsOf(samples)
+  const sampleTagFilter = tagFilter.filter((tag) => sampleTags.includes(tag))
   const filteredSamples = samples.filter((sample) =>
+    hasTags(sample, sampleTagFilter) &&
     matchesSearch(
       search,
       sample.title,
@@ -1253,7 +1314,7 @@ export function MediaExplorer({
 
   const sortOptions = useMemo(
     () =>
-      (['newest', 'rating', 'title'] as const).map((value) => ({
+      (['newest', 'rating', 'title', 'bpm', 'key'] as const).map((value) => ({
         value,
         label: t(`media.sort.${value}`),
       })),
@@ -1262,7 +1323,7 @@ export function MediaExplorer({
   // In a playlist view "Newest" would just be the playlist order, so it gives way.
   const playlistSortOptions = useMemo(
     () =>
-      (['playlist', 'rating', 'title'] as const).map((value) => ({
+      (['playlist', 'rating', 'title', 'bpm', 'key'] as const).map((value) => ({
         value,
         label: t(`media.sort.${value}`),
       })),
@@ -1588,16 +1649,12 @@ export function MediaExplorer({
       return
     }
     const { recipe } = parsed
-    // A sourced take's length comes from its window, so it need not be a preset.
-    const presetLength = ENGINE_LENGTHS[recipe.engine].includes(recipe.seconds)
-    if (!presetLength && !recipe.source) {
-      setRecipeNotice(t('media.generate.recipeInvalid'))
-      return
-    }
 
     setPrompt(recipe.prompt)
     setEngine(recipe.engine)
-    if (presetLength) setSeconds(recipe.seconds)
+    // The MCP agent asks for any length (142 s, 213 s…), so a recipe's length
+    // is kept as an extra Length option rather than refused for not being a preset.
+    setSeconds(recallLength(recipe.engine, recipe.seconds))
     const sourceFile = recipe.source?.file
     setSource(
       recipe.source
@@ -1639,7 +1696,10 @@ export function MediaExplorer({
     )
   }
 
-  const lengths = ENGINE_LENGTHS[engine]
+  // A recalled off-preset length (an MCP take) shows as its own option.
+  const lengths = ENGINE_LENGTHS[engine].includes(seconds)
+    ? ENGINE_LENGTHS[engine]
+    : [...ENGINE_LENGTHS[engine], seconds].sort((a, b) => a - b)
   const fixedSeedInvalid =
     generationMode === 'advanced' &&
     engine === 'track' &&
@@ -1716,22 +1776,52 @@ export function MediaExplorer({
     )
   }
 
-  /** A ready row's tags as chips; a click searches for the tag. */
+  function toggleTagFilter(tag: string) {
+    setTagFilter((current) =>
+      current.includes(tag) ? current.filter((each) => each !== tag) : [...current, tag],
+    )
+    setHighlight(0)
+  }
+
+  /** Tags as filter toggles — a row's own chips, and the bar above a list. */
   function tagChips(tags: string[]) {
     return tags.map((tag) => (
       <button
         key={tag}
         type="button"
-        className="media__tag"
+        className={`media__tag${tagFilter.includes(tag) ? ' media__tag--on' : ''}`}
         aria-label={t('media.tags.filterBy', { tag })}
-        onClick={() => {
-          setSearch('#' + tag)
-          setHighlight(0)
-        }}
+        aria-pressed={tagFilter.includes(tag)}
+        onClick={() => toggleTagFilter(tag)}
       >
         {`#${tag}`}
       </button>
     ))
+  }
+
+  /** Every tag the tab's rows carry, with a clear control once one is on. */
+  function tagFilterBar(tags: string[], active: string[]) {
+    if (tags.length === 0) return null
+    return (
+      <div className="media__tag-filter" role="group" aria-label={t('media.tags.filterLabel')}>
+        {tagChips(tags)}
+        {active.length > 0 && (
+          <Button
+            onClick={() => {
+              setTagFilter([])
+              setHighlight(0)
+            }}
+          >
+            {t('media.tags.clearFilter')}
+          </Button>
+        )}
+      </div>
+    )
+  }
+
+  /** The no-results line names the search and the tag filter alike. */
+  function noResultsQuery(active: string[]) {
+    return [search.trim(), ...active.map((tag) => '#' + tag)].filter(Boolean).join(' ')
   }
 
   /** A ready row's ⋯ menu; `playlistItems` (a saved song's) follow Tags…. The
@@ -1746,6 +1836,7 @@ export function MediaExplorer({
     const items: ActionMenuItem[] = [
       { label: t('media.menu.rename'), onSelect: () => setEditingId(id) },
       { label: t('media.menu.tags'), onSelect: () => setTagging({ id, focusAdd: false }) },
+      { label: t('media.menu.crop'), onSelect: () => setCroppingId(id) },
       ...playlistItems,
     ]
     if (onReuse) items.push({ label: t('media.generate.reuseSettings'), onSelect: onReuse })
@@ -1753,7 +1844,11 @@ export function MediaExplorer({
     return (
       <span
         className="media__menu"
-        ref={tagging?.id === id || playlistPanelId === id ? panelAnchorRef : null}
+        ref={
+          tagging?.id === id || playlistPanelId === id || croppingId === id
+            ? panelAnchorRef
+            : null
+        }
       >
         <ActionMenu label={t('media.menu.label', { name })} items={items} />
       </span>
@@ -1765,6 +1860,7 @@ export function MediaExplorer({
   const tabRows: Array<GeneratedTrack | GeneratedSample> =
     tab === 'generate' ? tracks : tab === 'samples' ? samples : []
   const taggingRow = tabRows.find((row) => row.id === tagging?.id)
+  const croppingRow = tabRows.find((row) => row.id === croppingId)
   // The open "Add to playlist…" panel's song (a saved one, on the Songs tab).
   const playlistPanelRow = tracks.find((row) => row.id === playlistPanelId)
   const playlistPanelFile =
@@ -2282,13 +2378,14 @@ export function MediaExplorer({
                   />
                 </div>
               )}
+          {tagFilterBar(songTags, songTagFilter)}
           {playlist != null && songRows.length === 0 ? (
             <p className="media__empty">{t('media.playlists.empty')}</p>
           ) : tracks.length === 0 ? (
             <p className="media__empty">{t('media.generate.empty')}</p>
           ) : filteredTracks.length === 0 ? (
             <p className="media__empty" role="status">
-              {t('media.search.noResults', { query: search.trim() })}
+              {t('media.search.noResults', { query: noResultsQuery(songTagFilter) })}
             </p>
           ) : (
             <ul className="media__list">
@@ -2438,7 +2535,10 @@ export function MediaExplorer({
                         track.model == null
                           ? t('media.generate.imported')
                           : t(`media.generate.engines.${track.model}`)
-                      }${length == null ? '' : ` · ${formatLength(length)}`}`}
+                      }${length == null ? '' : ` · ${formatLength(length)}`}${analysisMeta(
+                        track,
+                        (bpm) => t('media.analysis.bpm', { bpm }),
+                      )}`}
                     </span>
                     {track.state === 'ready' &&
                       rowMenu(
@@ -2577,11 +2677,12 @@ export function MediaExplorer({
             onStrength={sampleStack.setStrength}
             onToggleBypass={sampleStack.toggleBypass}
           />
+          {tagFilterBar(sampleTags, sampleTagFilter)}
           {samples.length === 0 ? (
             <p className="media__empty">{t('media.samples.empty')}</p>
           ) : filteredSamples.length === 0 ? (
             <p className="media__empty" role="status">
-              {t('media.search.noResults', { query: search.trim() })}
+              {t('media.search.noResults', { query: noResultsQuery(sampleTagFilter) })}
             </p>
           ) : (
             <ul className="media__list">
@@ -2666,7 +2767,7 @@ export function MediaExplorer({
                     <span className="media__meta">
                       {`${sampleModelLabel(sample.model)} · ${t(
                         sample.oneShot ? 'media.samples.oneShot' : 'media.samples.loop',
-                      )}`}
+                      )}${analysisMeta(sample, (bpm) => t('media.analysis.bpm', { bpm }))}`}
                     </span>
                     {sample.state === 'ready' &&
                       rowMenu(sample.id, rowLabel, () => void removeSample(sample))}
@@ -2796,6 +2897,26 @@ export function MediaExplorer({
             },
           }}
           emptyText={t('media.playlists.none')}
+        />
+      )}
+      {croppingRow?.state === 'ready' && croppingRow.file != null && (
+        <CropPanel
+          key={croppingRow.id}
+          library={'oneShot' in croppingRow ? 'samples' : 'songs'}
+          file={croppingRow.file}
+          name={'oneShot' in croppingRow ? sampleLabel(croppingRow) : trackLabel(croppingRow)}
+          anchorRef={panelAnchorRef}
+          onClose={() => {
+            setCroppingId(null)
+            panelAnchorRef.current?.querySelector('button')?.focus()
+          }}
+          onPreview={async (wav) => {
+            await onPreview(wav)
+            // The phones now carry the crop, not a row's preview.
+            setPreviewingId(null)
+          }}
+          onStopPreview={onStopPreview}
+          onSaved={() => void ('oneShot' in croppingRow ? refreshSamples() : refreshSongs())}
         />
       )}
       {taggingRow?.state === 'ready' && (

@@ -17,10 +17,11 @@
 //! `SongEntry` schema and the song-specific reconcile/record on top.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::media::{AnalyzedLibrary, TrackInfo};
 use crate::library;
 use crate::playlists::{self, Playlist};
 
@@ -104,6 +105,9 @@ pub struct SongEntry {
     /// The DJ's own normalised words for the take (`library::normalise_tags`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// BPM + key, filled in the background ([`crate::analysis::media`]).
+    #[serde(flatten)]
+    pub info: TrackInfo,
 }
 
 impl library::RegistryEntry for SongEntry {
@@ -130,6 +134,8 @@ pub struct NewSong {
 pub struct SongLibrary {
     dir: std::path::PathBuf,
     lock: Mutex<()>,
+    /// Kicks the background BPM/key pass ([`crate::analysis::media::spawn`]).
+    analyzer: OnceLock<mpsc::Sender<()>>,
 }
 
 impl SongLibrary {
@@ -137,6 +143,7 @@ impl SongLibrary {
         Self {
             dir,
             lock: Mutex::new(()),
+            analyzer: OnceLock::new(),
         }
     }
 
@@ -159,6 +166,7 @@ impl SongLibrary {
         if reconciled != existing {
             library::save_registry(&self.dir, &reconciled)?;
         }
+        self.kick_analysis();
         Ok(reconciled)
     }
 
@@ -191,12 +199,20 @@ impl SongLibrary {
             recipe,
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         };
         let mut entries: Vec<SongEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != file);
         entries.push(entry.clone());
         library::save_registry(&self.dir, &entries)?;
+        self.kick_analysis();
         Ok(entry)
+    }
+
+    fn kick_analysis(&self) {
+        if let Some(kick) = self.analyzer.get() {
+            let _ = kick.send(());
+        }
     }
 
     /// Read one song's bytes, scoped to the folder (`name` is a plain filename, never
@@ -271,6 +287,38 @@ impl SongLibrary {
         })
     }
 
+    /// Save `start..end` seconds of song `name` as a NEW file and registry row
+    /// titled "<title> (crop)", carrying everything but the rating over; the
+    /// original is untouched. `name` must be a row in the registry.
+    pub fn crop(&self, name: &str, start: f64, end: f64) -> Result<SongEntry, String> {
+        let original = {
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            library::load_registry::<SongEntry>(&self.dir)
+                .into_iter()
+                .find(|e| e.file == name)
+                .ok_or_else(|| format!("no library entry named {name}"))?
+        };
+        let title = library::crop_title(&original.title);
+        // Decoded outside the lock: a long take takes a moment to cut, and a
+        // rating or a re-list must not wait on it.
+        let file = library::write_crop(&self.dir, name, &title, start, end)?;
+        let entry = SongEntry {
+            file,
+            title,
+            rating: None,
+            // A crop can sit in a different key: re-analyse it.
+            info: TrackInfo::default(),
+            ..original
+        };
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries: Vec<SongEntry> = library::load_registry(&self.dir);
+        // A re-list may already have adopted the new file as hand-added.
+        entries.retain(|e| e.file != entry.file);
+        entries.push(entry.clone());
+        library::save_registry(&self.dir, &entries)?;
+        Ok(entry)
+    }
+
     /// Every playlist, reconciled against the songs on disk.
     pub fn list_playlists(&self) -> Result<Vec<Playlist>, String> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -323,6 +371,36 @@ fn title_lookup(entries: &[SongEntry]) -> impl Fn(&str) -> Option<String> + '_ {
     }
 }
 
+impl AnalyzedLibrary for SongLibrary {
+    const LIBRARY: &'static str = "songs";
+
+    fn set_analyzer(&self, kick: mpsc::Sender<()>) {
+        let _ = self.analyzer.set(kick);
+    }
+
+    fn pending_analysis(&self) -> Vec<String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::load_registry::<SongEntry>(&self.dir)
+            .into_iter()
+            .filter(|e| !e.info.is_current())
+            .map(|e| e.file)
+            .collect()
+    }
+
+    fn read(&self, name: &str) -> Result<Vec<u8>, String> {
+        SongLibrary::read(self, name)
+    }
+
+    fn set_info(&self, name: &str, info: TrackInfo) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SongEntry| {
+            e.info = info;
+            Ok(())
+        })
+        .map(|_| ())
+    }
+}
+
 /// Reconcile a loaded registry against the filenames actually on disk: keep known
 /// entries (in registry order — i.e. composition order) whose file survives, then
 /// append any on-disk file the registry doesn't know yet as a hand-added song
@@ -344,6 +422,7 @@ fn reconcile(existing: Vec<SongEntry>, disk: &[String]) -> Vec<SongEntry> {
                 recipe: None,
                 rating: None,
                 tags: Vec::new(),
+                info: TrackInfo::default(),
             });
         }
     }
@@ -363,6 +442,7 @@ mod tests {
             recipe: None,
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         }
     }
 
@@ -419,6 +499,7 @@ mod tests {
             recipe: Some(serde_json::to_value(recipe).unwrap()),
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         };
         let encoded = serde_json::to_string(&row).unwrap();
         let decoded: SongEntry = serde_json::from_str(&encoded).unwrap();
@@ -454,6 +535,7 @@ mod tests {
             ),
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         };
         let encoded_basic = serde_json::to_string(&basic).unwrap();
         assert!(!encoded_basic.contains("\"cfg\""));
@@ -490,6 +572,7 @@ mod tests {
             recipe: Some(future_recipe.clone()),
             rating: None,
             tags: Vec::new(),
+            info: TrackInfo::default(),
         };
         std::fs::write(
             dir.join("registry.json"),
@@ -655,6 +738,87 @@ mod tests {
         // Unrated, untagged rows serialise without the new keys.
         let encoded = serde_json::to_string(&legacy).unwrap();
         assert!(!encoded.contains("rating") && !encoded.contains("tags"));
+    }
+
+    #[test]
+    fn crop_saves_a_new_row_and_leaves_the_original() {
+        let dir = std::env::temp_dir().join(format!("lsdj-song-crop-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let songs = SongLibrary::new(dir.clone());
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
+        for i in 0..44_100 * 2 * 2 {
+            writer.write_sample((i % 1000) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let source = cursor.into_inner();
+        let recipe = GenerationRecipe {
+            version: 1,
+            prompt: "warm dub".to_string(),
+            engine: "track".to_string(),
+            seconds: 2.0,
+            ..Default::default()
+        };
+        songs
+            .record(
+                NewSong {
+                    title: "Dub".to_string(),
+                    prompt: "warm dub".to_string(),
+                    model: "track".to_string(),
+                    recipe: Some(recipe),
+                },
+                &source,
+            )
+            .unwrap();
+        songs.rate("Dub.wav", Some(5), true).unwrap();
+        songs.tag("Dub.wav", vec!["dub".to_string()]).unwrap();
+
+        let crop = songs.crop("Dub.wav", 0.5, 1.5).unwrap();
+        assert_eq!(crop.title, "Dub (crop)");
+        assert_ne!(crop.file, "Dub.wav");
+        assert_eq!(crop.rating, None);
+        assert_eq!(crop.tags, ["dub"]);
+        assert_eq!(crop.prompt.as_deref(), Some("warm dub"));
+        assert!(crop.recipe.is_some());
+        let reader = hound::WavReader::open(dir.join(&crop.file)).unwrap();
+        assert_eq!(reader.duration(), 44_100);
+        assert_eq!(std::fs::read(dir.join("Dub.wav")).unwrap(), source);
+        let rows = songs.list().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].rating, Some(5));
+
+        // Only a registry row, inside the window, ever crops — and a refusal writes nothing.
+        assert!(songs.crop("../Dub.wav", 0.0, 1.0).is_err());
+        assert!(songs.crop("nope.wav", 0.0, 1.0).is_err());
+        assert!(songs.crop("Dub.wav", 1.0, 0.5).is_err());
+        assert!(songs.crop("Dub.wav", 0.0, 9.0).is_err());
+        assert_eq!(songs.list().unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn analysis_lands_on_the_row_and_is_not_owed_again() {
+        let (dir, songs) = temp_library("analysis");
+        assert_eq!(songs.pending_analysis(), ["Dub.wav"]);
+        let info = TrackInfo {
+            bpm: Some(124.0),
+            key: Some("8A".to_string()),
+            key_name: Some("A min".to_string()),
+            analyzed: crate::analysis::media::ANALYSIS_VERSION,
+        };
+        songs.set_info("Dub.wav", info.clone()).unwrap();
+        // An honest "no verdict" is current too, so a failure never re-loops.
+        assert!(songs.pending_analysis().is_empty());
+        let row = &SongLibrary::new(dir.clone()).list().unwrap()[0];
+        assert_eq!(row.info, info);
+        assert_eq!(row.prompt.as_deref(), Some("warm dub"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

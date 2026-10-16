@@ -77,6 +77,7 @@
       "label": "More actions for {{name}}",
       "rename": "Rename",
       "tags": "Tags…",
+      "crop": "Crop…",
       "delete": "Delete from library",
       "addToPlaylist": "Add to playlist…",
       "moveUp": "Move up",
@@ -86,12 +87,31 @@
       "deletePlaylist": "Delete playlist",
       "useAsSource": "Use as source"
     },
+    "crop": {
+      "label": "Crop {{name}}",
+      "waveform": "Waveform of {{name}} — click to move the nearer handle",
+      "startHandle": "Crop start",
+      "endHandle": "Crop end",
+      "start": "Start (s)",
+      "end": "End (s)",
+      "length": "{{seconds}} s selected",
+      "loading": "Reading the waveform…",
+      "preview": "Preview",
+      "stop": "Stop",
+      "autoTrim": "Auto-trim silence",
+      "allSilent": "The whole clip is near-silent; nothing to trim to.",
+      "save": "Save as new clip",
+      "cancel": "Cancel",
+      "failed": "Couldn't crop {{title}}: {{message}}"
+    },
     "tags": {
       "label": "Tags for {{name}}",
       "add": "Add a tag",
       "placeholder": "Add a tag…",
       "empty": "No tags yet — add one below.",
-      "filterBy": "Search for #{{tag}}",
+      "filterBy": "Filter by #{{tag}}",
+      "filterLabel": "Filter by tag",
+      "clearFilter": "Clear tags",
       "failed": "Couldn't tag {{title}}: {{message}}"
     },
     "sort": {
@@ -99,7 +119,12 @@
       "newest": "Newest",
       "rating": "Top rated",
       "title": "Title",
+      "bpm": "BPM",
+      "key": "Key",
       "playlist": "Playlist order"
+    },
+    "analysis": {
+      "bpm": "{{bpm}} BPM"
     },
     "playlists": {
       "sources": "Sources",
@@ -353,6 +378,7 @@
       "slot": "Loop slot {{n}}",
       "slotPending": "Loop slot {{n}} — generating",
       "length": "Loop length",
+      "section": "Loops",
       "lengthOption": "{{seconds}} s"
     },
     "generate": {

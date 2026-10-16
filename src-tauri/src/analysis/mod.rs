@@ -6,7 +6,9 @@
 pub mod bands;
 pub mod beat;
 pub mod grid;
+pub mod key;
 pub mod live;
+pub mod media;
 pub mod track;
 
 #[cfg(test)]

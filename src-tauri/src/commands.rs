@@ -816,6 +816,95 @@ pub async fn tag_generated_sample(
     library.tag(&name, tags)
 }
 
+/// Save `start..end` seconds of a song as a NEW library row (the crop panel); the
+/// original is untouched. Name and window are validated in [`SongLibrary::crop`].
+#[tauri::command]
+pub async fn crop_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    start: f64,
+    end: f64,
+) -> Result<SongEntry, String> {
+    library.crop(&name, start, end)
+}
+
+/// [`crop_generated_song`] for a sample.
+#[tauri::command]
+pub async fn crop_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    start: f64,
+    end: f64,
+) -> Result<SampleEntry, String> {
+    library.crop(&name, start, end)
+}
+
+/// A library file's waveform for the crop panel (it is on no deck, so
+/// `track_peaks` can't serve it), plus its length in seconds.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipPeaksDto {
+    pub min: Vec<f32>,
+    pub max: Vec<f32>,
+    pub duration: f64,
+}
+
+/// The folder a crop-panel command reads from: `"songs"` or `"samples"`.
+fn crop_library_dir<'a>(
+    songs: &'a SongLibrary,
+    samples: &'a SampleLibrary,
+    library: &str,
+) -> Result<&'a std::path::Path, String> {
+    match library {
+        "songs" => Ok(songs.dir()),
+        "samples" => Ok(samples.dir()),
+        _ => Err(format!("unknown library {library}")),
+    }
+}
+
+/// Read a library file scoped to its folder, with its extension as a decode hint.
+fn read_library_clip(
+    songs: &SongLibrary,
+    samples: &SampleLibrary,
+    library: &str,
+    name: &str,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let dir = crop_library_dir(songs, samples, library)?;
+    let bytes = library::read_scoped(dir, name, library::MAX_AUDIO_BYTES)?;
+    let extension = std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_string);
+    Ok((bytes, extension))
+}
+
+#[tauri::command]
+pub async fn library_clip_peaks(
+    songs: tauri::State<'_, SongLibrary>,
+    samples: tauri::State<'_, SampleLibrary>,
+    library: String,
+    name: String,
+    buckets: usize,
+) -> Result<ClipPeaksDto, String> {
+    let (bytes, extension) = read_library_clip(&songs, &samples, &library, &name)?;
+    let (min, max, duration) = crate::decode::clip_peaks(bytes, extension.as_deref(), buckets)?;
+    Ok(ClipPeaksDto { min, max, duration })
+}
+
+/// The crop exactly as Save would write it, for the panel's selection preview.
+/// Binary, like [`read_generated_song`]; nothing is written.
+#[tauri::command]
+pub async fn library_crop_preview(
+    songs: tauri::State<'_, SongLibrary>,
+    samples: tauri::State<'_, SampleLibrary>,
+    library: String,
+    name: String,
+    start: f64,
+    end: f64,
+) -> Result<tauri::ipc::Response, String> {
+    let (bytes, extension) = read_library_clip(&songs, &samples, &library, &name)?;
+    crate::decode::crop_wav(bytes, extension.as_deref(), start, end).map(tauri::ipc::Response::new)
+}
+
 /// Open the generated-samples folder in the OS file manager (driven from Rust, no
 /// opener capability granted to the webview), creating it first.
 #[tauri::command]
@@ -1192,9 +1281,9 @@ pub fn load_generated_loop(
 }
 
 /// Capture the last `seconds` of played history on a Realtime deck (M15 style
-/// sampling). Round-trips through the render thread and returns the captured
-/// interleaved-stereo samples, or `None` below the floor / off a Realtime deck /
-/// for a bad deck index.
+/// sampling), or the track window around the playhead on a Playback deck.
+/// Round-trips through the render thread and returns the captured
+/// interleaved-stereo samples, or `None` below the floor / for a bad deck index.
 #[tauri::command]
 pub fn capture_sample(state: tauri::State<'_, Host>, deck: usize, seconds: f64) -> Option<Vec<f32>> {
     if !valid_deck(deck) {

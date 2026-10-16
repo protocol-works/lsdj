@@ -702,7 +702,15 @@ describe('MediaExplorer', () => {
     const invoke = vi.fn(async (cmd: string) => {
       if (cmd === 'list_generated_samples') {
         return [
-          { file: 'Freeze A.wav', title: 'Freeze A', prompt: null, model: 'freeze', oneShot: false },
+          {
+            file: 'Freeze A.wav',
+            title: 'Freeze A',
+            prompt: null,
+            model: 'freeze',
+            oneShot: false,
+            bpm: 123.6,
+            key: '8A',
+          },
           { file: 'break.wav', title: 'break', prompt: null, model: null, oneShot: false },
         ]
       }
@@ -716,7 +724,7 @@ describe('MediaExplorer', () => {
     const metas = [...document.querySelectorAll('.media__meta')].map(
       (el) => el.textContent ?? '',
     )
-    expect(metas.some((text) => text.includes('Freeze'))).toBe(true)
+    expect(metas).toContain('Freeze · Loop · 124 BPM · 8A')
     expect(metas.some((text) => text.includes('Imported'))).toBe(true)
   })
 
@@ -1110,6 +1118,96 @@ describe('MediaExplorer', () => {
         }),
       }),
     )
+  })
+
+  it('recalls an MCP take whose length is not a preset (bug: Reuse settings refused it)', async () => {
+    useLorasMock.mockReturnValue([
+      {
+        name: 'medium/dub',
+        base: 'medium',
+        slug: 'dub',
+        sizeBytes: 100,
+        source: null,
+        adapterType: 'lora',
+        rank: 8,
+      },
+    ])
+    const fetchMock = stubFetch()
+    const invoke = vi.fn(async (cmd: string) => {
+      if (cmd === 'list_generated_songs') {
+        // Exactly what mcp.rs `track_recipe` writes: any length, the 0-4 LoRA
+        // range, an empty Avoid, no guidance, the minted seed.
+        return [
+          {
+            file: 'agent.wav',
+            title: 'Agent take',
+            prompt: 'robot dogs',
+            model: 'track',
+            recipe: {
+              version: 1,
+              prompt: 'robot dogs',
+              engine: 'track',
+              seconds: 213.0,
+              loras: [{ name: 'medium/dub', strength: 2.5 }],
+              sa3: { negativePrompt: '', seed: 1994801567 },
+            },
+          },
+        ]
+      }
+      if (cmd === 'save_generated_song') {
+        return { file: 'again.wav', title: 'Again', prompt: 'robot dogs', model: 'track' }
+      }
+      return undefined
+    })
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+    await chooseMenuItem('Agent take #1', 'Reuse settings')
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loaded settings from Agent take')
+    expect(screen.getByLabelText('Track prompt')).toHaveValue('robot dogs')
+    expect(screen.getByLabelText('Length')).toHaveValue('213')
+    expect(screen.getByRole('option', { name: '3:33' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Guidance: Off' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Seed (0–2147483647)')).toHaveValue('1994801567')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Compose' }))
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/generate',
+      expect.objectContaining({
+        body: JSON.stringify({
+          prompt: 'robot dogs',
+          seconds: 213,
+          kind: 'track',
+          // The rack's own ceiling is 2.
+          loras: [{ name: 'medium/dub', strength: 2 }],
+          seed: 1994801567,
+        }),
+      }),
+    )
+  })
+
+  it('snaps a recalled length the engine cannot render to the nearest preset', async () => {
+    const invoke = vi.fn(async (cmd: string) =>
+      cmd === 'list_generated_songs'
+        ? [
+            {
+              file: 'long.wav',
+              title: 'Long take',
+              prompt: 'long',
+              model: 'magenta',
+              recipe: { version: 1, prompt: 'long', engine: 'magenta', seconds: 400, loras: [] },
+            },
+          ]
+        : undefined,
+    )
+    vi.stubGlobal('__TAURI__', { core: { invoke } })
+    renderExplorer()
+    fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+    await chooseMenuItem('Long take #1', 'Reuse settings')
+    expect(screen.getByLabelText('Length')).toHaveValue('180')
   })
 
   it('reports a future recipe version without disturbing the form', async () => {
@@ -1927,7 +2025,7 @@ describe('library curation', () => {
         () => [riser],
       )
 
-    it('lists Rename, Tags…, Add to playlist…, Use as source, Reuse settings and Delete from library in order', async () => {
+    it('lists Rename, Tags…, Crop…, Add to playlist…, Use as source, Reuse settings and Delete from library in order', async () => {
       stubShell(() => [{ ...dub, recipe }])
       renderExplorer()
       await openGenerate('Dub')
@@ -1935,11 +2033,110 @@ describe('library curation', () => {
       expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
         'Rename',
         'Tags…',
+        'Crop…',
         'Add to playlist…',
         'Use as source',
         'Reuse settings',
         'Delete from library',
       ])
+    })
+
+    describe('crop', () => {
+      // 10 buckets over 4 s: silence, sound in buckets 2..7, silence.
+      const levels = [0, 0, 0.5, 0.4, 0.3, 0.3, 0.2, 0.1, 0, 0]
+      const peaks = {
+        min: levels.map((level) => -level),
+        max: levels,
+        duration: 4,
+      }
+      const cropShell = () =>
+        stubShell(
+          () => [dub],
+          (cmd) => {
+            if (cmd === 'library_clip_peaks') return peaks
+            if (cmd === 'library_crop_preview') return new ArrayBuffer(8)
+            if (cmd === 'crop_generated_song') {
+              return { ...dub, file: 'Dub -crop-.wav', title: 'Dub (crop)', rating: undefined }
+            }
+            return undefined
+          },
+          () => [riser],
+        )
+
+      it('opens the waveform from the menu, auto-trims, previews the selection and saves a new clip', async () => {
+        const shell = cropShell()
+        const onPreview = vi.fn(async () => {})
+        renderExplorer({ onPreview })
+        await openGenerate('Dub')
+        await chooseMenuItem('Dub #1', 'Crop…')
+        const panel = within(await screen.findByRole('dialog', { name: 'Crop Dub #1' }))
+        await panel.findByRole('slider', { name: 'Crop start' })
+        expect(panel.getByLabelText('End (s)')).toHaveValue(4)
+
+        fireEvent.click(panel.getByRole('button', { name: 'Auto-trim silence' }))
+        expect(panel.getByLabelText('Start (s)')).toHaveValue(0.8)
+        expect(panel.getByLabelText('End (s)')).toHaveValue(3.2)
+        fireEvent.keyDown(panel.getByRole('slider', { name: 'Crop end' }), {
+          key: 'ArrowLeft',
+          shiftKey: true,
+        })
+        expect(panel.getByLabelText('End (s)')).toHaveValue(3.1)
+
+        await act(async () => {
+          fireEvent.click(panel.getByRole('button', { name: 'Preview' }))
+        })
+        expect(shell.commands('library_crop_preview').map((call) => call.args)).toEqual([
+          { library: 'songs', name: 'dub.wav', start: 0.8, end: 3.1 },
+        ])
+        expect(onPreview).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+          fireEvent.click(panel.getByRole('button', { name: 'Save as new clip' }))
+        })
+        expect(shell.commands('crop_generated_song').map((call) => call.args)).toEqual([
+          { name: 'dub.wav', start: 0.8, end: 3.1 },
+        ])
+        expect(screen.queryByRole('dialog', { name: 'Crop Dub #1' })).toBeNull()
+        // The saved crop re-lists the library.
+        expect(shell.commands('list_generated_songs').length).toBeGreaterThan(1)
+      })
+
+      it('crops a sample through the samples command', async () => {
+        const shell = cropShell()
+        renderExplorer()
+        fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+        await screen.findByText('Riser', { selector: '.media__name-text' })
+        await chooseMenuItem('Riser #2', 'Crop…')
+        const panel = within(await screen.findByRole('dialog', { name: 'Crop Riser #2' }))
+        await panel.findByRole('slider', { name: 'Crop start' })
+        fireEvent.change(panel.getByLabelText('Start (s)'), { target: { value: '1.5' } })
+        await act(async () => {
+          fireEvent.click(panel.getByRole('button', { name: 'Save as new clip' }))
+        })
+        expect(shell.commands('crop_generated_sample').map((call) => call.args)).toEqual([
+          { name: 'riser.wav', start: 1.5, end: 4 },
+        ])
+      })
+
+      it('shows the shell’s refusal and keeps the panel open', async () => {
+        stubShell(
+          () => [dub],
+          (cmd) => {
+            if (cmd === 'library_clip_peaks') return peaks
+            if (cmd === 'crop_generated_song') throw new Error('the crop is empty')
+            return undefined
+          },
+        )
+        renderExplorer()
+        await openGenerate('Dub')
+        await chooseMenuItem('Dub #1', 'Crop…')
+        const panel = within(await screen.findByRole('dialog', { name: 'Crop Dub #1' }))
+        await panel.findByRole('slider', { name: 'Crop start' })
+        await act(async () => {
+          fireEvent.click(panel.getByRole('button', { name: 'Save as new clip' }))
+        })
+        expect(panel.getByRole('alert')).toHaveTextContent("Couldn't crop Dub #1: the crop is empty")
+      })
     })
 
     it('continues a saved song: Use as source cuts the window and posts it as init audio', async () => {
@@ -2010,16 +2207,66 @@ describe('library curation', () => {
       expect(screen.queryByRole('button', { name: /More actions/ })).toBeNull()
     })
 
-    it('renders tag chips and searches for a tag when one is clicked', async () => {
+    // A row's chip used to fill the search box; it now toggles the tag filter.
+    it('renders tag chips and filters by a tag when one is clicked', async () => {
       tagShell()
       renderExplorer()
       await openGenerate('Dub')
       expect(chipsOf('Dub')).toEqual(['#dub', '#drone'])
       expect(chipsOf('Raw')).toEqual(['#ambient'])
-      fireEvent.click(within(rowOf('Dub')).getByRole('button', { name: 'Search for #drone' }))
-      expect(screen.getByRole('searchbox')).toHaveValue('#drone')
+      fireEvent.click(within(rowOf('Dub')).getByRole('button', { name: 'Filter by #drone' }))
+      expect(screen.getByRole('searchbox')).toHaveValue('')
       // The prompt "droney raw" contains the word but not the tag.
       expect(rowTitles()).toEqual(['Dub'])
+      const chip = within(rowOf('Dub')).getByRole('button', { name: 'Filter by #drone' })
+      expect(chip).toHaveAttribute('aria-pressed', 'true')
+      fireEvent.click(chip)
+      expect(rowTitles()).toEqual(['Raw', 'Dub'])
+    })
+
+    const filterBar = () => within(screen.getByRole('group', { name: 'Filter by tag' }))
+    const barChips = () =>
+      filterBar()
+        .getAllByRole('button', { name: /^Filter by/ })
+        .map((chip) => chip.textContent)
+
+    it('offers the tab’s tags above the list; several selected must all match; Clear resets', async () => {
+      tagShell()
+      renderExplorer()
+      await openGenerate('Dub')
+      // Songs' tags only — the samples' #riser is not offered here.
+      expect(barChips()).toEqual(['#ambient', '#drone', '#dub'])
+      fireEvent.click(filterBar().getByRole('button', { name: 'Filter by #dub' }))
+      expect(rowTitles()).toEqual(['Dub'])
+      fireEvent.click(filterBar().getByRole('button', { name: 'Filter by #ambient' }))
+      expect(rowTitles()).toEqual([])
+      expect(screen.getByRole('status')).toHaveTextContent('No results for “#dub #ambient”.')
+      fireEvent.click(filterBar().getByRole('button', { name: 'Clear tags' }))
+      expect(rowTitles()).toEqual(['Raw', 'Dub'])
+      expect(filterBar().queryByRole('button', { name: 'Clear tags' })).toBeNull()
+    })
+
+    it('filters the samples tab by its own tags', async () => {
+      tagShell()
+      renderExplorer()
+      fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+      await screen.findByText('Riser', { selector: '.media__name-text' })
+      expect(barChips()).toEqual(['#riser'])
+      fireEvent.click(filterBar().getByRole('button', { name: 'Filter by #riser' }))
+      expect(rowTitles()).toEqual(['Riser'])
+    })
+
+    it('walks only the filtered rows with the controller', async () => {
+      tagShell()
+      const bus = createControlBus()
+      const onLoadTrack = vi.fn(async () => true)
+      renderExplorer({ onLoadTrack }, [], bus)
+      await openGenerate('Dub')
+      fireEvent.click(filterBar().getByRole('button', { name: 'Filter by #drone' }))
+      await act(async () => {
+        bus.publish({ kind: 'browse_load', deck: 'a' })
+      })
+      expect(onLoadTrack).toHaveBeenCalledWith('a', { kind: 'song', name: 'dub.wav' }, 'Dub #1')
     })
 
     it('matches a plain word against tags and prompt text alike', async () => {

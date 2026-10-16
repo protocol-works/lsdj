@@ -137,6 +137,109 @@ pub fn source_clip(
     })
 }
 
+/// The fade at each crop cut — long enough that a cut mid-waveform doesn't click,
+/// short enough not to soften a transient.
+const CROP_FADE_SECONDS: f64 = 0.005;
+
+/// `start..end` seconds as a frame range over `total` frames at `rate`. Refuses a
+/// non-finite, negative, empty, or past-the-end window rather than clamping it, so
+/// the DJ never saves a crop they didn't see.
+pub fn crop_frames(start: f64, end: f64, rate: u32, total: usize) -> Result<(usize, usize), String> {
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
+        return Err("the crop needs a start before its end".to_string());
+    }
+    let first = (start * rate as f64).round() as usize;
+    let last = (end * rate as f64).round() as usize;
+    // Half a frame of slack: the webview's end handle sits at the rounded duration.
+    if last > total + 1 {
+        return Err(format!(
+            "the crop ends at {end:.2}s, past the clip's end ({:.2}s)",
+            total as f64 / rate as f64
+        ));
+    }
+    let last = last.min(total);
+    if first >= last {
+        return Err("the crop is empty".to_string());
+    }
+    Ok((first, last))
+}
+
+/// The gain at frame `index` of a `len`-frame crop with `fade`-frame linear fades
+/// at both ends: 0 on the first and last frame, 1 in the body.
+pub fn crop_gain(index: usize, len: usize, fade: usize) -> f32 {
+    if fade == 0 {
+        return 1.0;
+    }
+    let edge = index.min(len - 1 - index);
+    (edge as f32 / fade as f32).min(1.0)
+}
+
+/// Cut `start..end` seconds of any decodable file into a new 16-bit PCM WAV at the
+/// source's own rate and channel count (mono stays mono; more than two keep the
+/// first two), with [`CROP_FADE_SECONDS`] fades at both cuts.
+pub fn crop_wav(
+    bytes: Vec<u8>,
+    extension: Option<&str>,
+    start: f64,
+    end: f64,
+) -> Result<Vec<u8>, String> {
+    let (track, rate, channels) = decode_native(bytes, extension)?;
+    let (first, last) = crop_frames(start, end, rate, track.frames())?;
+    let len = last - first;
+    let fade = ((CROP_FADE_SECONDS * rate as f64).round() as usize).min(len / 2);
+    let channels: u16 = if channels == 1 { 1 } else { 2 };
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut cursor = Cursor::new(Vec::with_capacity(len * channels as usize * 2 + 44));
+    let mut writer =
+        hound::WavWriter::new(&mut cursor, spec).map_err(|e| format!("cannot write crop: {e}"))?;
+    for index in 0..len {
+        let gain = crop_gain(index, len, fade);
+        let frame = first + index;
+        for sample in [track.left[frame], track.right[frame]]
+            .into_iter()
+            .take(channels as usize)
+        {
+            let pcm = (sample * gain * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+            writer
+                .write_sample(pcm)
+                .map_err(|e| format!("cannot write crop: {e}"))?;
+        }
+    }
+    writer
+        .finalize()
+        .map_err(|e| format!("cannot write crop: {e}"))?;
+    Ok(cursor.into_inner())
+}
+
+/// A whole file's min/max envelope in `buckets` columns (the channel average), plus
+/// its length in seconds — the crop panel's waveform, for a file on no deck.
+pub fn clip_peaks(
+    bytes: Vec<u8>,
+    extension: Option<&str>,
+    buckets: usize,
+) -> Result<(Vec<f32>, Vec<f32>, f64), String> {
+    let (track, rate, _) = decode_native(bytes, extension)?;
+    let frames = track.frames();
+    let buckets = buckets.clamp(1, 4096);
+    let mut min = vec![0.0f32; buckets];
+    let mut max = vec![0.0f32; buckets];
+    for bucket in 0..buckets {
+        let from = bucket * frames / buckets;
+        let to = ((bucket + 1) * frames / buckets).max(from + 1).min(frames);
+        for frame in from..to {
+            let sample = (track.left[frame] + track.right[frame]) / 2.0;
+            min[bucket] = min[bucket].min(sample);
+            max[bucket] = max[bucket].max(sample);
+        }
+    }
+    Ok((min, max, frames as f64 / rate as f64))
+}
+
 /// [`decode_to_48k`] at any `target_rate` (the returned track's
 /// `duration_seconds` assumes 48 kHz, so callers at another rate count frames).
 fn decode_at(
@@ -144,6 +247,19 @@ fn decode_at(
     extension: Option<&str>,
     target_rate: u32,
 ) -> Result<DecodedTrack, String> {
+    let (track, rate, _) = decode_native(bytes, extension)?;
+    if rate == target_rate {
+        return Ok(track);
+    }
+    resample(&track.left, &track.right, rate, target_rate)
+}
+
+/// Decode at the file's own rate: the track (mono duplicated to both sides), its
+/// sample rate, and its channel count.
+fn decode_native(
+    bytes: Vec<u8>,
+    extension: Option<&str>,
+) -> Result<(DecodedTrack, u32, usize), String> {
     let mut hint = Hint::new();
     if let Some(ext) = extension {
         hint.with_extension(ext);
@@ -222,10 +338,7 @@ fn decode_at(
     if left.is_empty() {
         return Err("no audio frames decoded".to_string());
     }
-    if sample_rate == target_rate {
-        return Ok(DecodedTrack { left, right });
-    }
-    resample(&left, &right, sample_rate, target_rate)
+    Ok((DecodedTrack { left, right }, sample_rate, channels))
 }
 
 /// Offline stereo resample `source_rate` → `target_rate` (rubato FFT, the
@@ -388,6 +501,61 @@ mod tests {
             (spec.channels, spec.sample_rate, spec.bits_per_sample),
             (2, 44_100, 16)
         );
+    }
+
+    #[test]
+    fn crop_frames_maps_seconds_and_refuses_bad_windows() {
+        assert_eq!(crop_frames(1.0, 2.0, 100, 300), Ok((100, 200)));
+        // The end handle at the (rounded) duration clamps by a frame, no more.
+        assert_eq!(crop_frames(0.0, 3.005, 100, 300), Ok((0, 300)));
+        assert!(crop_frames(0.0, 3.5, 100, 300).is_err());
+        assert!(crop_frames(2.0, 2.0, 100, 300).is_err());
+        assert!(crop_frames(2.0, 1.0, 100, 300).is_err());
+        assert!(crop_frames(-1.0, 1.0, 100, 300).is_err());
+        assert!(crop_frames(f64::NAN, 1.0, 100, 300).is_err());
+        assert!(crop_frames(0.0, f64::INFINITY, 100, 300).is_err());
+    }
+
+    #[test]
+    fn crop_gain_fades_both_cuts_to_silence() {
+        assert_eq!(crop_gain(0, 100, 10), 0.0);
+        assert_eq!(crop_gain(99, 100, 10), 0.0);
+        assert_eq!(crop_gain(5, 100, 10), 0.5);
+        assert_eq!(crop_gain(50, 100, 10), 1.0);
+        assert_eq!(crop_gain(0, 1, 0), 1.0);
+    }
+
+    #[test]
+    fn crop_wav_keeps_rate_and_channels_and_cuts_the_window() {
+        let bytes = wav_bytes(44_100, 2, 44_100 * 3, 440.0);
+        let crop = crop_wav(bytes.clone(), Some("wav"), 1.0, 2.0).expect("crops");
+        let mut reader = hound::WavReader::new(Cursor::new(&crop)).expect("wav");
+        let spec = reader.spec();
+        assert_eq!((spec.channels, spec.sample_rate, spec.bits_per_sample), (2, 44_100, 16));
+        let samples: Vec<i16> = reader.samples::<i16>().map(Result::unwrap).collect();
+        assert_eq!(samples.len(), 44_100 * 2);
+        // Silent at both cuts, the source itself past the fade.
+        assert_eq!(&samples[..2], &[0, 0]);
+        assert_eq!(&samples[samples.len() - 2..], &[0, 0]);
+        let body = 1_000 * 2;
+        assert_eq!(
+            &crop[44 + body * 2..44 + body * 2 + 20],
+            &bytes[44 + (44_100 * 2 + body) * 2..44 + (44_100 * 2 + body) * 2 + 20]
+        );
+        let mono = crop_wav(wav_bytes(48_000, 1, 48_000, 220.0), Some("wav"), 0.0, 0.5)
+            .expect("crops mono");
+        let spec = hound::WavReader::new(Cursor::new(&mono)).expect("wav").spec();
+        assert_eq!((spec.channels, spec.sample_rate), (1, 48_000));
+        assert!(crop_wav(bytes, Some("wav"), 2.0, 9.0).is_err());
+    }
+
+    #[test]
+    fn clip_peaks_spans_the_file() {
+        let (min, max, seconds) =
+            clip_peaks(wav_bytes(48_000, 2, 48_000, 440.0), Some("wav"), 10).expect("peaks");
+        assert_eq!((min.len(), max.len()), (10, 10));
+        assert!((seconds - 1.0).abs() < 1e-9);
+        assert!(max.iter().all(|peak| *peak > 0.4) && min.iter().all(|peak| *peak < -0.4));
     }
 
     #[test]

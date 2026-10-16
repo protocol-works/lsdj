@@ -519,6 +519,68 @@
   color: var(--color-text);
 }
 
+.media__tag--on {
+  color: var(--color-accent);
+}
+
+/* The Crop… panel: a waveform with two handles over it, fields, actions. */
+.media__crop {
+  width: min(32rem, calc(100vw - 1rem));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-m);
+  background: var(--color-surface-raised);
+}
+
+.media__crop:focus {
+  outline: none;
+}
+
+.media__crop-title {
+  margin: 0;
+  font: 400 var(--text-s) var(--font-ui);
+  color: var(--color-text);
+}
+
+.media__crop-wave {
+  position: relative;
+}
+
+.media__crop-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--space-2);
+  margin-left: calc(var(--space-2) / -2);
+  background: var(--color-accent);
+  opacity: 0.8;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.media__crop-handle:focus-visible {
+  outline: 1px solid var(--color-text);
+}
+
+.media__crop-fields,
+.media__crop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+/* The tab's tag vocabulary above the list; a chip toggles it as a filter. */
+.media__tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
 /* The ⋯ menu's wrapper: a real box, so the tag panel can anchor to it. */
 .media__menu {
   display: flex;
