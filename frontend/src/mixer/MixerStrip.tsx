@@ -116,6 +116,23 @@ export function MixerStrip({
 
   return (
     <section className="mixer" aria-label={t('mixer.title')}>
+      {/* The crossfader sits on top, first to hand while the browser is open. */}
+      <div className="mixer__crossfade">
+        <span className="mixer__edge">{t('mixer.deckA')}</span>
+        <div className="mixer__crossfade-slider">
+          <Slider
+            label={t('mixer.crossfade')}
+            min={0}
+            max={1}
+            step={0.01}
+            value={crossfade}
+            data-shortcut="crossfade"
+            onChange={onCrossfadeChange}
+          />
+        </div>
+        <span className="mixer__edge">{t('mixer.deckB')}</span>
+      </div>
+
       {/* Two channel strips flank a centre column: the master output meter
           sits between the decks (where it belongs on a hardware mixer), and the
           cue-mix knob drops to the bottom so it lands between the two cue
@@ -141,22 +158,6 @@ export function MixerStrip({
       </div>
 
       <PhaseMeter label={t('mixer.phase')} getOffset={getPhaseOffset} />
-
-      <div className="mixer__crossfade">
-        <span className="mixer__edge">{t('mixer.deckA')}</span>
-        <div className="mixer__crossfade-slider">
-          <Slider
-            label={t('mixer.crossfade')}
-            min={0}
-            max={1}
-            step={0.01}
-            value={crossfade}
-            data-shortcut="crossfade"
-            onChange={onCrossfadeChange}
-          />
-        </div>
-        <span className="mixer__edge">{t('mixer.deckB')}</span>
-      </div>
     </section>
   )
 }
