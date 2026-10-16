@@ -152,7 +152,7 @@ export function CropPanel({
     else setError(t('media.crop.allSilent'))
   }
 
-  async function save() {
+  async function save(replace: boolean) {
     setBusy(true)
     setError(null)
     try {
@@ -160,6 +160,7 @@ export function CropPanel({
         name: file,
         start: crop.start,
         end: crop.end,
+        replace,
       })
       onSaved()
       onClose()
@@ -235,8 +236,15 @@ export function CropPanel({
         <Button disabled={!ready} onClick={autoTrim}>
           {t('media.crop.autoTrim')}
         </Button>
-        <Button disabled={!ready || busy} onClick={() => void save()}>
+        <Button disabled={!ready || busy} onClick={() => void save(false)}>
           {t('media.crop.save')}
+        </Button>
+        <Button
+          disabled={!ready || busy}
+          title={t('media.crop.replaceHint')}
+          onClick={() => void save(true)}
+        >
+          {t('media.crop.replace')}
         </Button>
         <Button onClick={onClose}>{t('media.crop.cancel')}</Button>
       </div>

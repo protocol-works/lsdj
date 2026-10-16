@@ -289,8 +289,15 @@ impl SongLibrary {
 
     /// Save `start..end` seconds of song `name` as a NEW file and registry row
     /// titled "<title> (crop)", carrying everything but the rating over; the
-    /// original is untouched. `name` must be a row in the registry.
-    pub fn crop(&self, name: &str, start: f64, end: f64) -> Result<SongEntry, String> {
+    /// original is untouched. `name` must be a row in the registry. With `replace`,
+    /// the crop overwrites the original instead and its row keeps everything.
+    pub fn crop(
+        &self,
+        name: &str,
+        start: f64,
+        end: f64,
+        replace: bool,
+    ) -> Result<SongEntry, String> {
         let original = {
             let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
             library::load_registry::<SongEntry>(&self.dir)
@@ -298,6 +305,15 @@ impl SongLibrary {
                 .find(|e| e.file == name)
                 .ok_or_else(|| format!("no library entry named {name}"))?
         };
+        if replace {
+            library::replace_with_crop(&self.dir, name, start, end)?;
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            return library::update_entry(&self.dir, name, |e: &mut SongEntry| {
+                // A crop can sit in a different key: re-analyse it.
+                e.info = TrackInfo::default();
+                Ok(())
+            });
+        }
         let title = library::crop_title(&original.title);
         // Decoded outside the lock: a long take takes a moment to cut, and a
         // rating or a re-list must not wait on it.
@@ -779,7 +795,7 @@ mod tests {
         songs.rate("Dub.wav", Some(5), true).unwrap();
         songs.tag("Dub.wav", vec!["dub".to_string()]).unwrap();
 
-        let crop = songs.crop("Dub.wav", 0.5, 1.5).unwrap();
+        let crop = songs.crop("Dub.wav", 0.5, 1.5, false).unwrap();
         assert_eq!(crop.title, "Dub (crop)");
         assert_ne!(crop.file, "Dub.wav");
         assert_eq!(crop.rating, None);
@@ -794,10 +810,11 @@ mod tests {
         assert_eq!(rows[0].rating, Some(5));
 
         // Only a registry row, inside the window, ever crops — and a refusal writes nothing.
-        assert!(songs.crop("../Dub.wav", 0.0, 1.0).is_err());
-        assert!(songs.crop("nope.wav", 0.0, 1.0).is_err());
-        assert!(songs.crop("Dub.wav", 1.0, 0.5).is_err());
-        assert!(songs.crop("Dub.wav", 0.0, 9.0).is_err());
+        assert!(songs.crop("../Dub.wav", 0.0, 1.0, false).is_err());
+        assert!(songs.crop("nope.wav", 0.0, 1.0, false).is_err());
+        assert!(songs.crop("Dub.wav", 1.0, 0.5, false).is_err());
+        assert!(songs.crop("Dub.wav", 0.0, 9.0, false).is_err());
+        assert!(songs.crop("Dub.wav", 1.0, 0.5, true).is_err());
         assert_eq!(songs.list().unwrap().len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }

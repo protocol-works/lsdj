@@ -315,6 +315,43 @@ pub fn write_crop(
         .ok_or_else(|| "written crop has no filename".to_string())
 }
 
+/// Overwrite `name` in place with its `start..end` crop, so its registry row (rating,
+/// tags, playlists) still points at it. A copy of the original goes to the Trash
+/// first (recoverable), then the crop is renamed over it atomically, so the file
+/// is never missing for a re-list to drop. WAV only: the crop is WAV bytes.
+pub fn replace_with_crop(dir: &Path, name: &str, start: f64, end: f64) -> Result<(), String> {
+    let target = scoped_path(dir, name)?;
+    if !target
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
+    {
+        return Err("only a .wav can be replaced; save as a new clip instead".to_string());
+    }
+    let bytes = read_scoped(dir, name, MAX_AUDIO_BYTES)?;
+    let wav = crate::decode::crop_wav(bytes, Some("wav"), start, end)?;
+    // A non-audio name the folder scan skips while it's being written.
+    let tmp = dir.join(format!(".{name}.crop-tmp"));
+    if let Err(e) = std::fs::write(&tmp, &wav) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot write crop: {e}"));
+    }
+    let backup_dir = std::env::temp_dir().join(format!("lsdj-crop-{}", rand::random::<u64>()));
+    let backup = backup_dir.join(name);
+    let trashed = std::fs::create_dir_all(&backup_dir)
+        .and_then(|()| std::fs::copy(&target, &backup))
+        .map_err(|e| e.to_string())
+        .and_then(|_| trash::delete(&backup).map_err(|e| e.to_string()));
+    let _ = std::fs::remove_dir_all(&backup_dir);
+    if let Err(e) = trashed {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot move the original to Trash: {e}"));
+    }
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot swap the crop in: {e}")
+    })
+}
+
 /// Resolve `name` to a regular file that is a DIRECT CHILD of `dir`, rejecting paths,
 /// `..`, and symlinks that escape the folder. The read/delete boundary: `name` comes
 /// from the webview, so without this a crafted name could reach any file the user

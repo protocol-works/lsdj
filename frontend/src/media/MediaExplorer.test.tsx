@@ -2094,7 +2094,7 @@ describe('library curation', () => {
           fireEvent.click(panel.getByRole('button', { name: 'Save as new clip' }))
         })
         expect(shell.commands('crop_generated_song').map((call) => call.args)).toEqual([
-          { name: 'dub.wav', start: 0.8, end: 3.1 },
+          { name: 'dub.wav', start: 0.8, end: 3.1, replace: false },
         ])
         expect(screen.queryByRole('dialog', { name: 'Crop Dub #1' })).toBeNull()
         // The saved crop re-lists the library.
@@ -2114,7 +2114,24 @@ describe('library curation', () => {
           fireEvent.click(panel.getByRole('button', { name: 'Save as new clip' }))
         })
         expect(shell.commands('crop_generated_sample').map((call) => call.args)).toEqual([
-          { name: 'riser.wav', start: 1.5, end: 4 },
+          { name: 'riser.wav', start: 1.5, end: 4, replace: false },
+        ])
+      })
+
+      it('replaces the original in place when asked', async () => {
+        const shell = cropShell()
+        renderExplorer()
+        fireEvent.click(screen.getByRole('tab', { name: 'Samples' }))
+        await screen.findByText('Riser', { selector: '.media__name-text' })
+        await chooseMenuItem('Riser #2', 'Crop…')
+        const panel = within(await screen.findByRole('dialog', { name: 'Crop Riser #2' }))
+        await panel.findByRole('slider', { name: 'Crop start' })
+        fireEvent.change(panel.getByLabelText('Start (s)'), { target: { value: '1.5' } })
+        await act(async () => {
+          fireEvent.click(panel.getByRole('button', { name: 'Replace original' }))
+        })
+        expect(shell.commands('crop_generated_sample').map((call) => call.args)).toEqual([
+          { name: 'riser.wav', start: 1.5, end: 4, replace: true },
         ])
       })
 

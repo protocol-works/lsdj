@@ -214,8 +214,15 @@ impl SampleLibrary {
 
     /// Save `start..end` seconds of sample `name` as a NEW file and registry row
     /// titled "<title> (crop)", carrying everything but the rating over; the
-    /// original is untouched. `name` must be a row in the registry.
-    pub fn crop(&self, name: &str, start: f64, end: f64) -> Result<SampleEntry, String> {
+    /// original is untouched. `name` must be a row in the registry. With `replace`,
+    /// the crop overwrites the original instead and its row keeps everything.
+    pub fn crop(
+        &self,
+        name: &str,
+        start: f64,
+        end: f64,
+        replace: bool,
+    ) -> Result<SampleEntry, String> {
         let original = {
             let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
             library::load_registry::<SampleEntry>(&self.dir)
@@ -223,6 +230,15 @@ impl SampleLibrary {
                 .find(|e| e.file == name)
                 .ok_or_else(|| format!("no library entry named {name}"))?
         };
+        if replace {
+            library::replace_with_crop(&self.dir, name, start, end)?;
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            return library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+                // A crop can sit in a different key: re-analyse it.
+                e.info = TrackInfo::default();
+                Ok(())
+            });
+        }
         let title = library::crop_title(&original.title);
         // Decoded outside the lock: a long take takes a moment to cut, and a
         // rating or a re-list must not wait on it.

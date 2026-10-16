@@ -73,3 +73,6 @@ The mixer's two close-up strips (not the deck overviews). Playback decks only.
       tags and prompt, unrated; it loads to a deck, starts and ends without a
       click, and the original file is unchanged. Same for a sample (one-shot
       and loop) — a cropped loop still loops cleanly in its slot.
+- [ ] Replace original on a rated, tagged, playlisted song: the same row keeps
+      its stars, tags and playlist slots, plays the cropped audio, BPM/key
+      refill, and the old file is in the Trash.

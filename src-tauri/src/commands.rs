@@ -816,16 +816,18 @@ pub async fn tag_generated_sample(
     library.tag(&name, tags)
 }
 
-/// Save `start..end` seconds of a song as a NEW library row (the crop panel); the
-/// original is untouched. Name and window are validated in [`SongLibrary::crop`].
+/// Save `start..end` seconds of a song as a NEW library row (the crop panel), or
+/// with `replace` overwrite the original (to the Trash first) keeping its row.
+/// Name and window are validated in [`SongLibrary::crop`].
 #[tauri::command]
 pub async fn crop_generated_song(
     library: tauri::State<'_, SongLibrary>,
     name: String,
     start: f64,
     end: f64,
+    replace: bool,
 ) -> Result<SongEntry, String> {
-    library.crop(&name, start, end)
+    library.crop(&name, start, end, replace)
 }
 
 /// [`crop_generated_song`] for a sample.
@@ -835,8 +837,9 @@ pub async fn crop_generated_sample(
     name: String,
     start: f64,
     end: f64,
+    replace: bool,
 ) -> Result<SampleEntry, String> {
-    library.crop(&name, start, end)
+    library.crop(&name, start, end, replace)
 }
 
 /// A library file's waveform for the crop panel (it is on no deck, so

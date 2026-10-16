@@ -101,6 +101,8 @@
       "autoTrim": "Auto-trim silence",
       "allSilent": "The whole clip is near-silent; nothing to trim to.",
       "save": "Save as new clip",
+      "replace": "Replace original",
+      "replaceHint": "Overwrite this clip, keeping its rating, tags and playlists; the original goes to the Trash",
       "cancel": "Cancel",
       "failed": "Couldn't crop {{title}}: {{message}}"
     },
