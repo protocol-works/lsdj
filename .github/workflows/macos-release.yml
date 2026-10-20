@@ -158,7 +158,7 @@ jobs:
           security default-keychain -s "$KEYCHAIN_PATH"
 
           SIGNING_IDENTITY="$({ security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true; } \
-            | awk -F '"' '/Developer ID Application:/ { print $2; exit }')"
+            | awk -F '"' '/Developer ID Application:/ && !found { print $2; found = 1 }')"
           test -n "$SIGNING_IDENTITY" || {
             echo "No Developer ID Application identity found in the imported certificate" >&2
             exit 1
