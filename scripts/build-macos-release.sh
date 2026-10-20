@@ -15,10 +15,39 @@ ENTITLEMENTS="$REPO_ROOT/src-tauri/entitlements.plist"
 RELEASE_VERSION="${LSDJ_RELEASE_VERSION:-}"
 EXPECTED_BUNDLE_ID="works.protocol.lsdj"
 EXPECTED_TEAM_ID="A293544336"
+DEVELOPER_ID_REQUIREMENT="=anchor apple generic
+  and certificate 1[field.1.2.840.113635.100.6.2.6] exists
+  and certificate leaf[field.1.2.840.113635.100.6.1.13] exists
+  and certificate leaf[subject.OU] = \"$EXPECTED_TEAM_ID\""
 
 fail() {
   echo "macOS release: $*" >&2
   exit 1
+}
+
+fail_signature() {
+  local path="$1"
+  echo "macOS release: signature details for $path" >&2
+  codesign -dvvv "$path" >&2 || true
+  fail "$2: $path"
+}
+
+# Test the signed identity directly instead of parsing codesign's display text.
+# Quiet consumers in a pipeline can cause SIGPIPE failures under pipefail.
+verify_developer_id_signature() {
+  local path="$1"
+  shift
+  if ! codesign --verify --strict --verbose=2 \
+    --test-requirement "$DEVELOPER_ID_REQUIREMENT" "$@" "$path"; then
+    fail_signature "$path" \
+      "expected a valid Developer ID Application signature from Apple team $EXPECTED_TEAM_ID"
+  fi
+}
+
+is_macho() {
+  local description
+  description="$(/usr/bin/file -b "$1")" || fail "could not inspect binary: $1"
+  [[ "$description" == *Mach-O* ]]
 }
 
 verify_backend_layout() {
@@ -38,7 +67,7 @@ sign_backend_tree() {
   local candidate
   while IFS= read -r -d '' candidate; do
     [ "$candidate" = "$BACKEND_BIN" ] && continue
-    if /usr/bin/file -b "$candidate" | grep -q 'Mach-O'; then
+    if is_macho "$candidate"; then
       codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$candidate"
     fi
   done < <(find "$backend_dir" -type f -print0)
@@ -56,17 +85,14 @@ verify_signed_backend_tree() {
   local candidate signature
   local macho_count=0
   while IFS= read -r -d '' candidate; do
-    if /usr/bin/file -b "$candidate" | grep -q 'Mach-O'; then
+    if is_macho "$candidate"; then
       macho_count=$((macho_count + 1))
-      codesign --verify --strict --verbose=2 "$candidate"
-      signature="$(codesign -dvvv "$candidate" 2>&1)"
-      printf '%s\n' "$signature" | grep -q '^Authority=Developer ID Application:' || fail \
-        "backend code is not Developer ID-signed: $candidate"
-      printf '%s\n' "$signature" | grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$" || fail \
-        "backend code is not signed by Apple team $EXPECTED_TEAM_ID: $candidate"
+      verify_developer_id_signature "$candidate"
       if [ "$candidate" = "$backend_dir/lsdj_backend" ]; then
-        printf '%s\n' "$signature" | grep -q 'flags=.*runtime' || fail \
-          "backend executable is not signed with hardened runtime"
+        signature="$(codesign -dvvv "$candidate" 2>&1)" || fail_signature \
+          "$candidate" "could not inspect backend executable signature"
+        grep -q 'flags=.*runtime' <<< "$signature" || fail_signature \
+          "$candidate" "backend executable is not signed with hardened runtime"
       fi
     fi
   done < <(find "$backend_dir" -type f -print0)
@@ -97,7 +123,14 @@ SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 [ "$SIGNING_IDENTITY" != "-" ] || fail \
   "ad-hoc signing is for local builds only; a distributable DMG needs Developer ID"
 
-IDENTITY_LINE="$({ security find-identity -v -p codesigning || true; } | grep -F "$SIGNING_IDENTITY" | head -1)"
+IDENTITIES="$(security find-identity -v -p codesigning || true)"
+IDENTITY_LINE=""
+while IFS= read -r IDENTITY_CANDIDATE; do
+  if [[ "$IDENTITY_CANDIDATE" == *"$SIGNING_IDENTITY"* ]]; then
+    IDENTITY_LINE="$IDENTITY_CANDIDATE"
+    break
+  fi
+done <<< "$IDENTITIES"
 [ -n "$IDENTITY_LINE" ] || fail \
   "APPLE_SIGNING_IDENTITY is not a valid code-signing identity in the keychain"
 case "$IDENTITY_LINE" in
@@ -168,12 +201,7 @@ DMG_PATH="$(find "$DMG_DIR" -maxdepth 1 -type f -name 'LSDJ_*.dmg' -print | sort
 
 echo "macOS release: verifying app signature and notarization ticket"
 verify_app_backend "$APP_PATH"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-APP_SIGNATURE="$(codesign -dvvv "$APP_PATH" 2>&1)"
-printf '%s\n' "$APP_SIGNATURE" | grep -q '^Authority=Developer ID Application:' || fail \
-  "app is not signed with Developer ID Application"
-printf '%s\n' "$APP_SIGNATURE" | grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$" || fail \
-  "app is not signed by Apple team $EXPECTED_TEAM_ID"
+verify_developer_id_signature "$APP_PATH" --deep
 xcrun stapler validate "$APP_PATH"
 spctl --assess --type execute --verbose=4 "$APP_PATH"
 
@@ -190,7 +218,7 @@ trap cleanup EXIT
 DMG_APP="$MOUNT_POINT/LSDJ.app"
 [ -d "$DMG_APP" ] || fail "mounted DMG does not contain LSDJ.app"
 verify_app_backend "$DMG_APP"
-codesign --verify --deep --strict --verbose=2 "$DMG_APP"
+verify_developer_id_signature "$DMG_APP" --deep
 xcrun stapler validate "$DMG_APP"
 spctl --assess --type execute --verbose=4 "$DMG_APP"
 
