@@ -48,6 +48,7 @@ mod loras;
 mod mcp;
 mod midi;
 mod models;
+mod playlists;
 mod samples;
 mod settings;
 mod sidecar;
@@ -620,6 +621,9 @@ pub fn run() {
             // change (a deck auto-saving a sample, a hand-drop/-delete); Rust owns the
             // watch and emits `library://changed` (ADR-0022).
             watcher::watch_libraries(app.handle().clone(), songs_dir, samples_dir);
+            // BPM + key for every library row, off the list/record path.
+            analysis::media::spawn::<songs::SongLibrary>(app.handle().clone());
+            analysis::media::spawn::<samples::SampleLibrary>(app.handle().clone());
             // The in-app model manager (issue #43): own the install lifecycle and
             // watch the Magenta models dir so the manager + deck picker live-reload
             // when a model folder appears/disappears (`models://changed`).
@@ -802,12 +806,27 @@ pub fn run() {
             commands::list_generated_songs,
             commands::save_generated_song,
             commands::read_generated_song,
+            commands::song_source_clip,
             commands::delete_generated_song,
+            commands::rate_generated_song,
+            commands::rename_generated_song,
+            commands::tag_generated_song,
+            commands::list_playlists,
+            commands::save_playlist,
+            commands::rename_playlist,
+            commands::delete_playlist,
             commands::open_songs_folder,
             commands::list_generated_samples,
             commands::save_generated_sample,
             commands::read_generated_sample,
             commands::delete_generated_sample,
+            commands::rate_generated_sample,
+            commands::rename_generated_sample,
+            commands::tag_generated_sample,
+            commands::crop_generated_song,
+            commands::crop_generated_sample,
+            commands::library_clip_peaks,
+            commands::library_crop_preview,
             commands::open_samples_folder,
             commands::save_loop_slot,
             commands::load_track_file,

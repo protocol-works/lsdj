@@ -39,11 +39,11 @@ use crate::CHANNELS;
 /// Interleaved-stereo samples per frame.
 const SAMPLES_PER_FRAME: usize = CHANNELS as usize;
 
-/// Varispeed envelope (ADR-0014): ±8 %, the classic DJ range. Mirrors
-/// `TRACK_RATE_RANGE` in `frontend/src/audio/track.ts`. The engine boundary holds
-/// the envelope rather than trusting callers, exactly like the Web Audio
-/// `setTrackRate`.
-pub const TRACK_RATE_RANGE: f64 = 0.08;
+/// The widest varispeed envelope the performer can select (ADR-0014, amended
+/// 2026-10-15): ±50 %. Mirrors the largest `TEMPO_RANGES` entry in
+/// `frontend/src/audio/track.ts`; the webview clamps to the chosen range, and the
+/// engine boundary holds this outer envelope rather than trusting callers.
+pub const TRACK_RATE_RANGE: f64 = 0.5;
 
 /// The shortest honest loop in frames (ADR-0015/0016): sub-quantum regions are
 /// where implementations differ, and a near-zero loop is a buzz, not a loop.
@@ -51,7 +51,7 @@ pub const TRACK_RATE_RANGE: f64 = 0.08;
 /// engine's fixed [`crate::SAMPLE_RATE`].
 pub const MIN_TRACK_LOOP_FRAMES: u64 = (0.05 * crate::SAMPLE_RATE as f64) as u64;
 
-/// Clamp a varispeed rate into the ±8 % envelope (`clampRate` in `track.ts`). A
+/// Clamp a varispeed rate into the widest envelope (`clampRate` in `track.ts`). A
 /// non-finite or non-positive rate falls back to 1.0 (as-recorded).
 pub fn clamp_rate(rate: f64) -> f64 {
     if !rate.is_finite() || rate <= 0.0 {
@@ -283,7 +283,7 @@ impl BufferSource {
         self.pending_slip = 0.0;
     }
 
-    /// Set the varispeed rate, clamped to the ±8 % envelope (ADR-0014). Non-RT;
+    /// Set the varispeed rate, clamped to the widest envelope (ADR-0014). Non-RT;
     /// the RT path reads it per sample. Mirrors `setTrackRate` holding the
     /// envelope at the boundary.
     pub fn set_rate(&mut self, rate: f64) {
@@ -387,6 +387,16 @@ impl BufferSource {
         }
     }
 
+    /// A style-sample window of the track (M15 on a Playback deck): `frames` of
+    /// interleaved stereo ending at the audible playhead, or starting there when
+    /// fewer than `min_frames` precede it (the top of the track). Clamped to the
+    /// buffer; `None` when even that is shorter than `min_frames`. Non-RT (copies).
+    pub fn sample_window(&self, frames: usize, min_frames: usize) -> Option<Vec<f32>> {
+        let (start, end) =
+            sample_window_bounds(self.folded_playhead() as usize, frames, min_frames, self.duration_frames as usize)?;
+        Some(self.samples[start * SAMPLES_PER_FRAME..end * SAMPLES_PER_FRAME].to_vec())
+    }
+
     /// Min/max overview of the buffer across both channels (`trackPeaks` in
     /// `track.ts`) — the static overview a decoded track can afford that the live
     /// stream cannot. Buckets cover the buffer evenly; a short final bucket still
@@ -482,6 +492,25 @@ impl BufferSource {
     }
 }
 
+/// The `[start, end)` frame bounds of a style-sample window (see
+/// [`BufferSource::sample_window`]): `frames` ending at `playhead`, or starting at
+/// it when fewer than `min_frames` precede it; clamped to `duration`. `None` when
+/// the clamped window is shorter than `min_frames`.
+pub fn sample_window_bounds(
+    playhead: usize,
+    frames: usize,
+    min_frames: usize,
+    duration: usize,
+) -> Option<(usize, usize)> {
+    let playhead = playhead.min(duration);
+    let (start, end) = if playhead >= min_frames {
+        (playhead.saturating_sub(frames), playhead)
+    } else {
+        (playhead, playhead.saturating_add(frames).min(duration))
+    };
+    (end - start >= min_frames).then_some((start, end))
+}
+
 /// A deck's active source (ADR-0013): the live Magenta stream's ring consumer
 /// (Slices 1–3) or one decoded track. Loading decides the mode — there is no
 /// toggle.
@@ -495,6 +524,30 @@ pub(crate) enum DeckSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The style-sample window ends at the playhead, starts there near the top of
+    /// the track, clamps to the buffer, and refuses a window under the floor.
+    #[test]
+    fn sample_window_bounds_follow_the_playhead() {
+        // Mid-track: the 10 frames ending at the playhead.
+        assert_eq!(sample_window_bounds(50, 10, 3, 100), Some((40, 50)));
+        // Fewer than `frames` but at least the floor precede it: take what is there.
+        assert_eq!(sample_window_bounds(5, 10, 3, 100), Some((0, 5)));
+        // Under the floor precede it: the window starting at the playhead instead.
+        assert_eq!(sample_window_bounds(2, 10, 3, 100), Some((2, 12)));
+        // ...clamped to the track end.
+        assert_eq!(sample_window_bounds(0, 10, 3, 6), Some((0, 6)));
+        // Too short either way: refused.
+        assert_eq!(sample_window_bounds(1, 10, 3, 3), None);
+        // A playhead past the end clamps to it.
+        assert_eq!(sample_window_bounds(500, 10, 3, 100), Some((90, 100)));
+        // The slice is the exact frames in that window.
+        let mut src = BufferSource::new(ramp_buffer(100));
+        src.seek(50.0);
+        let window = src.sample_window(10, 3).expect("a window");
+        assert_eq!(window.len(), 20);
+        assert_eq!((window[0], window[19]), (40.0, -49.0));
+    }
 
     /// Build an interleaved-stereo buffer whose L channel is a ramp `0, 1, 2, …`
     /// and R is its negation, so a frame's identity is unambiguous (frame `i` is
@@ -665,7 +718,7 @@ mod tests {
     #[test]
     fn loop_folds_fractional_playhead() {
         let mut src = BufferSource::new(ramp_buffer(20_000));
-        src.set_rate(1.0 + TRACK_RATE_RANGE); // +8 %, a non-integer step
+        src.set_rate(1.0 + TRACK_RATE_RANGE); // +50 %, a non-integer step
         src.play();
         src.seek(2_000.0);
         src.set_loop(2_000, 5_000);
@@ -821,7 +874,7 @@ mod tests {
         assert!((s.playhead - 52.5).abs() < 0.5, "playhead advanced at the rate, got {}", s.playhead);
     }
 
-    /// (T10) `clamp_rate` holds the ±8 % envelope and falls back to 1.0 on garbage.
+    /// (T10) `clamp_rate` holds the outer envelope and falls back to 1.0 on garbage.
     #[test]
     fn clamp_rate_holds_the_envelope() {
         assert_eq!(clamp_rate(1.0), 1.0);

@@ -1,12 +1,10 @@
 import { useEffect, useRef } from 'react'
+import type { PointerEvent } from 'react'
+
+import { MAX_HOPS, dragHops, zoomWindowHops } from './zoomGrab'
 
 const WIDTH = 720
 const HEIGHT = 88
-/** The close-up's window: a few bars at club tempo. */
-const WINDOW_SECONDS = 4
-/** Scratch capacity: the worst case is varispeed's fast end packing
- * more hops into the window. */
-const MAX_HOPS = 512
 /** RMS → pixel scaling: sqrt-compressed like the live strip, gained
  * so techno sits around two-thirds height. */
 const AMPLITUDE_GAIN = 1.8
@@ -28,6 +26,17 @@ type ZoomStripSource = {
   loop: { startHop: number; endHop: number } | null
 }
 
+/** One pointer move of a grab, in the strip's hop domain: where the
+ * playhead sat when the grab began, this move's drag and the drag so
+ * far (positive = later audio pulled under the playhead), and the time
+ * since the previous move. */
+export type ZoomGrab = {
+  startHop: number
+  deltaHops: number
+  totalHops: number
+  elapsedSeconds: number
+}
+
 type ZoomStripProps = {
   label: string
   /** Which deck this strip draws — selects its CSS palette (--a / --b)
@@ -39,14 +48,74 @@ type ZoomStripProps = {
   /** Polled per frame; null draws an empty (dimmed) strip — a deck
    * with nothing honest to show shows nothing (M22). */
   getSource: () => ZoomStripSource | null
+  /** Makes the strip grabbable: called per pointer move while held.
+   * Omitted, the strip is inert (a live deck — ADR-0004). */
+  onGrab?: (grab: ZoomGrab) => void
 }
 
 /** One deck's scrolling band-coloured close-up (M22): lows, mids and
  * highs as colour, the playhead fixed mid-strip, beat marks from the
  * deck's M20 clock where confident. Canvas-rendered per frame; React
  * never sees the scroll. */
-export function ZoomStrip({ label, deck, vertical, getSource }: ZoomStripProps) {
+export function ZoomStrip({
+  label,
+  deck,
+  vertical,
+  getSource,
+  onGrab,
+}: ZoomStripProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const grabRef = useRef<{
+    pointerId: number
+    startHop: number
+    windowHops: number
+    axisPx: number
+    lastPx: number
+    lastTime: number
+    totalPx: number
+  } | null>(null)
+
+  const axisOf = (event: PointerEvent<HTMLCanvasElement>) =>
+    vertical ? event.clientY : event.clientX
+
+  const handlePointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (!onGrab || event.button !== 0) return
+    const source = getSource()
+    if (!source) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    grabRef.current = {
+      pointerId: event.pointerId,
+      startHop: source.playheadHop,
+      windowHops: zoomWindowHops(source.realSecondsPerHop),
+      axisPx: vertical ? rect.height : rect.width,
+      lastPx: axisOf(event),
+      lastTime: event.timeStamp,
+      totalPx: 0,
+    }
+  }
+
+  const handlePointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    const grab = grabRef.current
+    if (!grab || grab.pointerId !== event.pointerId || !onGrab) return
+    const px = axisOf(event)
+    const deltaPx = px - grab.lastPx
+    if (deltaPx === 0) return
+    const elapsedSeconds = (event.timeStamp - grab.lastTime) / 1000
+    grab.lastPx = px
+    grab.lastTime = event.timeStamp
+    grab.totalPx += deltaPx
+    onGrab({
+      startHop: grab.startHop,
+      deltaHops: dragHops(deltaPx, grab.axisPx, grab.windowHops),
+      totalHops: dragHops(grab.totalPx, grab.axisPx, grab.windowHops),
+      elapsedSeconds,
+    })
+  }
+
+  const handlePointerEnd = (event: PointerEvent<HTMLCanvasElement>) => {
+    if (grabRef.current?.pointerId === event.pointerId) grabRef.current = null
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -93,10 +162,7 @@ export function ZoomStrip({ label, deck, vertical, getSource }: ZoomStripProps) 
       if (vertical) context.setTransform(0, 1, 1, 0, 0, 0)
       const source = getSource()
       if (!source) return
-      const hops = Math.min(
-        MAX_HOPS - 1,
-        Math.ceil(WINDOW_SECONDS / source.realSecondsPerHop),
-      )
+      const hops = zoomWindowHops(source.realSecondsPerHop)
       const fromHop = source.playheadHop - hops / 2
       // The band window quantises to whole hops but the playhead and
       // beat marks do not: draw bands from the floored origin (one
@@ -200,11 +266,15 @@ export function ZoomStrip({ label, deck, vertical, getSource }: ZoomStripProps) 
   return (
     <canvas
       ref={canvasRef}
-      className={`ui-zoomstrip ui-zoomstrip--${deck}${vertical ? ' ui-zoomstrip--vertical' : ''}`}
+      className={`ui-zoomstrip ui-zoomstrip--${deck}${vertical ? ' ui-zoomstrip--vertical' : ''}${onGrab ? ' ui-zoomstrip--grabbable' : ''}`}
       width={vertical ? HEIGHT : WIDTH}
       height={vertical ? WIDTH : HEIGHT}
       role="img"
       aria-label={label}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
     />
   )
 }

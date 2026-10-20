@@ -6,7 +6,9 @@ import { EQ_BANDS, type EqBand } from './audio/eq'
 import { FX_KINDS, type FxKind } from './audio/fx'
 import { LOOP_LENGTH_OPTIONS } from './audio/loops'
 import { TRIM_RANGE_DB } from './audio/master'
+import { TEMPO_RANGES, type TempoRange } from './audio/track'
 import { clampMediaHeight } from './media/mediaTray'
+import type { MediaSort } from './media/sortRows'
 import type { GenerationMode } from './generation/songGeneration'
 import type { PadPoint } from './deck/padWeights'
 import { clamp01, isPoint, parsePreset, type StylePreset } from './presets'
@@ -40,6 +42,14 @@ export type AppSettings = {
   mediaHeight: number
   /** Generate-tab complexity; Advanced values themselves remain session drafts. */
   generationMode: GenerationMode
+  /** Generate/Samples list order; absent = newest-first. */
+  mediaSort: MediaSort
+  /** The Songs tab's source: 'all', or a playlist name (the explorer falls back to
+   * 'all' when no playlist has it). Absent = 'all'. */
+  mediaSource: string
+  /** Varispeed envelope for SYNC, the tempo knob, and the FLX4 slider
+   * (ADR-0014). Absent = ±8 %. */
+  tempoRange: TempoRange
 }
 
 /** The settings that moved to shell-side persistence (ADR-0020 phase A:
@@ -315,6 +325,20 @@ export function loadAppSettings(): Partial<AppSettings> {
   if (stored.generationMode === 'basic' || stored.generationMode === 'advanced') {
     settings.generationMode = stored.generationMode
   }
+  if (
+    stored.mediaSort === 'newest' ||
+    stored.mediaSort === 'rating' ||
+    stored.mediaSort === 'title' ||
+    stored.mediaSort === 'bpm' ||
+    stored.mediaSort === 'key'
+  ) {
+    settings.mediaSort = stored.mediaSort
+  }
+  if (typeof stored.mediaSource === 'string' && stored.mediaSource !== '') {
+    settings.mediaSource = stored.mediaSource
+  }
+  const tempoRange = TEMPO_RANGES.find((range) => range === stored.tempoRange)
+  if (tempoRange !== undefined) settings.tempoRange = tempoRange
   return settings
 }
 

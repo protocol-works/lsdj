@@ -48,6 +48,8 @@ import {
   quantisedLoop,
   resizeLoop,
   snapToGrid,
+  syncRate,
+  TRACK_RATE_RANGE,
   type TrackLoop,
 } from '../audio/track'
 import { loadDeckSettings, updateDeckSettings } from '../persistence'
@@ -162,8 +164,12 @@ export type ZoomSource = {
 }
 
 /** SYNC's verdict (M20): refusals name their reason so the UI never
- * blames the wrong thing. */
-export type SyncResult = 'synced' | 'no_tempo' | 'out_of_range'
+ * blames the wrong thing — and an out-of-range one says how far, in
+ * percent of unity, so the performer can judge a wider tempo range. */
+export type SyncResult =
+  | { status: 'synced' }
+  | { status: 'no_tempo' }
+  | { status: 'out_of_range'; requiredPercent: number }
 
 const EMPTY_SLOT: LoopSlot = { state: 'empty' }
 
@@ -249,15 +255,16 @@ export type DeckControls = {
   /** Relative seek (the jog wheel): reads the channel's live playhead
    * so rapid ticks accumulate instead of racing the 250 ms poll. */
   nudgeTrack: (seconds: number) => void
-  /** Varispeed (M20, ADR-0014): clamped to the ±8% envelope; the
+  /** Varispeed (M20, ADR-0014): clamped to the chosen tempo range; the
    * synced echo's clock and the BPM readout follow. */
   setTrackRate: (rate: number) => void
   /** Phase nudge (jog while playing): slip the playhead via a stepped
    * rate bend — the platter drag, never a click. */
   nudgeTrackPhase: (seconds: number) => void
-  /** SYNC: match the track's tempo to `targetBpm`. Refuses honestly,
-   * and says why: no tempo on either side, or the required rate falls
-   * outside the varispeed envelope. Needs no grid (ADR-0014). */
+  /** SYNC: match the track's tempo to `targetBpm`, folding a half- or
+   * double-time reading onto it. Refuses honestly, and says why: no
+   * tempo on either side, or the required rate falls outside the tempo
+   * range. Needs no grid (ADR-0014). */
   syncTrack: (targetBpm: number | null) => SyncResult
   /** Hot cues (M21, ADR-0015): an empty slot captures the playhead
    * (snapped to the grid when confident), a filled one jumps to it —
@@ -308,7 +315,11 @@ export type DeckControls = {
  * commands, status over `sidecar://status`) and its channel on the shared
  * audio engine — the ring buffer → deck gain → crossfade bus now lives in
  * the native Rust engine (`src-tauri/engine/src/graph.rs`). */
-export function useDeck(deckId: DeckId): DeckControls {
+/** `tempoRange` is the varispeed envelope (Settings): ±8 % by default. */
+export function useDeck(
+  deckId: DeckId,
+  tempoRange: number = TRACK_RATE_RANGE,
+): DeckControls {
   const engine = useAudioEngine()
   const deckIndex = deckId === 'a' ? 0 : 1
   const [state, dispatch] = useReducer(deckReducer, initialDeckState)
@@ -1003,15 +1014,18 @@ export function useDeck(deckId: DeckId): DeckControls {
     [seekTrack],
   )
 
-  const setTrackRate = useCallback((rate: number) => {
-    if (modeRef.current !== 'playback') return
-    const clamped = clampRate(rate)
-    trackRateRef.current = clamped
-    // The synced echo's clock follows varispeed shell-side: the rate command
-    // recomputes 60 / (bpm × rate) from the load-time analysis (ADR-0030).
-    channelRef.current?.setTrackRate(clamped)
-    setTrack((current) => current && { ...current, rate: clamped })
-  }, [])
+  const setTrackRate = useCallback(
+    (rate: number) => {
+      if (modeRef.current !== 'playback') return
+      const clamped = clampRate(rate, tempoRange)
+      trackRateRef.current = clamped
+      // The synced echo's clock follows varispeed shell-side: the rate command
+      // recomputes 60 / (bpm × rate) from the load-time analysis (ADR-0030).
+      channelRef.current?.setTrackRate(clamped)
+      setTrack((current) => current && { ...current, rate: clamped })
+    },
+    [tempoRange],
+  )
 
   const nudgeTrackPhase = useCallback((seconds: number) => {
     if (modeRef.current !== 'playback') return
@@ -1119,15 +1133,17 @@ export function useDeck(deckId: DeckId): DeckControls {
   const syncTrack = useCallback(
     (targetBpm: number | null): SyncResult => {
       const bpm = trackMetaRef.current?.bpm ?? null
-      if (bpm === null || targetBpm === null) return 'no_tempo'
-      const required = targetBpm / bpm
+      if (bpm === null || targetBpm === null) return { status: 'no_tempo' }
+      const required = syncRate(bpm, targetBpm)
       // Out of the varispeed envelope: refuse rather than land close
-      // and pretend (ADR-0014).
-      if (clampRate(required) !== required) return 'out_of_range'
+      // and pretend (ADR-0014) — but say by how much.
+      if (clampRate(required, tempoRange) !== required) {
+        return { status: 'out_of_range', requiredPercent: (required - 1) * 100 }
+      }
       setTrackRate(required)
-      return 'synced'
+      return { status: 'synced' }
     },
-    [setTrackRate],
+    [setTrackRate, tempoRange],
   )
 
   const getTrackBeat = useCallback((): BeatClock | null => {
@@ -1280,13 +1296,10 @@ export function useDeck(deckId: DeckId): DeckControls {
 
   const captureStyleSample = useCallback(
     () =>
-      // The worklet history holds the dead stream in playback mode;
-      // sampling a track will slice the buffer instead — deferred past
-      // M19 (ADR-0013).
-      modeRef.current === 'playback'
-        ? Promise.resolve(null)
-        : (channelRef.current?.captureSample(STYLE_SAMPLE_SECONDS) ??
-          Promise.resolve(null)),
+      // One call for both modes: on a playback deck the engine slices the
+      // track around the playhead instead of the (dead) live history.
+      channelRef.current?.captureSample(STYLE_SAMPLE_SECONDS) ??
+      Promise.resolve(null),
     [],
   )
 

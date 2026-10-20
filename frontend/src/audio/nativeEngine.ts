@@ -120,19 +120,25 @@ type TauriEventApi = {
 }
 
 /** The library a `library://changed` event names (Rust `watcher::LibraryChanged`). */
-export type LibraryKind = 'songs' | 'samples'
+export type LibraryKind = 'songs' | 'samples' | 'playlists'
 
 /** Subscribe to the Rust folder watcher's `library://changed` event (ADR-0022): the
  * named library's folder changed out-of-band — a deck auto-saved a sample, a file
- * was dropped in or deleted by hand — so the matching Media Explorer tab should
- * re-list. Returns an unsubscribe fn (safe to call before the async `listen`
+ * was dropped in or deleted by hand, an MCP agent saved a playlist — so the
+ * matching Media Explorer list should re-list. Returns an unsubscribe fn (safe to call before the async `listen`
  * resolves). A no-op outside Tauri or without the event bridge (so tests that stub
  * only `core` are unaffected). */
 export function subscribeLibraryChanged(
   onChange: (library: LibraryKind) => void,
 ): () => void {
   return listenTo<{ library?: LibraryKind }>('library://changed', (payload) => {
-    if (payload.library === 'songs' || payload.library === 'samples') onChange(payload.library)
+    if (
+      payload.library === 'songs' ||
+      payload.library === 'samples' ||
+      payload.library === 'playlists'
+    ) {
+      onChange(payload.library)
+    }
   })
 }
 

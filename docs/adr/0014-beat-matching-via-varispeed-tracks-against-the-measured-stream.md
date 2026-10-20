@@ -80,6 +80,22 @@ Three facts shape the design:
   moment any leg fails: gate blank, no grid, track paused, worklet not
   playing, or stats stale — never a confident-looking lie.
 
+### Amendment (2026-10-15)
+
+- **The envelope is the performer's: ±8 % default, ±16 % or ±50 %
+  selectable** (Settings → Audio → Tempo range, the Serato ranges). A
+  library of generated tracks spans 96–150 BPM in practice, so ±8 %
+  refused most cross-cluster pairs. The webview clamps the knob, the
+  FLX4 slider, and SYNC to the chosen range; the engine boundary now
+  holds the widest (±50 %) as its garbage guard. Pitch still shifts
+  with rate — the wider ranges are opt-in for that reason.
+- **SYNC folds metrical levels.** The required rate is read at
+  whichever of half, same, or double lands nearest unity (the
+  detector's own octave folding, ADR-0035), so a 70 BPM half-time
+  reading syncs to a 140 BPM stream at ×1 instead of refusing at ×2.
+- **A refusal says how far**: "needs +15 %, tempo range is ±8 %", so
+  the performer can tell a near miss from a different-tempo track.
+
 ## Consequences
 
 - Easier: track-against-track sync (both decks in playback) is exact —

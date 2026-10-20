@@ -22,6 +22,20 @@ export type Sa3Recipe = {
   apg?: number
 }
 
+export type SourceMode = 'remix' | 'replace' | 'continue'
+export const SOURCE_MODES: SourceMode[] = ['remix', 'replace', 'continue']
+
+/** Where an audio-to-audio take came from — the shell's `SourceRecipe`, which the
+ * MCP `generate_track` records too. Output time 0 is `start` in the source. */
+export type SourceRecipe = {
+  file: string
+  mode: SourceMode
+  start: number
+  end: number
+  initNoiseLevel?: number
+  inpaintRange?: [number, number]
+}
+
 export type SongGenerationRecipeV1 = {
   version: 1
   prompt: string
@@ -29,6 +43,7 @@ export type SongGenerationRecipeV1 = {
   seconds: number
   loras: LoraChoice[]
   sa3?: Sa3Recipe
+  source?: SourceRecipe
 }
 
 export type TrackGenerationRequest = {
@@ -40,6 +55,8 @@ export type TrackGenerationRequest = {
   cfg?: number
   apg?: number
   seed?: number
+  init_noise_level?: number
+  inpaint_range?: [number, number]
 }
 
 export type MagentaGenerationRequest = {
@@ -190,6 +207,104 @@ export function buildSongGeneration(
   }
 }
 
+/** The Generate tab's source form: seconds stay typed text until generate. */
+export type SourceDraft = {
+  file: string
+  title: string
+  mode: SourceMode
+  /** Window cut from the source; blank start = 0, blank end = the song's end. */
+  start: string
+  end: string
+  /** Remix: 0.01 keeps the source, 1 regenerates fully. */
+  noiseLevel: number
+  /** Replace: output seconds to regenerate. */
+  replaceStart: string
+  replaceEnd: string
+}
+
+export const SOURCE_NOISE_DEFAULT = 0.6
+
+export type SourceError = 'windowInvalid' | 'replaceInvalid' | 'continueTooShort'
+
+/** A typed seconds value: null when blank, NaN when not a non-negative number. */
+function typedSeconds(text: string): number | null {
+  if (!text.trim()) return null
+  const value = Number(text)
+  return Number.isFinite(value) && value >= 0 ? value : Number.NaN
+}
+
+/** The window to cut, or an error for typed numbers that make no window. */
+export function sourceWindow(
+  draft: SourceDraft,
+): { start: number; end?: number } | SourceError {
+  const start = typedSeconds(draft.start) ?? 0
+  const end = typedSeconds(draft.end)
+  if (Number.isNaN(start) || Number.isNaN(end) || (end !== null && end <= start)) {
+    return 'windowInvalid'
+  }
+  return end === null ? { start } : { start, end }
+}
+
+/** The shell's source clip is 44.1 kHz 16-bit stereo behind a 44-byte header. */
+export function clipSeconds(wav: ArrayBuffer): number {
+  return (wav.byteLength - 44) / (44_100 * 4)
+}
+
+/** Fold a cut source into an SA3 build — the webview twin of the MCP
+ * `source_plan`: continue extends the window to the chosen length, replace
+ * regenerates typed output seconds, remix redraws all of it at the noise level.
+ * Replace and remix take the window's length. */
+export function withSource(
+  build: SongGenerationBuild,
+  draft: SourceDraft,
+  start: number,
+  clipLength: number,
+): SongGenerationBuild | SourceError {
+  if (!('kind' in build.request)) return 'windowInvalid'
+  const base = { file: draft.file, mode: draft.mode, start, end: start + clipLength }
+  let seconds = clipLength
+  let fields: Pick<TrackGenerationRequest, 'init_noise_level' | 'inpaint_range'>
+  let source: SourceRecipe
+  if (draft.mode === 'continue') {
+    seconds = build.request.seconds
+    if (seconds <= clipLength) return 'continueTooShort'
+    const range: [number, number] = [clipLength, seconds]
+    fields = { inpaint_range: range }
+    source = { ...base, inpaintRange: range }
+  } else if (draft.mode === 'replace') {
+    const from = typedSeconds(draft.replaceStart)
+    const to = typedSeconds(draft.replaceEnd)
+    if (from === null || to === null || !(from < to && to <= seconds)) return 'replaceInvalid'
+    fields = { inpaint_range: [from, to] }
+    source = { ...base, inpaintRange: [from, to] }
+  } else {
+    fields = { init_noise_level: draft.noiseLevel }
+    source = { ...base, initNoiseLevel: draft.noiseLevel }
+  }
+  return {
+    request: { ...build.request, seconds, ...fields },
+    recipe: { ...build.recipe, seconds, source },
+  }
+}
+
+/** A recalled source back into the form. */
+export function sourceDraftOf(source: SourceRecipe, title: string): SourceDraft {
+  const [replaceStart, replaceEnd] =
+    source.mode === 'replace' && source.inpaintRange
+      ? source.inpaintRange.map(String)
+      : ['', '']
+  return {
+    file: source.file,
+    title,
+    mode: source.mode,
+    start: String(source.start),
+    end: String(source.end),
+    noiseLevel: source.initNoiseLevel ?? SOURCE_NOISE_DEFAULT,
+    replaceStart,
+    replaceEnd,
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -224,7 +339,8 @@ export function parseGenerationRecipe(value: unknown): ParsedGenerationRecipe {
       typeof choice.name !== 'string' ||
       !choice.name ||
       loraNames.has(choice.name) ||
-      !isBoundedNumber(choice.strength, 0, 2)
+      // The backend's (and the MCP's) 0-4 range; the rack clamps to its own 2.
+      !isBoundedNumber(choice.strength, 0, 4)
     ) {
       return { status: 'invalid' }
     }
@@ -264,6 +380,39 @@ export function parseGenerationRecipe(value: unknown): ParsedGenerationRecipe {
     }
   }
 
+  let source: SourceRecipe | undefined
+  if (value.source !== undefined) {
+    const raw = value.source
+    if (
+      value.engine !== 'track' ||
+      !isRecord(raw) ||
+      typeof raw.file !== 'string' ||
+      !raw.file ||
+      !SOURCE_MODES.includes(raw.mode as SourceMode) ||
+      !isBoundedNumber(raw.start, 0, Infinity) ||
+      !isBoundedNumber(raw.end, raw.start, Infinity) ||
+      (raw.initNoiseLevel !== undefined && !isBoundedNumber(raw.initNoiseLevel, 0.01, 5)) ||
+      (raw.inpaintRange !== undefined &&
+        !(
+          Array.isArray(raw.inpaintRange) &&
+          raw.inpaintRange.length === 2 &&
+          raw.inpaintRange.every((edge) => isBoundedNumber(edge, 0, Infinity))
+        ))
+    ) {
+      return { status: 'invalid' }
+    }
+    source = {
+      file: raw.file,
+      mode: raw.mode as SourceMode,
+      start: raw.start,
+      end: raw.end,
+      ...(raw.initNoiseLevel !== undefined ? { initNoiseLevel: raw.initNoiseLevel as number } : {}),
+      ...(raw.inpaintRange !== undefined
+        ? { inpaintRange: raw.inpaintRange as [number, number] }
+        : {}),
+    }
+  }
+
   return {
     status: 'supported',
     recipe: {
@@ -273,6 +422,7 @@ export function parseGenerationRecipe(value: unknown): ParsedGenerationRecipe {
       seconds: value.seconds,
       loras,
       ...(sa3 ? { sa3 } : {}),
+      ...(source ? { source } : {}),
     },
   }
 }

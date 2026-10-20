@@ -565,8 +565,8 @@ impl Engine {
     // (M13 freeze pads / ADR-0009, M18 generated pads / ADR-0012, M15 style
     // sampling / ADR-0011.) These capture and loop the LIVE model output, so they
     // are Realtime-deck features: on a Playback deck they are inert no-ops (the
-    // played history holds the dead stream; track-buffer slicing is a parked Later
-    // idea, ADR-0013). All are non-RT (`&mut self` / getters, like
+    // played history holds the dead stream, ADR-0013) — except the style sample,
+    // which slices the track buffer instead. All are non-RT (`&mut self` / getters, like
     // `set_eq`/`load_track`): they allocate (capture copies, folded buffers) off the
     // RT path and cannot overlap a `render` call by Rust's ownership rules. The RT
     // `render` only ticks the pre-built loop/one-shot buffer sources.
@@ -682,15 +682,19 @@ impl Engine {
     /// interleaved-stereo f32 (M15, `captureSample` in `engine.ts`): the shell sends
     /// it to the backend for embedding (ADR-0011); this returns the samples.
     /// Defaults to [`STYLE_SAMPLE_SECONDS`] (10 s) at the call site; refuses (returns
-    /// `None`) below [`MIN_STYLE_SAMPLE_SECONDS`] (3 s) of history or on a Playback
-    /// deck.
+    /// `None`) below [`MIN_STYLE_SAMPLE_SECONDS`] (3 s) of history. On a Playback
+    /// deck it slices the track buffer around the playhead instead
+    /// ([`BufferSource::sample_window`]) — same rate, same wire format.
     ///
     /// # Panics
     /// Panics if `deck_index >= DECK_COUNT`.
     pub fn capture_sample(&mut self, deck_index: usize, seconds: f64) -> Option<Vec<f32>> {
         assert!(deck_index < DECK_COUNT, "deck index {deck_index} out of range");
-        let ring = self.realtime_ring(deck_index)?;
         let request = (seconds.max(0.0) * SAMPLE_RATE as f64) as usize;
+        if let Some(track) = self.track_ref(deck_index) {
+            return track.sample_window(request, MIN_STYLE_SAMPLE_FRAMES);
+        }
+        let ring = self.realtime_ring(deck_index)?;
         let (left, right) = ring.capture_recent(request);
         // Less than the backend floor embeds poorly and is refused before it leaves
         // the deck (ADR-0011). Mirrors the `captureSample` length guard.
@@ -2546,8 +2550,23 @@ mod tests {
 
         // Capture is refused (the played history holds the dead stream; ADR-0013).
         assert!(!engine.capture_loop(0, 0, 1.0), "capture_loop is a no-op on Playback");
-        assert!(engine.capture_sample(0, STYLE_SAMPLE_SECONDS).is_none(), "no style sample on Playback");
+        // A style sample slices the track buffer instead, but a 1 s track is under
+        // the 3 s floor (see `style_sample_slices_a_playback_track`).
+        assert!(engine.capture_sample(0, STYLE_SAMPLE_SECONDS).is_none(), "1 s track is under the floor");
         assert!(engine.loop_slots(0).iter().all(|s| !s.filled && !s.playing), "no slot filled by a refused capture");
+    }
+
+    /// A style sample on a Playback deck is the track buffer around the playhead:
+    /// from the top (under the floor precedes it) it is the window starting there.
+    #[test]
+    fn style_sample_slices_a_playback_track() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        engine.load_track(0, ramp_track(SAMPLE_RATE as usize * 20));
+        let sample = engine.capture_sample(0, STYLE_SAMPLE_SECONDS).expect("a track style sample");
+        assert_eq!(sample.len(), SAMPLE_RATE as usize * 10 * 2);
+        assert_eq!(sample[0], 0.0, "starts at the playhead");
     }
 
     /// (S4b-5b) A *loaded sample*, unlike a freeze, is a self-contained buffer with

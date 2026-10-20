@@ -16,7 +16,8 @@
         "height": 800,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#050507"
+        "backgroundColor": "#050507",
+        "dragDropEnabled": false
       }
     ],
     "security": {

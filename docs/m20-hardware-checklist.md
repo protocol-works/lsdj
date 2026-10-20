@@ -80,3 +80,18 @@ it."*
 
 When every box ticks, flip M20's status in [`ROADMAP.md`](ROADMAP.md)
 to ✅ done and ADR-0014 to Accepted.
+
+## Tempo range and octave sync (2026-10-15, ADR-0014 amendment)
+
+- [ ] Settings → Audio → **Tempo range** at ±16 %: the FLX4 tempo
+      slider's full throw now spans ±16 % (the BPM readout confirms
+      at both ends) and the on-screen tempo knob matches; back at
+      ±8 % the slider feels as before.
+- [ ] With two tracks ~12 % apart, SYNC at ±8 % refuses with the
+      percentage it needed; switch to ±16 % and the same press locks.
+- [ ] A half-time reading (a 70-ish BPM readout against a 140-ish
+      deck) syncs at unity instead of refusing — the readouts land
+      an octave apart, the beats line up on the meter.
+- [ ] At ±50 %, an extreme rate still plays clean (no clicks, the
+      loop and jog bend behave) — it just sounds like a varispeed.
+

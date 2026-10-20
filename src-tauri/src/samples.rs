@@ -12,10 +12,11 @@
 //! the sample back into a slot the way it was made.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::media::{AnalyzedLibrary, TrackInfo};
 use crate::library;
 
 /// One row of the sample registry — what the webview shows and loads from. Mirrors
@@ -41,6 +42,21 @@ pub struct SampleEntry {
     /// loops. Defaulted so an older/partial registry row stays loadable.
     #[serde(default)]
     pub one_shot: bool,
+    /// The DJ's 1–5 star rating; absent when unrated, so old rows stay readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<u8>,
+    /// The DJ's own normalised words for the sample (`library::normalise_tags`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// BPM + key, filled in the background ([`crate::analysis::media`]).
+    #[serde(flatten)]
+    pub info: TrackInfo,
+}
+
+impl library::RegistryEntry for SampleEntry {
+    fn file(&self) -> &str {
+        &self.file
+    }
 }
 
 /// The metadata the webview sends with a sample to persist (deck pad / composed
@@ -63,6 +79,8 @@ pub struct NewSample {
 pub struct SampleLibrary {
     dir: std::path::PathBuf,
     lock: Mutex<()>,
+    /// Kicks the background BPM/key pass ([`crate::analysis::media::spawn`]).
+    analyzer: OnceLock<mpsc::Sender<()>>,
 }
 
 impl SampleLibrary {
@@ -70,6 +88,7 @@ impl SampleLibrary {
         Self {
             dir,
             lock: Mutex::new(()),
+            analyzer: OnceLock::new(),
         }
     }
 
@@ -92,6 +111,7 @@ impl SampleLibrary {
         if reconciled != existing {
             library::save_registry(&self.dir, &reconciled)?;
         }
+        self.kick_analysis();
         Ok(reconciled)
     }
 
@@ -117,12 +137,22 @@ impl SampleLibrary {
             prompt: new.prompt,
             model: new.model,
             one_shot: new.one_shot,
+            rating: None,
+            tags: Vec::new(),
+            info: TrackInfo::default(),
         };
         let mut entries: Vec<SampleEntry> = library::load_registry(&self.dir);
         entries.retain(|e| e.file != file);
         entries.push(entry.clone());
         library::save_registry(&self.dir, &entries)?;
+        self.kick_analysis();
         Ok(entry)
+    }
+
+    fn kick_analysis(&self) {
+        if let Some(kick) = self.analyzer.get() {
+            let _ = kick.send(());
+        }
     }
 
     /// Read one sample's bytes, scoped to the folder (`name` is a plain filename). The
@@ -141,6 +171,123 @@ impl SampleLibrary {
         entries.retain(|e| e.file != name);
         library::save_registry(&self.dir, &entries)?;
         Ok(())
+    }
+
+    /// Set or clear (`None`) a sample's 1–5 star rating; returns the updated row.
+    /// `overwrite: false` refuses to replace an existing rating
+    /// ([`library::check_rating_overwrite`]) — the agent's default.
+    pub fn rate(
+        &self,
+        name: &str,
+        rating: Option<u8>,
+        overwrite: bool,
+    ) -> Result<SampleEntry, String> {
+        library::validate_rating(rating)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            library::check_rating_overwrite(e.rating, rating, overwrite)?;
+            e.rating = rating;
+            Ok(())
+        })
+    }
+
+    /// Change a sample's display title, never its file (see
+    /// [`crate::songs::SongLibrary::rename`]). Returns the updated row.
+    pub fn rename(&self, name: &str, title: &str) -> Result<SampleEntry, String> {
+        let title = library::validate_title(title)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            e.title = title;
+            Ok(())
+        })
+    }
+
+    /// Replace a sample's tags with the normalised `tags`; returns the updated row.
+    pub fn tag(&self, name: &str, tags: Vec<String>) -> Result<SampleEntry, String> {
+        let tags = library::normalise_tags(&tags)?;
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            e.tags = tags;
+            Ok(())
+        })
+    }
+
+    /// Save `start..end` seconds of sample `name` as a NEW file and registry row
+    /// titled "<title> (crop)", carrying everything but the rating over; the
+    /// original is untouched. `name` must be a row in the registry. With `replace`,
+    /// the crop overwrites the original instead and its row keeps everything.
+    pub fn crop(
+        &self,
+        name: &str,
+        start: f64,
+        end: f64,
+        replace: bool,
+    ) -> Result<SampleEntry, String> {
+        let original = {
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            library::load_registry::<SampleEntry>(&self.dir)
+                .into_iter()
+                .find(|e| e.file == name)
+                .ok_or_else(|| format!("no library entry named {name}"))?
+        };
+        if replace {
+            library::replace_with_crop(&self.dir, name, start, end)?;
+            let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+            return library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+                // A crop can sit in a different key: re-analyse it.
+                e.info = TrackInfo::default();
+                Ok(())
+            });
+        }
+        let title = library::crop_title(&original.title);
+        // Decoded outside the lock: a long take takes a moment to cut, and a
+        // rating or a re-list must not wait on it.
+        let file = library::write_crop(&self.dir, name, &title, start, end)?;
+        let entry = SampleEntry {
+            file,
+            title,
+            rating: None,
+            // A crop can sit in a different key: re-analyse it.
+            info: TrackInfo::default(),
+            ..original
+        };
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries: Vec<SampleEntry> = library::load_registry(&self.dir);
+        // A re-list may already have adopted the new file as hand-added.
+        entries.retain(|e| e.file != entry.file);
+        entries.push(entry.clone());
+        library::save_registry(&self.dir, &entries)?;
+        Ok(entry)
+    }
+}
+
+impl AnalyzedLibrary for SampleLibrary {
+    const LIBRARY: &'static str = "samples";
+
+    fn set_analyzer(&self, kick: mpsc::Sender<()>) {
+        let _ = self.analyzer.set(kick);
+    }
+
+    fn pending_analysis(&self) -> Vec<String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::load_registry::<SampleEntry>(&self.dir)
+            .into_iter()
+            .filter(|e| !e.info.is_current())
+            .map(|e| e.file)
+            .collect()
+    }
+
+    fn read(&self, name: &str) -> Result<Vec<u8>, String> {
+        SampleLibrary::read(self, name)
+    }
+
+    fn set_info(&self, name: &str, info: TrackInfo) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        library::update_entry(&self.dir, name, |e: &mut SampleEntry| {
+            e.info = info;
+            Ok(())
+        })
+        .map(|_| ())
     }
 }
 
@@ -163,6 +310,9 @@ fn reconcile(existing: Vec<SampleEntry>, disk: &[String]) -> Vec<SampleEntry> {
                 prompt: None,
                 model: None,
                 one_shot: false,
+                rating: None,
+                tags: Vec::new(),
+                info: TrackInfo::default(),
             });
         }
     }
@@ -180,6 +330,9 @@ mod tests {
             prompt: model.map(|_| "a prompt".to_string()),
             model: model.map(str::to_string),
             one_shot,
+            rating: None,
+            tags: Vec::new(),
+            info: TrackInfo::default(),
         }
     }
 
@@ -220,5 +373,58 @@ mod tests {
             serde_json::from_str(r#"{"file":"x.wav","title":"x","prompt":null,"model":"freeze"}"#)
                 .expect("row without oneShot deserialises");
         assert!(!row.one_shot);
+    }
+
+    #[test]
+    fn rate_rename_and_tag_round_trip_and_reject_bad_input() {
+        let dir =
+            std::env::temp_dir().join(format!("lsdj-sample-curate-test-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let samples = SampleLibrary::new(dir.clone());
+        samples
+            .record(
+                NewSample {
+                    title: "Riff".to_string(),
+                    prompt: None,
+                    model: Some("freeze".to_string()),
+                    one_shot: true,
+                },
+                b"RIFF test bytes",
+            )
+            .unwrap();
+        samples.rate("Riff.wav", Some(2), true).unwrap();
+        samples.rename("Riff.wav", "Gritty riff").unwrap();
+        samples.tag("Riff.wav", vec!["Drone".to_string()]).unwrap();
+        assert!(samples.rate("Riff.wav", Some(6), true).is_err());
+        assert!(samples.rename("Riff.wav", "a\nb").is_err());
+        assert!(samples.tag("missing.wav", vec![]).is_err());
+        drop(samples);
+
+        let rows = SampleLibrary::new(dir.clone()).list().unwrap();
+        assert_eq!(rows[0].file, "Riff.wav");
+        assert_eq!(rows[0].title, "Gritty riff");
+        assert_eq!(rows[0].rating, Some(2));
+        assert_eq!(rows[0].tags, ["drone"]);
+        assert!(
+            rows[0].one_shot,
+            "curation leaves the rest of the row alone"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reconcile_keeps_rating_and_tags_and_old_rows_default_them() {
+        let mut rated = entry("pad.wav", Some("music"), false);
+        rated.rating = Some(1);
+        rated.tags = vec!["drone".to_string()];
+        assert_eq!(
+            reconcile(vec![rated.clone()], &["pad.wav".to_string()]),
+            vec![rated]
+        );
+        let legacy: SampleEntry =
+            serde_json::from_str(r#"{"file":"x.wav","title":"x","prompt":null,"model":"freeze"}"#)
+                .unwrap();
+        assert_eq!(legacy.rating, None);
+        assert!(legacy.tags.is_empty());
     }
 }

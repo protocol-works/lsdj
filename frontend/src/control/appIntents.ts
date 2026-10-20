@@ -1,7 +1,7 @@
 import type { DeckId } from '../audio/types'
 import { FX_KINDS } from '../audio/fx'
 import { trimDbFromKnob } from '../audio/master'
-import { tempoSliderToRate } from '../audio/track'
+import { tempoSliderToRate, TRACK_RATE_RANGE } from '../audio/track'
 import { isDeckOperable } from '../deck/deckState'
 import type { DeckControls } from '../deck/useDeck'
 import type { ControlIntent } from './bus'
@@ -32,6 +32,7 @@ export function applyAppIntent(
   decks: Record<DeckId, DeckControls>,
   handlers: AppIntentHandlers,
   shiftedDeck: DeckId | null = null,
+  tempoRange: number = TRACK_RATE_RANGE,
 ): void {
   switch (intent.kind) {
     case 'play_toggle': {
@@ -129,7 +130,7 @@ export function applyAppIntent(
       // Varispeed is a playback parameter; a realtime deck ignores
       // the slider — ADR-0004 stands for generation.
       if (deck.mode !== 'playback') return
-      deck.setTrackRate(tempoSliderToRate(intent.value))
+      deck.setTrackRate(tempoSliderToRate(intent.value, tempoRange))
       return
     }
     case 'hot_cue_pad': {

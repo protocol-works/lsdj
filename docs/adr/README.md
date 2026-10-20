@@ -58,3 +58,5 @@ scaffolds the file from the template.
 | [0031](0031-native-midi-in-the-rust-core-superseding-web-midi.md) | Native MIDI in the Rust core, superseding Web MIDI | Accepted |
 | [0032](0032-standalone-midi-keyboard-window.md) | Standalone MIDI keyboard window, routing decoupled from steering | Accepted |
 | [0035](0035-dual-envelope-beat-detection-with-fast-change-invalidation.md) | Dual-envelope beat detection with fast change invalidation | Accepted |
+| [0036](0036-curation-metadata-in-the-library-registry-playlists-as-m3u8.md) | Curation metadata in the library registry; playlists as m3u8 files | Proposed |
+| [0037](0037-audio-to-audio-from-library-songs.md) | Audio-to-audio from library songs: the shell cuts the window | Proposed |

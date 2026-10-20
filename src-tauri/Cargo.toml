@@ -95,11 +95,10 @@ rubato = { version = "=3.0.0", default-features = false, features = ["fft_resamp
 # Issue 77's corpus-selected spectral-flux detector (ADR-0035). Directly pinned
 # instead of relying on rubato/realfft's transitive copy.
 rustfft = "=6.4.1"
-
-[dev-dependencies]
-# The ADR-0025 corpus regression replays the spike WAVs (16-bit PCM) through
-# the Rust estimator; hound is the de-facto WAV codec — reputable, tiny, and
-# pinned, so the cutover gate never rests on a hand-rolled parser.
+# The de-facto WAV codec — reputable, tiny, pinned. Writes the 44.1 kHz 16-bit
+# init audio Stable Audio 3 takes (ADR-0037), and the ADR-0025 corpus regression
+# replays the spike WAVs through it, so neither rests on a hand-rolled parser.
+# Promoted from a dev-dependency; same pin, nothing new in the lockfile.
 hound = "=3.5.1"
 
 # Workspace-level release profile. Cargo only honours `[profile.*]` at the

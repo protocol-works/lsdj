@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
@@ -30,7 +30,6 @@ import { TransportButton } from '../ui/TransportButton'
 import { XYPad } from '../ui/XYPad'
 import { moveRadial } from '../ui/netGeometry'
 import { isDeckOperable, type DeckState } from './deckState'
-import { TRACK_RATE_RANGE } from '../audio/track'
 import { sweepPosition } from './padWeights'
 import {
   MAX_PRESET_NAME_LENGTH,
@@ -94,6 +93,11 @@ const LOOP_BEAT_FRACTIONS: ReadonlyArray<[number, string]> = [
  * fraction (½, ¼, ⅛) once halved (M23). Null without a confident grid
  * or for a region that isn't a clean beat length — the honesty rule
  * keeps a count off a free or tail-clamped loop. */
+/** "+15" / "-12": the signed whole percent a SYNC refusal names. */
+function signedPercent(percent: number): string {
+  return `${percent > 0 ? '+' : ''}${percent.toFixed(0)}`
+}
+
 function loopBeatLabel(
   loop: { start: number; end: number },
   grid: { bpm: number } | null,
@@ -158,6 +162,9 @@ type DeckColumnProps = {
   onSeekTrack: (seconds: number) => void
   /** Varispeed (M20): the tempo knob's rate, clamped upstream. */
   onSetTrackRate: (rate: number) => void
+  /** The varispeed envelope (Settings): the tempo knob's throw and what
+   * SYNC may ask for. */
+  tempoRange: number
   /** SYNC: match the other deck's tempo; refusals name their reason. */
   onSyncTrack: () => SyncResult
   /** Hot cues and the track loop (M21, ADR-0015): pads mean position
@@ -204,6 +211,7 @@ export function DeckColumn({
   onLeavePlayback,
   onSeekTrack,
   onSetTrackRate,
+  tempoRange,
   onSyncTrack,
   onHotCuePad,
   onClearHotCue,
@@ -216,6 +224,8 @@ export function DeckColumn({
   getTrackPeaks,
 }: DeckColumnProps) {
   const { t } = useTranslation()
+  // Ids for the visible section labels the groups are named by.
+  const sectionId = useId()
   const deckIndex = deckId === 'a' ? 0 : 1
   // The style pad is a PROJECTION (ADR-0020 phase B): targets, cursor, and
   // the net selection live in the Rust store — hydrated from the shell
@@ -276,7 +286,7 @@ export function DeckColumn({
   // never haunts the next track's panel.
   const [syncRefusal, setSyncRefusal] = useState<{
     loadId: number
-    reason: Exclude<SyncResult, 'synced'>
+    result: Exclude<SyncResult, { status: 'synced' }>
   } | null>(null)
   const [generateEngine, setGenerateEngine] = useState<GenerateEngine>('sfx')
   const [generateOneShot, setGenerateOneShot] = useState(true)
@@ -552,6 +562,9 @@ export function DeckColumn({
     y: target.y,
   }))
 
+  const playing = mode === 'playback' ? (track?.playing ?? false) : state.playing
+  const transportDisabled = mode === 'playback' ? track === null : !operable
+
   return (
     <section
       className={`deck deck--${deckId}`}
@@ -569,34 +582,114 @@ export function DeckColumn({
         </span>
       </header>
 
-      {/* Playback mode (M19, ADR-0013): the style pane gives way to the
-          loaded track — its envelope is the deck's seekable surface. */}
+      {/* Transport first (show prep): play/stop sits beside the track
+          overview — the deck's seekable surface in playback mode (M19,
+          ADR-0013) — at the top of the deck, so a drop can be timed by eye
+          without scrolling, Media Explorer open or not. */}
+      <Panel className="deck__transport-panel">
+        <div className="deck__transport">
+          {playing ? (
+            <TransportButton
+              kind="stop"
+              accent={deckId}
+              lit
+              label={t('deck.stop')}
+              disabled={transportDisabled}
+              onClick={onStop}
+            />
+          ) : (
+            <TransportButton
+              kind="play"
+              accent={deckId}
+              label={t('deck.play')}
+              disabled={transportDisabled}
+              onClick={onPlay}
+            />
+          )}
+          {mode === 'playback' && track ? (
+            <div className="deck__overview">
+              <TrackOverview
+                label={t('deck.track.overview', { id: deckId })}
+                peaks={trackPeaksData}
+                position={track.position}
+                duration={track.duration}
+                loop={track.loop}
+                accent={deckId}
+                onSeek={onSeekTrack}
+              />
+            </div>
+          ) : (
+            <div className="deck__health">
+              <Meter
+                label={t('deck.health.buffer')}
+                valueLabel={t('deck.health.bufferSeconds', {
+                  seconds: state.bufferedSeconds.toFixed(1),
+                })}
+                fraction={bufferFraction}
+                tone={bufferTone}
+              />
+              <Stat
+                label={t('deck.health.bpm')}
+                value={bpm === null ? t('deck.health.noData') : bpm.toFixed(1)}
+              />
+              <Stat
+                label={t('deck.health.underruns')}
+                value={String(state.underruns)}
+                tone={state.underruns > 0 ? 'danger' : 'default'}
+              />
+              <Stat
+                label={t('deck.health.generationSpeed')}
+                value={
+                  state.generationSpeed === null
+                    ? t('deck.health.noData')
+                    : t('deck.health.generationSpeedValue', {
+                        rtf: state.generationSpeed.toFixed(2),
+                      })
+                }
+                tone={
+                  state.generationSpeed !== null && state.generationSpeed < 1
+                    ? 'danger'
+                    : 'default'
+                }
+              />
+            </div>
+          )}
+        </div>
+        {mode === 'playback' && track && (
+          /* A track's health is its clock, not the stream's plumbing. */
+          <div className="deck__track-row">
+            <p className="deck__active-prompt deck__track-title">{track.title}</p>
+            <Stat
+              label={t('deck.health.position')}
+              value={t('deck.track.time', {
+                position: formatTrackTime(track.position),
+                duration: formatTrackTime(track.duration),
+              })}
+            />
+            <Stat
+              label={t('deck.health.bpm')}
+              value={
+                track.bpm === null
+                  ? t('deck.health.noData')
+                  : (track.bpm * track.rate).toFixed(1)
+              }
+            />
+          </div>
+        )}
+      </Panel>
+
       {mode === 'playback' && track ? (
         <Panel className="deck__style">
-          <TrackOverview
-            label={t('deck.track.overview', { id: deckId })}
-            peaks={trackPeaksData}
-            position={track.position}
-            duration={track.duration}
-            loop={track.loop}
-            accent={deckId}
-            onSeek={onSeekTrack}
-          />
-          <div className="deck__track-row">
-            <p className="deck__active-prompt">{track.title}</p>
-            <Button onClick={onLeavePlayback}>
-              {t('deck.track.backToLive')}
-            </Button>
-          </div>
           {/* Beat-matching controls (M20, ADR-0014): varispeed and
-              tempo SYNC; phase stays the performer's via the jog. */}
-          <div className="deck__track-row">
+              tempo SYNC; phase stays the performer's via the jog. The
+              deck-local exit from playback rides the same row. */}
+          <div className="deck__track-row deck__track-row--spread">
             <Knob
               label={t('deck.track.tempo')}
               accent={deckId}
               value={track.rate}
-              min={1 - TRACK_RATE_RANGE}
-              max={1 + TRACK_RATE_RANGE}
+              min={1 - tempoRange}
+              max={1 + tempoRange}
               step={0.001}
               resetValue={1}
               onChange={onSetTrackRate}
@@ -606,22 +699,26 @@ export function DeckColumn({
               onClick={() => {
                 const result = onSyncTrack()
                 setSyncRefusal(
-                  result === 'synced'
+                  result.status === 'synced'
                     ? null
-                    : { loadId: track.loadId, reason: result },
+                    : { loadId: track.loadId, result },
                 )
               }}
             >
               {t('deck.track.sync')}
             </Button>
+            <Button onClick={onLeavePlayback}>
+              {t('deck.track.backToLive')}
+            </Button>
           </div>
           {syncRefusal && syncRefusal.loadId === track.loadId && (
             <p className="deck__error" role="alert">
-              {t(
-                syncRefusal.reason === 'no_tempo'
-                  ? 'deck.track.syncNoTempo'
-                  : 'deck.track.syncOutOfRange',
-              )}
+              {syncRefusal.result.status === 'no_tempo'
+                ? t('deck.track.syncNoTempo')
+                : t('deck.track.syncOutOfRange', {
+                    required: signedPercent(syncRefusal.result.requiredPercent),
+                    range: Math.round(tempoRange * 100),
+                  })}
             </p>
           )}
           {/* Hot cues (M21, ADR-0015): pads mean position. SHIFT+click
@@ -644,44 +741,6 @@ export function DeckColumn({
                 {index + 1}
               </Button>
             ))}
-          </div>
-          {/* Track loop (M21): IN arms a start, OUT closes the region
-              on the beat where the grid is confident, EXIT releases. */}
-          <div className="deck__track-row">
-            <Button lit={track.pendingLoopIn !== null} onClick={onLoopIn}>
-              {t('deck.track.loopIn')}
-            </Button>
-            <Button disabled={track.pendingLoopIn === null} onClick={onLoopOut}>
-              {t('deck.track.loopOut')}
-            </Button>
-            <Button
-              variant={track.loop ? 'primary' : 'default'}
-              disabled={!track.loop}
-              onClick={onLoopExit}
-            >
-              {t('deck.track.loopExit')}
-            </Button>
-            {track.loop && loopBeatLabel(track.loop, track.grid) !== null && (
-              <span className="deck__loop-length">
-                {t('deck.track.loopBeats', {
-                  beats: loopBeatLabel(track.loop, track.grid),
-                })}
-              </span>
-            )}
-          </div>
-          {/* Beat loops (M23, ADR-0016): a one-press 4-beat loop
-              (grid-required, so inert without one), then halve/double
-              the active region. */}
-          <div className="deck__track-row">
-            <Button disabled={!track.grid} onClick={() => onBeatLoop(4)}>
-              {t('deck.track.beatLoop')}
-            </Button>
-            <Button disabled={!track.loop} onClick={onHalveLoop}>
-              {t('deck.track.loopHalve')}
-            </Button>
-            <Button disabled={!track.loop} onClick={onDoubleLoop}>
-              {t('deck.track.loopDouble')}
-            </Button>
           </div>
         </Panel>
       ) : (
@@ -830,78 +889,140 @@ export function DeckColumn({
       </Panel>
       )}
 
-      <div className="deck__fx" role="group" aria-label={t('deck.fx.title')}>
-        <div className="deck__fx-select">
-          <Select
-            label={t('deck.fx.effect')}
-            value={fx.kind ?? ''}
-            options={[
-              { value: '', label: t('deck.fx.off') },
-              ...FX_KINDS.map((kind) => ({
-                value: kind,
-                label: t(`deck.fx.names.${kind}`),
-              })),
-            ]}
-            onChange={(value) =>
-              onSetFx(FX_KINDS.find((kind) => kind === value) ?? null)
-            }
+      <div
+        className="ui-panel deck__fx"
+        role="group"
+        aria-labelledby={`${sectionId}-fx`}
+      >
+        <span id={`${sectionId}-fx`} className="ui-panel__label">
+          {t('deck.fx.title')}
+        </span>
+        <div className="deck__fx-row">
+          <div className="deck__fx-select">
+            <Select
+              label={t('deck.fx.effect')}
+              value={fx.kind ?? ''}
+              options={[
+                { value: '', label: t('deck.fx.off') },
+                ...FX_KINDS.map((kind) => ({
+                  value: kind,
+                  label: t(`deck.fx.names.${kind}`),
+                })),
+              ]}
+              onChange={(value) =>
+                onSetFx(FX_KINDS.find((kind) => kind === value) ?? null)
+              }
+            />
+          </div>
+          <Knob
+            label={t('deck.fx.amount')}
+            accent={deckId}
+            value={fx.amount}
+            disabled={!fx.kind}
+            resetValue={fx.kind ? fxRestPosition(fx.kind) : 0}
+            onChange={onSetFxAmount}
           />
         </div>
-        <Knob
-          label={t('deck.fx.amount')}
-          accent={deckId}
-          value={fx.amount}
-          disabled={!fx.kind}
-          resetValue={fx.kind ? fxRestPosition(fx.kind) : 0}
-          onChange={onSetFxAmount}
-        />
       </div>
 
-      {/* Freeze pads (M13): lit = slot filled, accented = looping on
-          air, ellipsis = a generation in flight (M18). Shift+click
-          clears a slot — the same chord as SHIFT+pad on the hardware
-          bank. */}
-      <div className="deck__loop" role="group" aria-label={t('deck.loop.title')}>
-        <div className="deck__loop-slots">
-          {Array.from({ length: LOOP_SLOT_COUNT }, (_, slot) => {
-            const slotState = loop.slots[slot]
-            // Sounding = the active (replacing) freeze OR a stacked layer (ADR-0022).
-            const playing = loop.active === slot || loop.layering.includes(slot)
-            return (
-              <Button
-                key={slot}
-                lit={slotState.state === 'filled'}
-                variant={playing ? 'primary' : 'default'}
-                aria-label={
-                  slotState.state === 'pending'
-                    ? t('deck.loop.slotPending', { n: slot + 1 })
-                    : t('deck.loop.slot', { n: slot + 1 })
-                }
-                aria-pressed={playing}
-                disabled={!operable || slotState.state === 'pending'}
-                title={
-                  slotState.state === 'empty'
-                    ? undefined
-                    : (slotState.label ?? undefined)
-                }
-                onClick={(event) =>
-                  event.shiftKey ? onClearLoopPad(slot) : onLoopPad(slot)
-                }
-              >
-                {slotState.state === 'pending' ? '…' : slot + 1}
+      {/* Looping lives under the FX (show prep): the track loop on a
+          playback deck, then the freeze pads both modes share. */}
+      <div
+        className="ui-panel deck__loops"
+        role="group"
+        aria-labelledby={`${sectionId}-loops`}
+      >
+        <span id={`${sectionId}-loops`} className="ui-panel__label">
+          {t('deck.loop.section')}
+        </span>
+        {mode === 'playback' && track && (
+          <>
+            {/* Track loop (M21): IN arms a start, OUT closes the region
+                on the beat where the grid is confident, EXIT releases. */}
+            <div className="deck__track-row">
+              <Button lit={track.pendingLoopIn !== null} onClick={onLoopIn}>
+                {t('deck.track.loopIn')}
               </Button>
-            )
-          })}
+              <Button disabled={track.pendingLoopIn === null} onClick={onLoopOut}>
+                {t('deck.track.loopOut')}
+              </Button>
+              <Button
+                variant={track.loop ? 'primary' : 'default'}
+                disabled={!track.loop}
+                onClick={onLoopExit}
+              >
+                {t('deck.track.loopExit')}
+              </Button>
+              {track.loop && loopBeatLabel(track.loop, track.grid) !== null && (
+                <span className="deck__loop-length">
+                  {t('deck.track.loopBeats', {
+                    beats: loopBeatLabel(track.loop, track.grid),
+                  })}
+                </span>
+              )}
+            </div>
+            {/* Beat loops (M23, ADR-0016): a one-press 4-beat loop
+                (grid-required, so inert without one), then halve/double
+                the active region. */}
+            <div className="deck__track-row">
+              <Button disabled={!track.grid} onClick={() => onBeatLoop(4)}>
+                {t('deck.track.beatLoop')}
+              </Button>
+              <Button disabled={!track.loop} onClick={onHalveLoop}>
+                {t('deck.track.loopHalve')}
+              </Button>
+              <Button disabled={!track.loop} onClick={onDoubleLoop}>
+                {t('deck.track.loopDouble')}
+              </Button>
+            </div>
+          </>
+        )}
+        {/* Freeze pads (M13): lit = slot filled, accented = looping on
+            air, ellipsis = a generation in flight (M18). Shift+click
+            clears a slot — the same chord as SHIFT+pad on the hardware
+            bank. */}
+        <div className="deck__loop" role="group" aria-label={t('deck.loop.title')}>
+          <div className="deck__loop-slots">
+            {Array.from({ length: LOOP_SLOT_COUNT }, (_, slot) => {
+              const slotState = loop.slots[slot]
+              // Sounding = the active (replacing) freeze OR a stacked layer (ADR-0022).
+              const slotPlaying = loop.active === slot || loop.layering.includes(slot)
+              return (
+                <Button
+                  key={slot}
+                  lit={slotState.state === 'filled'}
+                  variant={slotPlaying ? 'primary' : 'default'}
+                  aria-label={
+                    slotState.state === 'pending'
+                      ? t('deck.loop.slotPending', { n: slot + 1 })
+                      : t('deck.loop.slot', { n: slot + 1 })
+                  }
+                  aria-pressed={slotPlaying}
+                  disabled={!operable || slotState.state === 'pending'}
+                  title={
+                    slotState.state === 'empty'
+                      ? undefined
+                      : (slotState.label ?? undefined)
+                  }
+                  onClick={(event) =>
+                    event.shiftKey ? onClearLoopPad(slot) : onLoopPad(slot)
+                  }
+                >
+                  {slotState.state === 'pending' ? '…' : slot + 1}
+                </Button>
+              )
+            })}
+          </div>
+          <Select
+            label={t('deck.loop.length')}
+            value={String(loop.seconds)}
+            options={LOOP_LENGTH_OPTIONS.map((seconds) => ({
+              value: String(seconds),
+              label: t('deck.loop.lengthOption', { seconds }),
+            }))}
+            onChange={(value) => onSetLoopSeconds(Number(value))}
+          />
         </div>
-        <Select
-          label={t('deck.loop.length')}
-          value={String(loop.seconds)}
-          options={LOOP_LENGTH_OPTIONS.map((seconds) => ({
-            value: String(seconds),
-            label: t('deck.loop.lengthOption', { seconds }),
-          }))}
-          onChange={(value) => onSetLoopSeconds(Number(value))}
-        />
       </div>
 
       {/* Generated pads (M18, ADR-0012): a prompt fills the first empty
@@ -911,10 +1032,13 @@ export function DeckColumn({
           third Magenta engine (its first use pays the model load
           inside the pending state). */}
       <div
-        className="deck__generate"
+        className="ui-panel deck__generate"
         role="group"
-        aria-label={t('deck.generate.title')}
+        aria-labelledby={`${sectionId}-generate`}
       >
+        <span id={`${sectionId}-generate`} className="ui-panel__label">
+          {t('deck.generate.title')}
+        </span>
         <div className="deck__generate-options">
           <Select
             label={t('deck.generate.engine')}
@@ -962,86 +1086,10 @@ export function DeckColumn({
             {t('deck.generate.action')}
           </Button>
         </div>
-      </div>
-      {generateError && (
-        <p className="deck__error" role="alert">
-          {t('deck.generate.failed', { message: generateError })}
-        </p>
-      )}
-
-      <div className="deck__transport">
-        {(mode === 'playback' ? (track?.playing ?? false) : state.playing) ? (
-          <TransportButton
-            kind="stop"
-            accent={deckId}
-            lit
-            label={t('deck.stop')}
-            disabled={mode === 'playback' ? track === null : !operable}
-            onClick={onStop}
-          />
-        ) : (
-          <TransportButton
-            kind="play"
-            accent={deckId}
-            label={t('deck.play')}
-            disabled={mode === 'playback' ? track === null : !operable}
-            onClick={onPlay}
-          />
-        )}
-        {mode === 'playback' && track ? (
-          /* A track's health is its clock, not the stream's plumbing. */
-          <div className="deck__health">
-            <Stat
-              label={t('deck.health.position')}
-              value={t('deck.track.time', {
-                position: formatTrackTime(track.position),
-                duration: formatTrackTime(track.duration),
-              })}
-            />
-            <Stat
-              label={t('deck.health.bpm')}
-              value={
-                track.bpm === null
-                  ? t('deck.health.noData')
-                  : (track.bpm * track.rate).toFixed(1)
-              }
-            />
-          </div>
-        ) : (
-        <div className="deck__health">
-          <Meter
-            label={t('deck.health.buffer')}
-            valueLabel={t('deck.health.bufferSeconds', {
-              seconds: state.bufferedSeconds.toFixed(1),
-            })}
-            fraction={bufferFraction}
-            tone={bufferTone}
-          />
-          <Stat
-            label={t('deck.health.bpm')}
-            value={bpm === null ? t('deck.health.noData') : bpm.toFixed(1)}
-          />
-          <Stat
-            label={t('deck.health.underruns')}
-            value={String(state.underruns)}
-            tone={state.underruns > 0 ? 'danger' : 'default'}
-          />
-          <Stat
-            label={t('deck.health.generationSpeed')}
-            value={
-              state.generationSpeed === null
-                ? t('deck.health.noData')
-                : t('deck.health.generationSpeedValue', {
-                    rtf: state.generationSpeed.toFixed(2),
-                  })
-            }
-            tone={
-              state.generationSpeed !== null && state.generationSpeed < 1
-                ? 'danger'
-                : 'default'
-            }
-          />
-        </div>
+        {generateError && (
+          <p className="deck__error" role="alert">
+            {t('deck.generate.failed', { message: generateError })}
+          </p>
         )}
       </div>
 

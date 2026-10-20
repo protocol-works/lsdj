@@ -17,6 +17,7 @@ import {
   quantisedLoop,
   resizeLoop,
   snapToGrid,
+  syncRate,
   tempoSliderToRate,
   trackPeaks,
   TRACK_RATE_RANGE,
@@ -71,6 +72,29 @@ describe('clampRate', () => {
     expect(clampRate(1.5)).toBe(1 + TRACK_RATE_RANGE)
     expect(clampRate(0.5)).toBe(1 - TRACK_RATE_RANGE)
     expect(clampRate(Number.NaN)).toBe(1)
+  })
+
+  it('holds whichever tempo range the performer chose', () => {
+    expect(clampRate(1.3, 0.16)).toBe(1.16)
+    expect(clampRate(1.3, 0.5)).toBe(1.3)
+  })
+})
+
+describe('syncRate', () => {
+  it('matches like-for-like readings directly', () => {
+    expect(syncRate(120, 126)).toBeCloseTo(1.05)
+  })
+
+  it('folds a half- or double-time reading onto the other clock', () => {
+    // A 70 BPM reading of a 140 BPM track syncs at unity, not ×2.
+    expect(syncRate(70, 140)).toBeCloseTo(1)
+    expect(syncRate(140, 70)).toBeCloseTo(1)
+    expect(syncRate(66, 128)).toBeCloseTo(128 / 132)
+  })
+
+  it('picks the metrical level nearest unity when neither fits', () => {
+    // 100 against 150: ×0.75 lands at half of 150, closer than ×1.5.
+    expect(syncRate(100, 150)).toBeCloseTo(0.75)
   })
 })
 
@@ -348,6 +372,11 @@ describe('tempoSliderToRate', () => {
     expect(tempoSliderToRate(0.5)).toBeCloseTo(1)
     expect(tempoSliderToRate(0)).toBeCloseTo(1 - TRACK_RATE_RANGE)
     expect(tempoSliderToRate(1)).toBeCloseTo(1 + TRACK_RATE_RANGE)
+  })
+
+  it('spans the chosen tempo range', () => {
+    expect(tempoSliderToRate(0, 0.16)).toBeCloseTo(0.84)
+    expect(tempoSliderToRate(1, 0.16)).toBeCloseTo(1.16)
   })
 })
 

@@ -19,7 +19,8 @@ import type {
   TrackSource,
 } from '../audio/types'
 import type { DeckSnap, InterfaceState } from '../audio/nativeEngine'
-import { useDeck } from './useDeck'
+import { useDeck, type SyncResult } from './useDeck'
+import { STYLE_SAMPLE_SECONDS } from '../audio/styleSample'
 
 /** The captured native transport: the latest `sidecar://status` callback, the
  * latest PCM `Channel` instance, and the `core.invoke` spy recording every
@@ -1340,14 +1341,12 @@ describe('useDeck playback mode (M19)', () => {
     expect(channel.captureLoop).not.toHaveBeenCalled()
   })
 
-  it('refuses a style sample for the same reason', async () => {
+  it('samples the track for style — the engine slices the buffer at the playhead', async () => {
     const { result, channel } = await loadedDeck()
-    let sample: Float32Array | null = new Float32Array(2)
     await act(async () => {
-      sample = await result.current.captureStyleSample()
+      await result.current.captureStyleSample()
     })
-    expect(sample).toBeNull()
-    expect(channel.captureSample).not.toHaveBeenCalled()
+    expect(channel.captureSample).toHaveBeenCalledWith(STYLE_SAMPLE_SECONDS)
   })
 
   it('drops a straggler PCM chunk while parked — the live meters never see it', async () => {
@@ -1624,11 +1623,11 @@ describe('useDeck beat clocks (M20)', () => {
     })
     const bpm = result.current.track!.bpm!
 
-    let synced = ''
+    let synced: SyncResult = { status: 'no_tempo' }
     act(() => {
       synced = result.current.syncTrack(bpm * 1.05)
     })
-    expect(synced).toBe('synced')
+    expect(synced).toEqual({ status: 'synced' })
     // The rate crosses to the shell, which also recomputes the synced echo's
     // clock from the load-time analysis (ADR-0030).
     expect(channel.setTrackRate).toHaveBeenCalledWith(expect.closeTo(1.05, 5))
@@ -1637,11 +1636,44 @@ describe('useDeck beat clocks (M20)', () => {
     act(() => {
       synced = result.current.syncTrack(bpm * 1.2)
     })
-    expect(synced).toBe('out_of_range')
+    // The refusal says how far out it landed.
+    expect(synced).toEqual({
+      status: 'out_of_range',
+      requiredPercent: expect.closeTo(20, 5),
+    })
+    expect(result.current.track!.rate).toBeCloseTo(1.05, 5)
     act(() => {
       synced = result.current.syncTrack(null)
     })
-    expect(synced).toBe('no_tempo')
+    expect(synced).toEqual({ status: 'no_tempo' })
+
+    // A half-time reading of the other clock syncs at unity, not ×0.5.
+    act(() => {
+      synced = result.current.syncTrack(bpm / 2)
+    })
+    expect(synced).toEqual({ status: 'synced' })
+    expect(result.current.track!.rate).toBeCloseTo(1, 5)
+  })
+
+  it('SYNC and the tempo knob honour a wider tempo range', async () => {
+    const { engine, channel } = makeFakeEngine()
+    vi.mocked(channel.loadTrack).mockResolvedValue(
+      loadedTrackDto({ duration: 24, bpm: 120, grid: null }),
+    )
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AudioEngineProvider engine={engine}>{children}</AudioEngineProvider>
+    )
+    const { result } = renderHook(() => useDeck('a', 0.16), { wrapper })
+    act(() => socket(0).serverOpen())
+    await act(async () => {
+      await result.current.loadTrack(TEST_SOURCE, 'Wide')
+    })
+    act(() => {
+      expect(result.current.syncTrack(120 * 1.15)).toEqual({ status: 'synced' })
+    })
+    expect(result.current.track!.rate).toBeCloseTo(1.15, 5)
+    act(() => result.current.setTrackRate(1.3))
+    expect(result.current.track!.rate).toBeCloseTo(1.16, 5)
   })
 
   // ── Hot cues and track loops (M21, ADR-0015) ─────────────────────

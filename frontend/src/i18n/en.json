@@ -39,7 +39,7 @@
     },
     "tabs": {
       "crates": "Presets",
-      "generate": "Generate",
+      "generate": "Songs",
       "samples": "Samples",
       "folder": "Folder"
     },
@@ -58,10 +58,94 @@
     "loadShort": "→ {{deck}}",
     "loadTo": "Load {{name}} to deck {{deck}}",
     "highlight": "Select {{name}}",
-    "remove": "Remove {{name}}",
     "preview": "Preview {{name}} in headphones",
     "previewStop": "Stop preview",
     "undecodable": "{{title}} could not be decoded",
+    "onDeck": "On {{deck}}",
+    "rating": {
+      "label": "Rating for {{name}}",
+      "star_one": "{{count}} star",
+      "star_other": "{{count}} stars",
+      "clearHint": "Click the current star to clear",
+      "failed": "Couldn't rate {{title}}: {{message}}"
+    },
+    "rename": {
+      "label": "New title for {{name}}",
+      "failed": "Couldn't rename {{title}}: {{message}}"
+    },
+    "menu": {
+      "label": "More actions for {{name}}",
+      "rename": "Rename",
+      "tags": "Tags…",
+      "crop": "Crop…",
+      "delete": "Delete from library",
+      "addToPlaylist": "Add to playlist…",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeFromPlaylist": "Remove from playlist",
+      "renamePlaylist": "Rename playlist",
+      "deletePlaylist": "Delete playlist",
+      "useAsSource": "Use as source"
+    },
+    "crop": {
+      "label": "Crop {{name}}",
+      "waveform": "Waveform of {{name}} — click to move the nearer handle",
+      "startHandle": "Crop start",
+      "endHandle": "Crop end",
+      "start": "Start (s)",
+      "end": "End (s)",
+      "length": "{{seconds}} s selected",
+      "loading": "Reading the waveform…",
+      "preview": "Preview",
+      "stop": "Stop",
+      "autoTrim": "Auto-trim silence",
+      "allSilent": "The whole clip is near-silent; nothing to trim to.",
+      "save": "Save as new clip",
+      "replace": "Replace original",
+      "replaceHint": "Overwrite this clip, keeping its rating, tags and playlists; the original goes to the Trash",
+      "cancel": "Cancel",
+      "failed": "Couldn't crop {{title}}: {{message}}"
+    },
+    "tags": {
+      "label": "Tags for {{name}}",
+      "add": "Add a tag",
+      "placeholder": "Add a tag…",
+      "empty": "No tags yet — add one below.",
+      "filterBy": "Filter by #{{tag}}",
+      "filterLabel": "Filter by tag",
+      "clearFilter": "Clear tags",
+      "failed": "Couldn't tag {{title}}: {{message}}"
+    },
+    "sort": {
+      "label": "Sort",
+      "newest": "Newest",
+      "rating": "Top rated",
+      "title": "Title",
+      "bpm": "BPM",
+      "key": "Key",
+      "playlist": "Playlist order"
+    },
+    "analysis": {
+      "bpm": "{{bpm}} BPM"
+    },
+    "playlists": {
+      "sources": "Sources",
+      "source": "Source",
+      "all": "All songs",
+      "count_one": "{{count}} song",
+      "count_other": "{{count}} songs",
+      "new": "New playlist",
+      "nameLabel": "Playlist name",
+      "menuLabel": "Playlist actions",
+      "empty": "Drag songs here, or use ⋯ → Add to playlist.",
+      "addLabel": "Playlists for {{name}}",
+      "newPlaceholder": "New playlist…",
+      "addNew": "New playlist",
+      "none": "No playlists yet — name one below.",
+      "removeFrom": "Remove {{name}} from {{playlist}}",
+      "failed": "Couldn't save playlist {{name}}: {{message}}",
+      "reorderHint": "Drag to reorder, or use ⋯ → Move up / Move down"
+    },
     "generate": {
       "title": "Title",
       "titlePlaceholder": "Random if blank",
@@ -112,7 +196,6 @@
         "seedInvalid": "Enter a whole-number seed from 0 to 2147483647."
       },
       "reuseSettings": "Reuse settings",
-      "reuseSettingsFor": "Reuse generation settings from {{name}}",
       "settingsApplied": "Loaded settings from {{title}}.",
       "recipeUnavailableLoras": "Recipe loaded without unavailable adapters: {{names}}.",
       "recipeUnsupported": "This song uses a newer recipe version that this app cannot load.",
@@ -125,7 +208,32 @@
       "saveFailed": "Couldn't save {{title}} to the songs folder: {{message}}",
       "openFolderFailed": "Couldn't open the songs folder: {{message}}",
       "deleteFailed": "Couldn't delete {{title}}: {{message}}",
-      "empty": "No tracks yet — compose one from a prompt."
+      "empty": "No tracks yet — compose one from a prompt.",
+      "source": {
+        "label": "Source: {{title}}",
+        "modes": {
+          "continue": "Continue",
+          "replace": "Replace",
+          "remix": "Remix"
+        },
+        "from": "From (s)",
+        "to": "To (s)",
+        "toEnd": "End of song",
+        "noise": "Change",
+        "replaceFrom": "Replace from (s)",
+        "replaceTo": "Replace to (s)",
+        "clear": "Clear source",
+        "hints": {
+          "continue": "Keeps the window as is and extends it to the Length above.",
+          "replace": "Regenerates only these seconds of the window, counted from its start. The rest stays.",
+          "remix": "Redraws the whole window with the prompt. Lower change keeps more of the source."
+        },
+        "errors": {
+          "windowInvalid": "The source window needs From before To, in seconds.",
+          "replaceInvalid": "Replace needs From before To, both within the {{seconds}} s window.",
+          "continueTooShort": "Continue needs a Length longer than the {{seconds}} s window."
+        }
+      }
     },
     "samples": {
       "prompt": "Loop prompt",
@@ -272,6 +380,7 @@
       "slot": "Loop slot {{n}}",
       "slotPending": "Loop slot {{n}} — generating",
       "length": "Loop length",
+      "section": "Loops",
       "lengthOption": "{{seconds}} s"
     },
     "generate": {
@@ -312,7 +421,7 @@
       "backToLive": "Back to live",
       "tempo": "Tempo",
       "sync": "Sync",
-      "syncOutOfRange": "Sync refused — tempo out of range",
+      "syncOutOfRange": "Sync refused — needs {{required}} %, tempo range is ±{{range}} %",
       "syncNoTempo": "Sync refused — no tempo to sync to",
       "cues": "Hot cues",
       "cue": "Hot cue {{n}}",
@@ -356,6 +465,8 @@
     "appearance": "Appearance",
     "performanceVisuals": "Performance visuals",
     "audio": "Audio",
+    "tempoRange": "Tempo range",
+    "tempoRangeOption": "±{{percent}} %",
     "models": "Deck realtime models",
     "modelDeck": "Deck {{id}}",
     "modelLibrary": "Model library",

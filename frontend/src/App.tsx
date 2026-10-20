@@ -61,7 +61,12 @@ import { LoraProvider } from './models/LoraProvider'
 import { ModelManager } from './models/ModelManager'
 import type { StylePreset } from './presets'
 import { combinedRamWarning } from './ramWarning'
-import { phaseOffsetBeats } from './audio/track'
+import {
+  phaseOffsetBeats,
+  TEMPO_RANGES,
+  TRACK_RATE_RANGE,
+  type TempoRange,
+} from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 import { PerformanceVisuals } from './visuals/PerformanceVisuals'
 
@@ -231,8 +236,28 @@ function App() {
   const appRef = useRef<HTMLElement>(null)
   // The authoritative interface-state store (ADR-0020): the webview projects it.
   const store = useInterfaceStore()
-  const deckA = useDeck('a')
-  const deckB = useDeck('b')
+  // Varispeed envelope (ADR-0014): ±8 % by default; wider is the
+  // performer's call in Settings, since pitch shifts with rate.
+  const [tempoRange, setTempoRange] = useState<TempoRange>(
+    () => loadAppSettings().tempoRange ?? TRACK_RATE_RANGE,
+  )
+  const handleTempoRange = useCallback((value: string) => {
+    const range = TEMPO_RANGES.find((option) => String(option) === value)
+    if (range === undefined) return
+    setTempoRange(range)
+    updateAppSettings({ tempoRange: range })
+  }, [])
+  // Stable for the memoised Settings <Select> (see ui/Select).
+  const tempoRangeOptions = useMemo(
+    () =>
+      TEMPO_RANGES.map((range) => ({
+        value: String(range),
+        label: t('settings.tempoRangeOption', { percent: Math.round(range * 100) }),
+      })),
+    [t],
+  )
+  const deckA = useDeck('a', tempoRange)
+  const deckB = useDeck('b', tempoRange)
   // Crossfade / cue-mix are projections of the store, rendered optimistically
   // during a drag and reconciled to the store (a MIDI move arrives the same
   // way). The shell hydrates its persisted values into engine + store before
@@ -577,6 +602,7 @@ function App() {
         { a: deckA, b: deckB },
         { onCrossfade: handleCrossfade, onCueMix: handleCueMix },
         shiftedDeck,
+        tempoRange,
       )
     }),
   )
@@ -893,6 +919,12 @@ function App() {
         <section className="modelmgr__section">
           <h3 className="modelmgr__heading">{t('settings.audio')}</h3>
           <div className="settings-audio">
+            <Select
+              label={t('settings.tempoRange')}
+              value={String(tempoRange)}
+              options={tempoRangeOptions}
+              onChange={handleTempoRange}
+            />
             <OutputDevicePicker mode="main" value={mainDevice} />
             <OutputDevicePicker
               mode="cue"
@@ -984,6 +1016,8 @@ function App() {
         <BeatView
           getSourceA={deckA.getZoomSource}
           getSourceB={deckB.getZoomSource}
+          deckA={deckA}
+          deckB={deckB}
         />
       )}
       <div className="app__booth">
@@ -1007,13 +1041,14 @@ function App() {
           generateError={deckA.generateError}
           bpm={deckA.bpm}
           onSampleOtherDeck={handleSampleForA}
-          canSample={deckB.state.playing}
+          canSample={deckB.mode === 'playback' ? deckB.track !== null : deckB.state.playing}
           onSavePreset={handleSavePreset}
           mode={deckA.mode}
           track={deckA.track}
           onLeavePlayback={deckA.leavePlayback}
           onSeekTrack={deckA.seekTrack}
           onSetTrackRate={deckA.setTrackRate}
+          tempoRange={tempoRange}
           onSyncTrack={handleSyncA}
           onHotCuePad={deckA.hotCuePad}
           onClearHotCue={deckA.clearHotCue}
@@ -1031,6 +1066,8 @@ function App() {
               vertical={beatView === 'vertical'}
               getSourceA={deckA.getZoomSource}
               getSourceB={deckB.getZoomSource}
+              deckA={deckA}
+              deckB={deckB}
             />
           )}
           <MixerStrip
@@ -1062,13 +1099,14 @@ function App() {
           generateError={deckB.generateError}
           bpm={deckB.bpm}
           onSampleOtherDeck={handleSampleForB}
-          canSample={deckA.state.playing}
+          canSample={deckA.mode === 'playback' ? deckA.track !== null : deckA.state.playing}
           onSavePreset={handleSavePreset}
           mode={deckB.mode}
           track={deckB.track}
           onLeavePlayback={deckB.leavePlayback}
           onSeekTrack={deckB.seekTrack}
           onSetTrackRate={deckB.setTrackRate}
+          tempoRange={tempoRange}
           onSyncTrack={handleSyncB}
           onHotCuePad={deckB.hotCuePad}
           onClearHotCue={deckB.clearHotCue}

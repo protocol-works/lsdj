@@ -160,6 +160,115 @@ pub fn save_registry<T: Serialize>(dir: &Path, entries: &[T]) -> Result<(), Stri
     std::fs::write(registry_path(dir), json).map_err(|e| format!("cannot write registry: {e}"))
 }
 
+/// A registry row that knows its own identity — the `file` every library keys on —
+/// so [`update_entry`] can find it without knowing the row's schema.
+pub trait RegistryEntry {
+    fn file(&self) -> &str;
+}
+
+/// Read-modify-write ONE registry row: load the registry, find the row whose `file`
+/// is `file` (an error if there is none — a stale row must not be resurrected), let
+/// `apply` change it, save, and return the updated row. The caller holds its
+/// library's lock; rating, renaming, and tagging are all this one write.
+pub fn update_entry<T>(
+    dir: &Path,
+    file: &str,
+    apply: impl FnOnce(&mut T) -> Result<(), String>,
+) -> Result<T, String>
+where
+    T: RegistryEntry + Clone + Serialize + DeserializeOwned,
+{
+    let mut entries: Vec<T> = load_registry(dir);
+    let entry = entries
+        .iter_mut()
+        .find(|e| e.file() == file)
+        .ok_or_else(|| format!("no library entry named {file}"))?;
+    apply(entry)?;
+    let updated = entry.clone();
+    save_registry(dir, &entries)?;
+    Ok(updated)
+}
+
+/// A star rating is 1–5, or `None` to clear it — there is no zero star (clearing
+/// is a click on the current star, curation plan decision 3).
+pub fn validate_rating(rating: Option<u8>) -> Result<(), String> {
+    match rating {
+        Some(stars) if !(1..=5).contains(&stars) => Err(format!("rating must be 1–5, got {stars}")),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse to replace a rating already on a row unless the caller asked to: the
+/// DJ rates in the app while an agent works, and a blind write would erase their
+/// number. Rating an unrated row, or restating the same stars, always passes.
+pub fn check_rating_overwrite(
+    current: Option<u8>,
+    next: Option<u8>,
+    overwrite: bool,
+) -> Result<(), String> {
+    match current {
+        Some(stars) if !overwrite && current != next => Err(format!(
+            "already rated {stars} stars; pass overwrite: true to replace that rating"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The longest display title a rename accepts. Looser than [`MAX_STEM_CHARS`]: a
+/// title is only a label in the registry, never a filename.
+pub const MAX_TITLE_CHARS: usize = 200;
+
+/// Validate a webview-supplied display title (decision 7 of the curation plan):
+/// trimmed, non-empty, no control characters, at most [`MAX_TITLE_CHARS`]. Returns
+/// the trimmed title to store.
+pub fn validate_title(title: &str) -> Result<String, String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return Err("title cannot be empty".to_string());
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("title cannot contain control characters".to_string());
+    }
+    if trimmed.chars().count() > MAX_TITLE_CHARS {
+        return Err(format!("title is longer than {MAX_TITLE_CHARS} characters"));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The longest single tag, and the most tags one row carries.
+pub const MAX_TAG_CHARS: usize = 32;
+pub const MAX_TAGS: usize = 16;
+
+/// Normalise a webview-supplied tag list (decision 8): each tag trimmed, lowercased,
+/// one leading `#` dropped, inner whitespace runs folded to `-` (so a tag is one
+/// search term), empties dropped, deduped keeping the first. A control character, an
+/// over-long tag, or too many tags is refused rather than silently clipped, so the
+/// DJ never loses a word without being told.
+pub fn normalise_tags(tags: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in tags {
+        if raw.chars().any(char::is_control) {
+            return Err("tags cannot contain control characters".to_string());
+        }
+        let lower = raw.trim().to_lowercase();
+        let bare = lower.strip_prefix('#').unwrap_or(&lower);
+        let tag = bare.split_whitespace().collect::<Vec<_>>().join("-");
+        if tag.is_empty() || out.contains(&tag) {
+            continue;
+        }
+        if tag.chars().count() > MAX_TAG_CHARS {
+            return Err(format!(
+                "tag \"{tag}\" is longer than {MAX_TAG_CHARS} characters"
+            ));
+        }
+        out.push(tag);
+    }
+    if out.len() > MAX_TAGS {
+        return Err(format!("a row can carry at most {MAX_TAGS} tags"));
+    }
+    Ok(out)
+}
+
 /// Read one file's bytes scoped to `dir` (`name` is a plain filename, never a path —
 /// see [`scoped_path`]), refusing a non-file or one larger than `max_bytes`. The
 /// read/delete boundary for a webview-supplied name.
@@ -173,6 +282,74 @@ pub fn read_scoped(dir: &Path, name: &str, max_bytes: u64) -> Result<Vec<u8>, St
         return Err("file is too large".to_string());
     }
     std::fs::read(&target).map_err(|e| format!("cannot read file: {e}"))
+}
+
+/// The title a crop of `title` is recorded under.
+pub fn crop_title(title: &str) -> String {
+    format!("{title} (crop)")
+}
+
+/// Cut `start..end` seconds of library file `name` (scoped like [`read_scoped`])
+/// into a fresh WAV beside it, named after `title`, and return the new file's name.
+/// The original is only read. See [`crate::decode::crop_wav`].
+pub fn write_crop(
+    dir: &Path,
+    name: &str,
+    title: &str,
+    start: f64,
+    end: f64,
+) -> Result<String, String> {
+    use std::io::Write;
+    let bytes = read_scoped(dir, name, MAX_AUDIO_BYTES)?;
+    let extension = Path::new(name).extension().and_then(|ext| ext.to_str());
+    let wav = crate::decode::crop_wav(bytes, extension, start, end)?;
+    let (mut file, path) = create_unique_wav(dir, &safe_stem(title, "crop"))?;
+    if let Err(e) = file.write_all(&wav) {
+        // Never leave a truncated crop for the folder scan to list.
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("cannot write crop: {e}"));
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| "written crop has no filename".to_string())
+}
+
+/// Overwrite `name` in place with its `start..end` crop, so its registry row (rating,
+/// tags, playlists) still points at it. A copy of the original goes to the Trash
+/// first (recoverable), then the crop is renamed over it atomically, so the file
+/// is never missing for a re-list to drop. WAV only: the crop is WAV bytes.
+pub fn replace_with_crop(dir: &Path, name: &str, start: f64, end: f64) -> Result<(), String> {
+    let target = scoped_path(dir, name)?;
+    if !target
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
+    {
+        return Err("only a .wav can be replaced; save as a new clip instead".to_string());
+    }
+    let bytes = read_scoped(dir, name, MAX_AUDIO_BYTES)?;
+    let wav = crate::decode::crop_wav(bytes, Some("wav"), start, end)?;
+    // A non-audio name the folder scan skips while it's being written.
+    let tmp = dir.join(format!(".{name}.crop-tmp"));
+    if let Err(e) = std::fs::write(&tmp, &wav) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot write crop: {e}"));
+    }
+    let backup_dir = std::env::temp_dir().join(format!("lsdj-crop-{}", rand::random::<u64>()));
+    let backup = backup_dir.join(name);
+    let trashed = std::fs::create_dir_all(&backup_dir)
+        .and_then(|()| std::fs::copy(&target, &backup))
+        .map_err(|e| e.to_string())
+        .and_then(|_| trash::delete(&backup).map_err(|e| e.to_string()));
+    let _ = std::fs::remove_dir_all(&backup_dir);
+    if let Err(e) = trashed {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("cannot move the original to Trash: {e}"));
+    }
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("cannot swap the crop in: {e}")
+    })
 }
 
 /// Resolve `name` to a regular file that is a DIRECT CHILD of `dir`, rejecting paths,
@@ -275,5 +452,52 @@ mod tests {
         assert_eq!(std::fs::read(&first).unwrap(), b"already here", "earlier take is untouched");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_title_trims_and_refuses_bad_titles() {
+        assert_eq!(validate_title("  Late Dub  ").unwrap(), "Late Dub");
+        assert!(validate_title("").is_err());
+        assert!(validate_title("   ").is_err());
+        assert!(validate_title("a\nb").is_err());
+        assert!(validate_title("a\u{7}b").is_err());
+        assert!(validate_title(&"x".repeat(MAX_TITLE_CHARS)).is_ok());
+        assert!(validate_title(&"x".repeat(MAX_TITLE_CHARS + 1)).is_err());
+        // The cap counts characters, not bytes.
+        assert!(validate_title(&"é".repeat(MAX_TITLE_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn normalise_tags_folds_case_hash_and_whitespace_and_dedupes() {
+        let tags: Vec<String> = [
+            "  Deep   House ",
+            "#Banger",
+            "banger",
+            "",
+            "  ",
+            "#",
+            "drone",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            normalise_tags(&tags).unwrap(),
+            ["deep-house", "banger", "drone"]
+        );
+        // Only ONE leading `#` is dropped.
+        assert_eq!(normalise_tags(&["##x".to_string()]).unwrap(), ["#x"]);
+    }
+
+    #[test]
+    fn normalise_tags_refuses_control_chars_and_caps() {
+        assert!(normalise_tags(&["a\tb".to_string()]).is_err());
+        assert!(normalise_tags(&["x".repeat(MAX_TAG_CHARS)]).is_ok());
+        assert!(normalise_tags(&["x".repeat(MAX_TAG_CHARS + 1)]).is_err());
+        let many: Vec<String> = (0..=MAX_TAGS).map(|n| format!("t{n}")).collect();
+        assert!(normalise_tags(&many).is_err());
+        // Duplicates do not count toward the cap.
+        let dupes: Vec<String> = (0..40).map(|_| "same".to_string()).collect();
+        assert_eq!(normalise_tags(&dupes).unwrap(), ["same"]);
     }
 }

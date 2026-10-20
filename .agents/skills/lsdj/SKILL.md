@@ -45,7 +45,9 @@ Deck 0 = A, deck 1 = B. Each deck is in one of two modes (`get_state`
 
 - **realtime** — a Magenta RT model streams endlessly, steered by the style
   pad (`set_style`, `set_style_cursor`, `set_prompt`), held notes
-  (`set_notes`), drum conditioning (`set_drums`), and `set_model`. Bring it
+  (`set_notes`), drum conditioning (`set_drums`), live generation
+  (`set_generation`: temperature, top_k, prompt and note adherence, as the
+  performance drawer's sliders), and `set_model`. Bring it
   to the master with `set_on_air` (off-air = prep: it keeps generating,
   audible only in the headphone cue). Steering changes are heard once the
   buffered audio drains (a few seconds); note steering resets on
@@ -84,17 +86,51 @@ deck's live stream. Slot contents are in `get_state` `loopLabels`.
 - `generate_sample(prompt, seconds, kind, one_shot?, loras?)` — kinds `sfx` /
   `music` (Stable Audio 3) / `magenta`; lands in the samples library
   (`list_samples`, `load_sample`).
-- `generate_track(deck, prompt, seconds, loras?)` — long-form SA3, **async**:
+- `generate_track(deck, prompt, seconds, loras?, title?, seed?)` — long-form SA3, **async**:
   it returns immediately with a job id and an ETA (generation runs at ~2.3 s
   of audio per second; a LoRA stack adds a ~130 s one-off merge). Keep
   mixing; poll `generation_status` (running/done/failed, newest first) or
   watch `get_state` for the deck to flip to playback when the track
   auto-loads. The human sees the pending row in the Media Explorer, so
-  announce what you're generating and why.
+  announce what you're generating and why. Optional `title` names the take
+  (the library otherwise picks a random two-word name) and `seed` repeats
+  one; a finished job's `file` in `generation_status` is the library row.
+- **Fix a take instead of re-rolling it** (audio-to-audio): pass
+  `source_song` (a `file` from `list_songs`), optionally cut to
+  `source_start` / `source_end` seconds (max 380 s). Then one of:
+  - `continue: true` + `seconds` — keep the window as is and extend it to
+    `seconds`. "Grow the first 90 s": `source_end: 90, seconds: 213`.
+  - `inpaint_range: [start, end]` — regenerate only those output seconds,
+    keeping the rest (re-decoded, so close but not sample-identical);
+    output 0 is `source_start`. Re-prompt for the
+    new part ("falls to throat singing, then slams back").
+  - neither — remix the whole window; `init_noise_level` 0.4–0.8 keeps its
+    character, 1 regenerates fully. Reuse the source's `loras` to keep its
+    sound.
+  `seconds` defaults to the window's length except for `continue`. The
+  source and range land in the new take's recipe.
 - **LoRA styles:** `list_loras` → pass `loras: [{"name": "<base>/<slug>",
   "strength": 1.0}]` (max 4, strength 0–4, ~1 = as trained). Adapters are
   per-base-model: `medium/…` adapters ride `generate_track` only, `small/…`
   ride `generate_sample` sfx/music; the `magenta` engine takes none.
+
+## Curation
+
+`list_songs` / `list_samples` rows carry the DJ's own curation signals:
+`rating` (1–5, absent when unrated) and `tags` (their words for the
+material, e.g. `banger`, `deep-house`). Prefer higher-rated material, and
+when asked for a vibe, honour matching tags before guessing from prompts.
+`rate_song` / `rate_sample(file, rating)` set a rating (omit `rating` to
+clear) — only when the DJ asks. A row the DJ already rated is refused unless
+you pass `overwrite: true`; read the refusal and ask before overriding.
+`rename_song` / `rename_sample(file, title)` change the display title;
+`tag_song` / `tag_sample(file, tags)` replace the WHOLE tag list (read the
+row's `tags` first to add one) — both only when the DJ asks.
+`delete_song(file)` moves a song to the Trash (recoverable) and out of every
+playlist — only when the DJ asks; confirm the list before a bulk cull. `list_playlists` shows their sets;
+`save_playlist(name, files)` creates or replaces one with the whole ordered
+list of song files (e.g. five top-rated tracks, warm-up to peak), and it
+appears in the Media Explorer as you write it.
 
 ## A clean transition (A playing, B incoming)
 

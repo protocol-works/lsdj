@@ -24,12 +24,29 @@ export function positionAt(
   return Math.min(Math.max(raw, 0), duration)
 }
 
-/** Varispeed bounds (ADR-0014): ±8 %, the classic DJ envelope. */
+/** Varispeed bounds (ADR-0014): ±8 %, the classic DJ envelope, is the
+ * default. The wider ranges are the performer's call (Settings): pitch
+ * shifts with rate, so ±16 % is ~2.5 semitones and ±50 % a fifth. The
+ * engine clamps at the widest; the webview enforces the chosen one. */
 export const TRACK_RATE_RANGE = 0.08
+export const TEMPO_RANGES = [0.08, 0.16, 0.5] as const
+export type TempoRange = (typeof TEMPO_RANGES)[number]
 
-export function clampRate(rate: number): number {
+export function clampRate(rate: number, range: number = TRACK_RATE_RANGE): number {
   if (!Number.isFinite(rate)) return 1
-  return Math.min(Math.max(rate, 1 - TRACK_RATE_RANGE), 1 + TRACK_RATE_RANGE)
+  return Math.min(Math.max(rate, 1 - range), 1 + range)
+}
+
+/** The rate that beat-matches `trackBpm` to `targetBpm`, read at whichever
+ * metrical level (half, same, double) lands nearest unity: a 70 BPM
+ * half-time reading syncs to a 140 BPM stream at ×1, not ×2 — the octave
+ * folding the detector itself applies (ADR-0035). */
+export function syncRate(trackBpm: number, targetBpm: number): number {
+  return [0.5, 1, 2]
+    .map((level) => targetBpm / (trackBpm * level))
+    .reduce((best, rate) =>
+      Math.abs(Math.log(rate)) < Math.abs(Math.log(best)) ? rate : best,
+    )
 }
 
 /** The phase nudge's minimum bend strength: a single tick stays this
@@ -263,8 +280,11 @@ export function trackPeaks(
  * Orientation MEASURED on the device (M20 checklist): this firmware
  * sends low values at the slow end — the opposite of the chart
  * assumption, which shipped inverted and was caught on hardware. */
-export function tempoSliderToRate(value: number): number {
-  return clampRate(1 + (value - 0.5) * 2 * TRACK_RATE_RANGE)
+export function tempoSliderToRate(
+  value: number,
+  range: number = TRACK_RATE_RANGE,
+): number {
+  return clampRate(1 + (value - 0.5) * 2 * range, range)
 }
 
 /** Phase offset between two beat clocks, wrapped to [-0.5, 0.5)

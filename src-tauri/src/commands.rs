@@ -36,6 +36,7 @@ use crate::analysis::live::AnalysisFeed;
 use crate::analysis::track::{DeckTrack, TrackAnalysis};
 use crate::library;
 use crate::midi::notes::NoteSteering;
+use crate::playlists::Playlist;
 use crate::samples::{NewSample, SampleEntry, SampleLibrary};
 use crate::sidecar::{PcmTaps, Sidecars};
 use crate::songs::{NewSong, SongEntry, SongLibrary};
@@ -613,8 +614,24 @@ pub async fn read_generated_song(
     library.read(&name).map(tauri::ipc::Response::new)
 }
 
-/// Delete a persisted song: move it to the OS Trash (recoverable) and drop it from the
-/// registry, so the take list and the folder stay in sync without a restart. `async`
+/// Cut `start..end` seconds (`end` omitted = to the end) of a persisted song into
+/// the 44.1 kHz 16-bit stereo WAV Stable Audio 3 takes as init audio, for the
+/// Generate tab's audio-to-audio source. Binary, like [`read_generated_song`].
+#[tauri::command]
+pub async fn song_source_clip(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    start: f64,
+    end: Option<f64>,
+) -> Result<tauri::ipc::Response, String> {
+    library
+        .source_clip(&name, start, end)
+        .map(|clip| tauri::ipc::Response::new(clip.wav))
+}
+
+/// Delete a persisted song: move it to the OS Trash (recoverable), drop it from the
+/// registry and from every playlist, so the take list and the folder stay in sync
+/// without a restart. `async`
 /// keeps the trash + registry I/O off the main thread, like the sibling commands.
 #[tauri::command]
 pub async fn delete_generated_song(
@@ -622,6 +639,83 @@ pub async fn delete_generated_song(
     name: String,
 ) -> Result<(), String> {
     library.remove(&name)
+}
+
+/// Set (1–5) or clear (`None`) a song's star rating and return the updated row. The
+/// rating lives in the registry, so it survives a relaunch and MCP sees it. Out of
+/// range or an unknown `name` is an `Err`; `async` keeps the registry write off the
+/// main thread, like the sibling commands.
+#[tauri::command]
+pub async fn rate_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    rating: Option<u8>,
+) -> Result<SongEntry, String> {
+    library.rate(&name, rating, true)
+}
+
+/// Retitle a song and return the updated row. Only the registry title changes — the
+/// file stays the identity decks, MCP, and the re-list hold. The title is untrusted
+/// and validated in [`SongLibrary::rename`].
+#[tauri::command]
+pub async fn rename_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    title: String,
+) -> Result<SongEntry, String> {
+    library.rename(&name, &title)
+}
+
+/// Replace a song's tags and return the updated row carrying the shell-normalised
+/// list (lowercased, `#` dropped, spaces to `-`), which the webview adopts.
+#[tauri::command]
+pub async fn tag_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    tags: Vec<String>,
+) -> Result<SongEntry, String> {
+    library.tag(&name, tags)
+}
+
+/// Every playlist (`generated_songs/playlists/*.m3u8`), each reconciled against the
+/// songs on disk. `async` keeps the folder reads off the main thread.
+#[tauri::command]
+pub async fn list_playlists(
+    library: tauri::State<'_, SongLibrary>,
+) -> Result<Vec<Playlist>, String> {
+    library.list_playlists()
+}
+
+/// Create or replace a playlist with exactly `files` (create, add, remove, and
+/// reorder all send the whole list) and return what was stored — the name as a safe
+/// stem, files missing from the songs folder dropped, duplicates collapsed.
+#[tauri::command]
+pub async fn save_playlist(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    files: Vec<String>,
+) -> Result<Playlist, String> {
+    library.save_playlist(&name, files)
+}
+
+/// Rename a playlist and return it under its new name; a name already taken is
+/// refused rather than suffixed.
+#[tauri::command]
+pub async fn rename_playlist(
+    library: tauri::State<'_, SongLibrary>,
+    from: String,
+    to: String,
+) -> Result<Playlist, String> {
+    library.rename_playlist(&from, &to)
+}
+
+/// Move a playlist to the OS Trash (recoverable). The songs it listed are untouched.
+#[tauri::command]
+pub async fn delete_playlist(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+) -> Result<(), String> {
+    library.delete_playlist(&name)
 }
 
 /// Open the generated-songs folder in the OS file manager so the user can copy songs
@@ -690,6 +784,128 @@ pub async fn delete_generated_sample(
     name: String,
 ) -> Result<(), String> {
     library.remove(&name)
+}
+
+/// Set (1–5) or clear (`None`) a sample's star rating and return the updated row.
+#[tauri::command]
+pub async fn rate_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    rating: Option<u8>,
+) -> Result<SampleEntry, String> {
+    library.rate(&name, rating, true)
+}
+
+/// Retitle a sample (registry title only, never the file) and return the updated row.
+#[tauri::command]
+pub async fn rename_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    title: String,
+) -> Result<SampleEntry, String> {
+    library.rename(&name, &title)
+}
+
+/// Replace a sample's tags and return the updated row with the normalised list.
+#[tauri::command]
+pub async fn tag_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    tags: Vec<String>,
+) -> Result<SampleEntry, String> {
+    library.tag(&name, tags)
+}
+
+/// Save `start..end` seconds of a song as a NEW library row (the crop panel), or
+/// with `replace` overwrite the original (to the Trash first) keeping its row.
+/// Name and window are validated in [`SongLibrary::crop`].
+#[tauri::command]
+pub async fn crop_generated_song(
+    library: tauri::State<'_, SongLibrary>,
+    name: String,
+    start: f64,
+    end: f64,
+    replace: bool,
+) -> Result<SongEntry, String> {
+    library.crop(&name, start, end, replace)
+}
+
+/// [`crop_generated_song`] for a sample.
+#[tauri::command]
+pub async fn crop_generated_sample(
+    library: tauri::State<'_, SampleLibrary>,
+    name: String,
+    start: f64,
+    end: f64,
+    replace: bool,
+) -> Result<SampleEntry, String> {
+    library.crop(&name, start, end, replace)
+}
+
+/// A library file's waveform for the crop panel (it is on no deck, so
+/// `track_peaks` can't serve it), plus its length in seconds.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipPeaksDto {
+    pub min: Vec<f32>,
+    pub max: Vec<f32>,
+    pub duration: f64,
+}
+
+/// The folder a crop-panel command reads from: `"songs"` or `"samples"`.
+fn crop_library_dir<'a>(
+    songs: &'a SongLibrary,
+    samples: &'a SampleLibrary,
+    library: &str,
+) -> Result<&'a std::path::Path, String> {
+    match library {
+        "songs" => Ok(songs.dir()),
+        "samples" => Ok(samples.dir()),
+        _ => Err(format!("unknown library {library}")),
+    }
+}
+
+/// Read a library file scoped to its folder, with its extension as a decode hint.
+fn read_library_clip(
+    songs: &SongLibrary,
+    samples: &SampleLibrary,
+    library: &str,
+    name: &str,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let dir = crop_library_dir(songs, samples, library)?;
+    let bytes = library::read_scoped(dir, name, library::MAX_AUDIO_BYTES)?;
+    let extension = std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_string);
+    Ok((bytes, extension))
+}
+
+#[tauri::command]
+pub async fn library_clip_peaks(
+    songs: tauri::State<'_, SongLibrary>,
+    samples: tauri::State<'_, SampleLibrary>,
+    library: String,
+    name: String,
+    buckets: usize,
+) -> Result<ClipPeaksDto, String> {
+    let (bytes, extension) = read_library_clip(&songs, &samples, &library, &name)?;
+    let (min, max, duration) = crate::decode::clip_peaks(bytes, extension.as_deref(), buckets)?;
+    Ok(ClipPeaksDto { min, max, duration })
+}
+
+/// The crop exactly as Save would write it, for the panel's selection preview.
+/// Binary, like [`read_generated_song`]; nothing is written.
+#[tauri::command]
+pub async fn library_crop_preview(
+    songs: tauri::State<'_, SongLibrary>,
+    samples: tauri::State<'_, SampleLibrary>,
+    library: String,
+    name: String,
+    start: f64,
+    end: f64,
+) -> Result<tauri::ipc::Response, String> {
+    let (bytes, extension) = read_library_clip(&songs, &samples, &library, &name)?;
+    crate::decode::crop_wav(bytes, extension.as_deref(), start, end).map(tauri::ipc::Response::new)
 }
 
 /// Open the generated-samples folder in the OS file manager (driven from Rust, no
@@ -1068,9 +1284,9 @@ pub fn load_generated_loop(
 }
 
 /// Capture the last `seconds` of played history on a Realtime deck (M15 style
-/// sampling). Round-trips through the render thread and returns the captured
-/// interleaved-stereo samples, or `None` below the floor / off a Realtime deck /
-/// for a bad deck index.
+/// sampling), or the track window around the playhead on a Playback deck.
+/// Round-trips through the render thread and returns the captured
+/// interleaved-stereo samples, or `None` below the floor / for a bad deck index.
 #[tauri::command]
 pub fn capture_sample(state: tauri::State<'_, Host>, deck: usize, seconds: f64) -> Option<Vec<f32>> {
     if !valid_deck(deck) {
