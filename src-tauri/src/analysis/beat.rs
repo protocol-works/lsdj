@@ -259,7 +259,7 @@ impl BeatTracker {
 
     /// Feed interleaved stereo float32 — the deck wire format.
     pub fn push(&mut self, samples: &[f32]) {
-        for pair in samples.chunks_exact(2) {
+        for pair in samples.as_chunks::<2>().0 {
             let mono = (pair[0] as f64 + pair[1] as f64) / 2.0;
             if let Some(spectral) = &mut self.spectral {
                 spectral.push(mono as f32);
