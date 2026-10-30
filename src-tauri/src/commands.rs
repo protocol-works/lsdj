@@ -1898,3 +1898,82 @@ pub fn set_deck_primed(store: tauri::State<'_, InterfaceStore>, deck: usize, pri
         store.set_deck_primed(deck, primed);
     }
 }
+
+// --- Looms and node cue (ADR-0038, the loom theme). The loom documents live in
+// `generated_songs/looms/` behind `SongLibrary` (see `crate::looms`): stored
+// opaquely, served back, never resolved to song paths here. No library event
+// fires for looms — the webview is the only writer and refreshes its own list.
+
+/// Every loom (`generated_songs/looms/*.json`) as a summary row, newest first.
+#[tauri::command]
+pub async fn list_looms(
+    library: tauri::State<'_, SongLibrary>,
+) -> Result<Vec<crate::looms::LoomSummary>, String> {
+    library.list_looms()
+}
+
+/// One loom's JSON document; the webview validates its shape.
+#[tauri::command]
+pub async fn read_loom(
+    library: tauri::State<'_, SongLibrary>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    library.read_loom(&id)
+}
+
+/// Create or replace a loom (the webview's debounced autosave) and return its
+/// summary. The id, the name and the 2 MiB cap are checked in [`crate::looms::save`].
+#[tauri::command]
+pub async fn save_loom(
+    library: tauri::State<'_, SongLibrary>,
+    id: String,
+    name: String,
+    loom: serde_json::Value,
+) -> Result<crate::looms::LoomSummary, String> {
+    library.save_loom(&id, &name, loom)
+}
+
+/// Move a loom to the OS Trash (recoverable). The songs it names are untouched.
+#[tauri::command]
+pub async fn delete_loom(
+    library: tauri::State<'_, SongLibrary>,
+    id: String,
+) -> Result<(), String> {
+    library.delete_loom(&id)
+}
+
+/// Cue `start_seconds..end_seconds` (`None` = to the end) of a library song in the
+/// headphones, looping like any preview (ADR-0027) — the loom's node cue. The shell
+/// reads, decodes and slices off the main thread, so no PCM crosses IPC; the window
+/// is clamped into the track and a start past its end is refused. `audition_stop`
+/// stops it.
+#[tauri::command]
+pub async fn audition_song_clip(
+    state: tauri::State<'_, Host>,
+    songs: tauri::State<'_, SongLibrary>,
+    name: String,
+    start_seconds: f64,
+    end_seconds: Option<f64>,
+) -> Result<(), String> {
+    let bytes = songs.read(&name)?;
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    let samples = tauri::async_runtime::spawn_blocking(move || {
+        let track = crate::decode::decode_to_48k(bytes, extension.as_deref())?;
+        let (first, last) =
+            crate::looms::audition_frames(start_seconds, end_seconds, track.frames())?;
+        Ok::<Vec<f32>, String>(
+            track.left[first..last]
+                .iter()
+                .zip(&track.right[first..last])
+                .flat_map(|(left, right)| [*left, *right])
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|e| format!("cue decode failed: {e}"))??;
+    state.audition_play(samples);
+    Ok(())
+}

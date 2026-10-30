@@ -44,6 +44,7 @@ mod commands;
 mod decode;
 mod generation;
 mod library;
+mod looms;
 mod loras;
 mod mcp;
 mod midi;
@@ -895,6 +896,11 @@ pub fn run() {
             models::open_model_folder,
             loras::install_lora,
             loras::delete_lora,
+            commands::list_looms,
+            commands::read_loom,
+            commands::save_loom,
+            commands::delete_loom,
+            commands::audition_song_clip,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
