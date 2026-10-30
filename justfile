@@ -104,9 +104,10 @@ tauri-release:
 release:
     ./scripts/create-release.sh
 
-# All tests: backend pytest + frontend vitest + the Rust engine/shell.
+# All tests: backend pytest (and scripts/) + frontend vitest + the Rust engine/shell.
 test:
     cd backend && uv run pytest
+    cd backend && uv run pytest ../scripts
     cd frontend && npm run test
     cd src-tauri && cargo test --workspace
 

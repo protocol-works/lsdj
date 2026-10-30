@@ -209,18 +209,29 @@ expected behaviour is the shuttle rules in
 
 ## Prepared loom (before a show)
 
-- [ ] Weave a spine of 6–10 nodes including at least one LoRA thread (render
-      ahead does not cover LoRA, so pre-render it), name the loom, quit.
-- [ ] Relaunch: the loom reopens (or Loom menu → Open…) with every node ready,
-      LoRA nodes included; →A on the first node and PLAY starts the set.
+- [ ] The night before: weave a spine of 6–10 nodes including at least one
+      LoRA thread (≈ 2 min per adapter, and render ahead skips LoRA, so it is
+      pre-rendered here), name the loom.
+- [ ] Every node is ready: no ghost, no failed or missing node on the canvas
+      (retry or discard any that is), and each is in the explorer's Songs.
+- [ ] Quit (⌘Q) and relaunch: the loom reopens (or Loom menu → Open…) with
+      every node ready, LoRA nodes included; both decks are stopped.
+- [ ] Dry run, 5 minutes: REC on, →A on the first node, PLAY, ride at least
+      one tied seam and one hold, REC off. Then, from the repo root:
+      `uv run --project backend python scripts/silence_gaps.py "<recordings
+      folder>/lsdj-<time>.wav"; echo $?`. It prints one `start  end  length`
+      line per gap and `N gaps, longest X ms`, and exits 1 when it found any.
+      A span at `0:00.000` (REC before PLAY) or at the very end is
+      intentional; any other span is a defect to fix before the show.
 
 ## Recorded set and the silence metric
 
 - [ ] REC on before the first PLAY, off after the last note: one 48 kHz WAV in
       the recordings folder.
-- [ ] Run `scripts/silence_gaps.py <wav>` (defaults `--threshold -60
-      --min-ms 150`). Every span it prints is either an intentional silence
-      (a planned break, the end) or a defect. Target: zero defects.
+- [ ] Run `uv run --project backend python scripts/silence_gaps.py <wav>`
+      (defaults `--threshold -60 --min-ms 150`). Every span it prints is
+      either an intentional silence (a planned break, the end) or a defect.
+      Target: zero defects.
 - [ ] **Rehearsal, 30 minutes:** zero defects on the metric, zero crashes,
       zero webview reloads, no "the deck ended" moment; the rehearsal log
       below filled in.
@@ -238,8 +249,34 @@ Measured on the show machine; write the number in the last column.
 | - | ---- | --- | ------ | -------- |
 | P1 | 16-bar plain weave at 124 BPM, both decks playing | press to ready, stopwatch; note the ETA shown at the press | ≤ 15 s; ETA within ±30 % | |
 | P2 | Tied child ready ≥ 2 s before the seam | listen at the seam | on the beat, within one 250 ms poll | |
-| P3 | Peak memory during a render, both decks playing | Activity Monitor, the app plus its sidecars | fits with headroom | |
-| P4 | Webview frame rate with 40 nodes on screen | React profiler or an FPS meter | ≥ 50 fps | |
+| P3 | Peak memory during a render, both decks playing | the RSS loop below, plus Activity Monitor | fits with headroom | |
+| P4 | Webview frame rate with 40 nodes on screen | the frame counter below | ≥ 50 fps | |
+
+- **P1:** one take, 16 bars, 124 BPM, no LoRA, Advanced closed, both decks
+  playing. Write down the ETA on the ghost at the press, start a stopwatch on
+  Weave, stop it when the ghost becomes a waveform. ETA error is
+  `(ETA − measured) / measured`.
+- **P2:** tie a ready child (the countdown tag shows no amber) with at least
+  2 s to the seam, REC on. Listen at the seam; in the recording the
+  hand-over sits on the bar, not a beat late. Note each seam in the rehearsal
+  log.
+- **P3:** in a terminal while the render runs, write down the peak it prints:
+
+  ```sh
+  sysctl vm.swapusage
+  while sleep 1; do ps -axo rss=,command= | grep -E 'LSDJ|lsdj|sa3_mlx' | grep -v grep | awk '{kb += $1} END {printf "%.0f MB\n", kb / 1024}'; done
+  ```
+
+  Headroom: Activity Monitor → Memory shows the pressure green, and
+  `sysctl vm.swapusage` after the render shows no more swap used than
+  before.
+- **P4:** a loom with 40 or more nodes on screen, both decks playing, in
+  `just tauri-dev`: right-click → Inspect Element → Console, paste and wait
+  ten seconds for the mean frame rate:
+
+  ```js
+  let n = 0; const t0 = performance.now(); requestAnimationFrame(function f(t) { n++; t - t0 < 10000 ? requestAnimationFrame(f) : console.log((n * 1000 / (t - t0)).toFixed(1), 'fps') })
+  ```
 
 ## Rehearsal log
 

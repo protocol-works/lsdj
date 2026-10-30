@@ -11,8 +11,8 @@ import type { ChannelControls } from '../mixer/MixerStrip'
 import { fixtureNode, seedLoom } from './fixture'
 import { LoomBooth, type LoomBoothProps } from './LoomBooth'
 import { auditionSongClip, listLooms, readLoom, saveLoom } from './loomLibrary'
-import { kids, nodeById, type Loom, type LoomState } from './loomState'
-import { CUT_LEAD_SECONDS } from './schedule'
+import { initialLoomState, kids, nodeById, type Loom, type LoomState } from './loomState'
+import { CUT_LEAD_SECONDS, planDeck } from './schedule'
 import { barSeconds, holdRegion, loopRegion, nodeEndSeconds, nodeStartSeconds } from './timing'
 import { useLoom } from './useLoom'
 
@@ -122,6 +122,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
+  vi.unstubAllGlobals()
 })
 
 describe('useLoom boot and autosave', () => {
@@ -169,6 +170,31 @@ describe('useLoom boot and autosave', () => {
     await flush()
     expect(saveLoom).toHaveBeenCalledTimes(2)
     expect(m.result.current.status).toBeNull()
+  })
+
+  it('reopens a loom saved mid-render with both decks stopped and no ghost job, and →A resumes it (R5)', async () => {
+    const saved = JSON.parse(JSON.stringify(seedLoom()))
+    const ghost = (id: string, status: string) => ({
+      ...fixtureNode(id, 'n7', 'still rendering', 16, 124, { file: null, durationSeconds: null }),
+      status,
+    })
+    saved.nodes.push(ghost('g1', 'rendering'), ghost('g2', 'queued'))
+    const m = await mount({ loom: saved })
+    expect(m.state().decks).toEqual(initialLoomState(seedLoom()).decks)
+    expect([m.node('g1').status, m.node('g2').status]).toEqual(['failed', 'failed'])
+    // A ghost left rendering would have asked the shell for n7's tail.
+    expect(invokeMock).not.toHaveBeenCalledWith('song_source_clip', expect.anything())
+    expect(m.decks.a.loadTrack).not.toHaveBeenCalled()
+
+    await m.landOn('a', 'n2')
+    expect(m.decks.a.loadTrack).toHaveBeenCalledWith({ kind: 'song', name: 'n2.wav' }, m.node('n2').prompt)
+    act(() => m.result.current.tie('a', 'n5'))
+    expect(m.decks.a.queueTrack).toHaveBeenCalledWith(
+      { kind: 'song', name: 'n5.wav' },
+      m.node('n5').prompt,
+      nodeStartSeconds(m.node('n5')),
+      nodeEndSeconds(m.node('n2')),
+    )
   })
 })
 
@@ -345,6 +371,55 @@ describe('useLoom shuttle', () => {
     act(() => m.result.current.discard('n6'))
     expect(m.node('n6')).toBeTruthy()
     expect(m.result.current.status).toBe('A node a deck is on or has tied, or one with children, stays')
+  })
+
+  it('keeps holding when a tied render fails, marks the node failed and never queues it (R3)', async () => {
+    const backendDown = vi.fn(async () => ({ ok: false, status: 502, json: async () => ({ detail: 'sa3 worker exited' }) }))
+    vi.stubGlobal('fetch', backendDown)
+    const m = await mount()
+    await m.landOn('a', 'n2')
+    act(() =>
+      m.result.current.weave(null, { prompt: 'acid techno', takes: 1, bars: 16, bpm: 124, loras: [], sa3: {}, seed: 7, tieTo: 'a' }),
+    )
+    const woven = m.state().loom.nodes.at(-1)!
+    expect(m.state().decks.a.queue).toEqual([woven.id])
+    await flush()
+    expect(backendDown).toHaveBeenCalledTimes(1)
+    expect(m.node(woven.id)).toMatchObject({ status: 'failed', error: 'sa3 worker exited' })
+    m.poll('a', { position: 3 * BAR })
+    expect(planDeck(m.state(), 'a')).toEqual({ kind: 'hold', loop: holdRegion(m.node('n2')) })
+    expect(m.state().decks.a.nodeId).toBe('n2')
+    expect(m.decks.a.queueTrack).not.toHaveBeenCalled()
+    expect(m.decks.a.setTrackLoopRegion).toHaveBeenCalledTimes(1)
+    expect(m.decks.a.stop).not.toHaveBeenCalled()
+  })
+
+  it('greys a hand-deleted song as missing, never loads or queues it, and plays the rest (R4)', async () => {
+    const onDisk = seedLoom().nodes.filter((n) => n.file !== 'n5.wav').map((n) => ({ file: n.file }))
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === 'list_generated_songs') return onDisk
+      throw new Error(`no shell: ${cmd}`)
+    })
+    const m = await mount()
+    expect(m.state().loom.nodes.filter((n) => n.status !== 'ready').map((n) => n.id)).toEqual(['n5'])
+    act(() => m.result.current.tie('b', 'n5'))
+    await flush()
+    expect(m.decks.b.loadTrack).not.toHaveBeenCalled()
+    expect(m.result.current.status).toBe(`“${m.node('n5').prompt}” has not rendered yet`)
+
+    await m.landOn('a', 'n2')
+    act(() => m.result.current.tie('a', 'n5'))
+    m.poll('a', { position: 3 * BAR })
+    expect(m.decks.a.queueTrack).not.toHaveBeenCalled()
+    act(() => m.result.current.untie('a', 'n5'))
+    act(() => m.result.current.tie('a', 'n7'))
+    expect(m.decks.a.queueTrack).toHaveBeenCalledTimes(1)
+    expect(m.decks.a.queueTrack).toHaveBeenCalledWith(
+      { kind: 'song', name: 'n7.wav' },
+      m.node('n7').prompt,
+      nodeStartSeconds(m.node('n7')),
+      nodeEndSeconds(m.node('n2')),
+    )
   })
 })
 
