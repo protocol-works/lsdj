@@ -1,3 +1,574 @@
+/* ---- view ---- */
+
+/* The loom canvas (plan §8, the mockup's stage): left to right is musical
+   time in bars, down is alternatives. Geometry comes from layout.ts and the
+   inline `--loom-node-height`; colour from tokens, the deck accents and, per
+   node, `--loom-node-hue` (its key) when known. */
+/* A flex child of the booth's column: it takes the height the mixer leaves. */
+.loom {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.loom__canvas {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  cursor: grab;
+  scrollbar-width: thin;
+}
+
+.loom__canvas:active {
+  cursor: grabbing;
+}
+
+.loom__content {
+  position: relative;
+}
+
+.loom__ruler {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  height: 1.4rem;
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-silkscreen);
+  background: linear-gradient(var(--color-bg), transparent);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.loom__ruler:hover {
+  color: var(--color-text-muted);
+}
+
+.loom__ruler-mark {
+  position: absolute;
+  top: var(--space-2);
+  transform: translateX(-50%);
+}
+
+.loom__ruler-mark::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: calc(-1 * var(--space-2));
+  height: var(--space-1);
+  border-left: 1px solid currentColor;
+}
+
+.loom__threads {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.loom__thread {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 1.5;
+}
+
+.loom__thread--ghost {
+  stroke-dasharray: 3 4;
+}
+
+.loom__thread--a {
+  stroke: var(--color-deck-a);
+}
+
+.loom__thread--b {
+  stroke: var(--color-deck-b);
+}
+
+.loom__thread--past {
+  opacity: 0.5;
+  stroke-width: 2.5;
+}
+
+.loom__thread--future {
+  stroke-width: 3;
+  stroke-dasharray: 7 5;
+}
+
+/* Zoom and "new thread", pinned over the canvas's top-right corner. */
+.loom__zoom {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-4);
+  z-index: 7;
+  display: flex;
+  gap: var(--space-1);
+}
+
+/* Lets drops through to the canvas; only the button takes the pointer. */
+.loom__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.loom__empty .ui-button {
+  pointer-events: auto;
+}
+
+/* ---- nodes ---- */
+
+.loom-node {
+  --loom-node-tint: var(--color-accent);
+  position: absolute;
+  height: var(--loom-node-height);
+  border: 1px solid color-mix(in srgb, var(--loom-node-tint) 35%, var(--color-border));
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--loom-node-tint) 14%, var(--color-surface));
+  cursor: pointer;
+}
+
+.loom-node--keyed {
+  --loom-node-tint: hsl(var(--loom-node-hue), 80%, 70%);
+}
+
+.loom-node:hover,
+.loom-node:focus-visible {
+  border-color: var(--loom-node-tint);
+  outline: none;
+}
+
+.loom-node--selected {
+  box-shadow: 0 0 0 2px var(--color-text);
+}
+
+.loom-node--on-a {
+  border-color: var(--color-deck-a);
+  box-shadow: inset 0 0 0 1px var(--color-deck-a), 0 0 26px -4px var(--color-deck-a);
+}
+
+.loom-node--on-b {
+  border-color: var(--color-deck-b);
+  box-shadow: inset 0 0 0 1px var(--color-deck-b), 0 0 26px -4px var(--color-deck-b);
+}
+
+.loom-node--q-a {
+  border-style: dashed;
+  border-color: var(--color-deck-a);
+}
+
+.loom-node--q-b {
+  border-style: dashed;
+  border-color: var(--color-deck-b);
+}
+
+.loom-node--cued {
+  outline: 2px solid var(--color-cue);
+  outline-offset: 3px;
+}
+
+.loom-node--ghost {
+  border-style: dashed;
+  background:
+    linear-gradient(
+        110deg,
+        transparent 30%,
+        color-mix(in srgb, var(--color-text) 10%, transparent) 50%,
+        transparent 70%
+      )
+      0 0 / 200% 100%,
+    var(--color-surface);
+  animation: loom-shimmer 1.4s linear infinite;
+}
+
+.loom-node--failed {
+  border-color: var(--color-led-danger);
+}
+
+.loom-node--missing {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+@keyframes loom-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loom-node--ghost {
+    animation: none;
+  }
+}
+
+/* The envelope spans the whole node so a click, the playhead and the cue
+   marker all map the same fraction of the body. */
+.loom-node__wave {
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 100%;
+  height: 24px;
+  cursor: crosshair;
+}
+
+.loom-node__peaks {
+  fill: var(--loom-node-tint);
+  opacity: 0.5;
+}
+
+.loom-node__body {
+  fill: var(--color-wave-high);
+  opacity: 0.72;
+  mix-blend-mode: screen;
+}
+
+.loom-node--ghost .loom-node__wave {
+  opacity: 0.15;
+}
+
+.loom-node__head {
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: 9px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.loom-node__prompt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 700 var(--text-s) var(--font-ui);
+  color: var(--color-text);
+}
+
+.loom-node__meta {
+  flex: none;
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.loom-node--failed .loom-node__meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-led-danger);
+}
+
+.loom-node--tight .loom-node__meta {
+  display: none;
+}
+
+.loom-node--tiny .loom-node__head {
+  display: none;
+}
+
+.loom-node--tiny .loom-node__wave {
+  top: 19px;
+}
+
+.loom-node__handle {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  z-index: 2;
+  width: 7px;
+  background: var(--color-text);
+  opacity: 0;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.loom-node__handle--in {
+  left: 2px;
+}
+
+.loom-node__handle--out {
+  right: 2px;
+}
+
+.loom-node:hover .loom-node__handle,
+.loom-node--selected .loom-node__handle {
+  opacity: 0.45;
+}
+
+.loom-node .loom-node__handle:hover {
+  opacity: 1;
+}
+
+.loom-node .loom-node__handle--set {
+  opacity: 0.9;
+  background: var(--color-cue);
+}
+
+.loom-node__cue-point {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-cue);
+  pointer-events: none;
+}
+
+.loom-node__cue-label {
+  position: absolute;
+  left: 2px;
+  top: calc(100% + var(--space-1));
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-cue);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.loom-node__progress {
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: 6px;
+  height: 2px;
+  background: var(--color-border);
+}
+
+.loom-node__progress i {
+  display: block;
+  height: 100%;
+  background: var(--color-cue);
+}
+
+/* Sits flush on the node's top edge so the hover never drops in a gap. */
+.loom-node__tools {
+  position: absolute;
+  right: var(--space-1);
+  bottom: calc(100% - 1px);
+  /* Over the shuttle tags and the sticky ruler: the tools are what the
+     pointer is reaching for. */
+  z-index: 7;
+  display: none;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+.loom-node:hover .loom-node__tools,
+.loom-node:focus-within .loom-node__tools,
+.loom-node--selected .loom-node__tools {
+  display: flex;
+}
+
+.loom-node__tools .ui-button {
+  padding: 0 var(--space-2);
+  white-space: nowrap;
+}
+
+/* Siblings from one weave, waiting for a pick. */
+.loom__takes {
+  position: absolute;
+  width: 12px;
+  border: 1px solid var(--color-border-strong);
+  border-right: 0;
+  pointer-events: none;
+}
+
+.loom__takes span {
+  position: absolute;
+  left: -2px;
+  bottom: calc(100% + 3px);
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* "What next?" after every leaf; amber while a deck holds there. */
+.loom__slot {
+  position: absolute;
+  height: var(--loom-node-height);
+}
+
+.loom__slot .ui-button {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-style: dashed;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.loom__slot .ui-button:hover {
+  border-color: var(--color-cue);
+  color: var(--color-text);
+}
+
+.loom__slot--hot .ui-button {
+  border-color: var(--color-led-warn);
+  color: var(--color-led-warn);
+}
+
+/* ---- shuttles ---- */
+
+/* Each deck's playhead in the loom: trail, head, countdown tag and the loop
+   region (amber when it is the hold). Positions arrive at the deck's 4 Hz
+   poll; smoothing them is CSS (the visuals pass), never a re-render. */
+.loom__shuttle--a {
+  --loom-deck: var(--color-deck-a);
+}
+
+.loom__shuttle--b {
+  --loom-deck: var(--color-deck-b);
+}
+
+.loom__trail {
+  position: absolute;
+  z-index: 2;
+  height: var(--loom-node-height);
+  background: linear-gradient(90deg, transparent, var(--loom-deck));
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.loom__head {
+  position: absolute;
+  z-index: 3;
+  width: 2px;
+  height: calc(var(--loom-node-height) + 16px);
+  margin-left: -1px;
+  background: var(--color-text);
+  box-shadow: 0 0 8px 2px var(--loom-deck);
+  pointer-events: none;
+}
+
+.loom__tag {
+  position: absolute;
+  z-index: 5;
+  max-width: 18rem;
+  overflow: hidden;
+  padding: 1px var(--space-2);
+  transform: translateX(-50%);
+  font: 700 var(--text-xs) var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-on-accent);
+  background: var(--loom-deck);
+}
+
+.loom__tag--warn {
+  background: var(--color-led-warn);
+}
+
+.loom__loop {
+  position: absolute;
+  z-index: 2;
+  height: var(--loom-node-height);
+  box-shadow: inset 0 0 0 1.5px var(--loom-deck);
+  background: color-mix(in srgb, var(--loom-deck) 14%, transparent);
+  pointer-events: none;
+}
+
+.loom__loop--hold {
+  --loom-deck: var(--color-led-warn);
+}
+
+.loom__loop span {
+  position: absolute;
+  left: var(--space-1);
+  top: calc(100% + var(--space-1));
+  font: 700 var(--text-xs) var(--font-mono);
+  color: var(--loom-deck);
+  white-space: nowrap;
+}
+
+/* ---- weave popover ---- */
+
+.loom-weave {
+  width: min(26rem, calc(100vw - 2 * var(--space-4)));
+  max-height: calc(100vh - 2 * var(--space-4));
+  overflow: auto;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.loom-weave:focus {
+  outline: none;
+}
+
+.loom-weave__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.loom-weave__title {
+  margin: 0;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.loom-weave__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.loom-weave__row .ui-field {
+  width: 6rem;
+}
+
+.loom-weave__eta {
+  margin: 0;
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.loom-weave__eta--warn {
+  color: var(--color-led-warn);
+}
+
+.loom-weave__advanced > summary {
+  font: 600 var(--text-s) var(--font-ui);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.loom-weave__advanced[open] > summary {
+  margin-bottom: var(--space-2);
+  color: var(--color-text);
+}
+
+/* The explorer lays guidance out in two columns; the popover has one. */
+.loom-weave .media__guidance-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.loom-weave__go {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 /* ---- mixer ---- */
 
 /* The loom theme's mixer bar: deck A | core | deck B in one 150 px row under
