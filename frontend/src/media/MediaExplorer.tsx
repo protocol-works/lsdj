@@ -54,6 +54,7 @@ import {
   type SourceDraft,
   type TrackGenerationRequest,
 } from '../generation/songGeneration'
+import { saveGeneratedSong, type SongEntry } from '../generation/library'
 import { Sa3AdvancedControls } from '../generation/Sa3AdvancedControls'
 import { loadAppSettings, updateAppSettings } from '../persistence'
 import { LoraControl } from '../ui/LoraControl'
@@ -84,25 +85,6 @@ type TrackEngine = 'sfx' | 'music' | 'track' | 'magenta'
 // The short loop engines (ADR-0022): SFX/Music now compose into the samples library,
 // not the songs library — the Generate tab keeps only the full-track engines.
 type SampleEngine = 'sfx' | 'music'
-
-// One row of the on-disk song registry (Rust `songs::SongEntry`, camelCase): a file
-// in the songs folder with the provenance the filesystem can't carry.
-type SongEntry = {
-  file: string
-  title: string
-  prompt: string | null
-  model: string | null
-  recipe?: unknown
-  /** 1–5; absent when unrated. */
-  rating?: number
-  /** Absent when untagged. */
-  tags?: string[]
-  /** Background analysis (Rust `analysis::media::TrackInfo`); absent until it
-   * runs, and when it wasn't confident. `key` is Camelot ("8A"). */
-  bpm?: number
-  key?: string
-  keyName?: string
-}
 
 // One row of the on-disk sample registry (Rust `samples::SampleEntry`, camelCase):
 // like a SongEntry plus `oneShot`, the loop-vs-one-shot verdict reload needs.
@@ -400,22 +382,6 @@ function reListLibrary<
     // take you just made.
     setRows((current) => [...current.filter((row) => fileOf(row) == null), ...restored.reverse()])
   })()
-}
-
-/** What the webview sends with a freshly composed take (Rust `songs::NewSong`). */
-type NewSong = {
-  title: string
-  prompt: string
-  model: SongGenerationEngine
-  recipe: SongGenerationRecipeV1
-}
-
-/** Persist a ready take to ~/Documents/LSDJ/generated_songs through the Rust shell
- * and return its registry entry ({@link encodeMetaFrame} builds the binary payload —
- * a JSON args map would be megabytes of text for a multi-MB WAV). The old
- * `<a download>` is gone: it silently no-ops in WKWebView. */
-function saveGeneratedSong(meta: NewSong, wav: ArrayBuffer): Promise<SongEntry> {
-  return invoke<SongEntry>('save_generated_song', encodeMetaFrame(meta, wav))
 }
 
 /** What the webview sends with a freshly composed sample (Rust `samples::NewSample`):
