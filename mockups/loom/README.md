@@ -19,7 +19,7 @@ and the deck's playhead — the **shuttle** — follows the tied thread.
 
 | Word | Meaning |
 | ---- | ------- |
-| loom | The canvas. x = bars, y = branches. Several roots can coexist (a forest). Zoom the bar scale with − / = (0 resets) or ⌘-wheel. |
+| loom | The canvas. x = bars, y = branches. Several roots can coexist (a forest). Zoom like a DAW: − / + / fit (keys − = Z), ⌘-wheel anchored at the cursor, or drag the ruler up and down (sideways scrolls). No scale readout; the ruler's bar numbers are the scale. |
 | thread | A node: one clip (prompt, key, bars, seed, LoRA stack), rendered from its parent's last bars. A root is seeded from a prompt or a library song. The waveform runs the full length of the clip (peaks from the decoded audio in the app; the mockup synthesises an intro / build / drop / break envelope). |
 | trim | Drag a node's left or right edge to skip an intro or end at the drop, snapping to bars. DAW-style: the trimmed audio is hidden, the node gets shorter, the tree closes up behind it. The shuttle enters at the in-point and seams at the out-point. |
 | weave | "What next?" after any node: a prompt (or none = continue), how many **takes**, how many bars, a LoRA stack, and the SA3 knobs behind a disclosure. Renders shimmer as ghosts with a progress bar until the audio exists. |
@@ -29,7 +29,9 @@ and the deck's playhead — the **shuttle** — follows the tied thread.
 | cue | ⌾ auditions a node in the headphones, by default from the *join* (four bars before it) so you hear the transition. Click inside a waveform to cue from that bar instead (a lime marker shows where). Independent of the on-air decks. |
 | scrub | Clicking inside the waveform of the node a deck is playing moves that deck's playhead to that bar (on the beat, in the real thing). |
 | panel | Each deck's strip in the mixer: what's playing, bars to the seam and what's there, then transport, fader with meter, EQ and FX. Drop a node on it to tie. |
-| bounce | Drop a node on the explorer: its root-to-node path is stitched to one song in the library. |
+| bounce | Drop a node on the explorer: its root-to-node path is stitched to one song in the library. ⤓ on a deck panel bounces what that deck actually played. |
+| loop | 4 / 8 / 16 on the deck loops from the current bar, quantised (the FLX4's auto-loop); press again to carry on from the playhead. Drawn as a bracketed region on the node with the trail cycling inside and `⟲ 8 · ×3` in the deck status. A hold at an untied seam is the same region in amber. A tie back up the tree is a loop at song scale. |
+| save | There is none. The loom autosaves under the name in the top bar (click to rename; a quiet "saved" mark). The explorer's **looms** tab lists looms to open, duplicate or delete; deleting a loom keeps its renders in songs. A *set* is what left the master: ● rec. |
 | theme | A new setting in the settings drawer: **DJ** (the two deck columns the app has today) or **Loom** (this). It switches the deck surface only; the mixer, explorer, engine, generation and FLX4 mapping are shared. |
 
 ## What it keeps from the current app
@@ -67,6 +69,14 @@ sidecar. Nothing in the popover needs a new endpoint.
   is right.
 - **2026-10-30, no chord row.** We don't have chord data; the node shows a
   waveform, key and length instead.
+- **2026-10-30, autosave, no save button.** Every render is already a file in
+  the library; the loom is a small graph over them, so it saves itself. Naming
+  and listing (the looms tab) are the whole UI. ● rec stays the way to save a
+  *set*.
+- **2026-10-30, one loop visual.** Beat loops, the hold at a seam and return
+  ties are three mechanisms the DJ experiences as one idea, so the node shows
+  them the same way. Beat loops win over ties: a tied next waits until the
+  loop is released.
 - **2026-10-30, Loom is a theme, not a fork.** The loom ships behind a
   `Theme: DJ | Loom` setting rather than replacing the deck UI outright, so
   both surfaces share one engine, mixer, explorer and MIDI layer and either
@@ -128,3 +138,4 @@ sidecar. Nothing in the popover needs a new endpoint.
   no end (the earlier mockup) or a separate deck type beside the loom?
 - **Hardware.** FLX4 jog = scrub the loom? Pads = the current node's takes or
   children (pad 1–4 = tie 1–4)? Browse knob = move the selection along threads?
+  Loop in / out / auto-loop map straight onto the 4 / 8 / 16 control.

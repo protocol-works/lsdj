@@ -45,7 +45,6 @@ button{background:none;border:0;cursor:pointer}
 .top{display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(7,5,15,.55);backdrop-filter:blur(12px)}
 .brand{display:flex;align-items:center;gap:10px;font:700 14px var(--mono);letter-spacing:.08em}
 .brand svg{width:24px;height:24px}
-.brand small{font-weight:400;color:var(--muted);letter-spacing:.2em;font-size:10px;padding:2px 6px;border:1px solid var(--line);border-radius:4px}
 .top .sp{flex:1}
 .clock{font:11px var(--mono);color:var(--muted);letter-spacing:.06em}
 .clock b{color:var(--ink);font-weight:400}
@@ -55,9 +54,12 @@ button{background:none;border:0;cursor:pointer}
 .tbtn.rec.on{background:#ef4444;color:#fff}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);display:inline-block;margin-right:6px;vertical-align:middle}
 .dot.ok{background:var(--cue);box-shadow:0 0 8px var(--cue)}
-.zoom{display:flex;align-items:center;gap:2px;font:10.5px var(--mono);color:var(--muted)}
-.zoom .tbtn{width:26px;padding:0;font-size:14px;text-transform:none}
-.zoom b{font-weight:400;color:var(--ink);min-width:62px;text-align:center}
+.lname{font:12.5px var(--ui);color:var(--ink);padding:3px 7px;border-radius:6px;outline:0;white-space:nowrap;cursor:text}
+.lname:hover,.lname:focus{background:rgba(255,255,255,.07)}
+.saved{font:10px var(--mono);color:var(--faint);letter-spacing:.06em;min-width:52px}
+.zoom{display:flex;align-items:center;gap:3px}
+.zoom .tbtn{min-width:26px;padding:0 7px;font-size:14px;text-transform:none}
+.zoom #zfit{font-size:10px;letter-spacing:.08em;text-transform:uppercase}
 
 /* ---------- stage / loom ---------- */
 .stage{position:relative;overflow:hidden}
@@ -65,7 +67,8 @@ button{background:none;border:0;cursor:pointer}
 .canvas.panning{cursor:grabbing}
 .loom{position:relative}
 .loom.zooming .node,.loom.zooming .slot,.loom.zooming .takes{transition:none}
-.ruler{position:sticky;top:0;z-index:6;height:22px;font:9.5px var(--mono);color:var(--faint);letter-spacing:.06em;background:linear-gradient(rgba(7,5,15,.7),transparent);pointer-events:none}
+.ruler{position:sticky;top:0;z-index:6;height:22px;font:9.5px var(--mono);color:var(--faint);letter-spacing:.06em;background:linear-gradient(rgba(7,5,15,.7),transparent);cursor:ns-resize;touch-action:none}
+.ruler:hover{color:var(--muted)}
 .ruler span{position:absolute;top:5px;transform:translateX(-50%)}
 .ruler span::before{content:'';position:absolute;left:50%;top:-5px;height:4px;border-left:1px solid var(--faint)}
 .threads{position:absolute;inset:0;overflow:visible;pointer-events:none}
@@ -134,6 +137,9 @@ button{background:none;border:0;cursor:pointer}
 .tag{position:absolute;transform:translateX(-50%);pointer-events:auto;font:700 10px var(--mono);color:#000;background:var(--dc);padding:1px 7px;border-radius:999px;box-shadow:0 0 14px var(--dc);z-index:3;white-space:nowrap}
 .tag.hold{background:var(--warn);box-shadow:0 0 14px var(--warn)}
 .tag.over{transform:translateX(-50%) scale(1.25)}
+.loopr{position:absolute;display:none;border-radius:11px;box-shadow:inset 0 0 0 1.5px var(--dc);background:color-mix(in srgb,var(--dc) 14%,transparent);pointer-events:none;z-index:2}
+.loopr.on{display:block} .loopr.hold{--dc:var(--warn)}
+.loopr span{position:absolute;left:4px;bottom:calc(100% + 4px);font:700 10px var(--mono);color:var(--dc);letter-spacing:.04em;white-space:nowrap}
 .tbtn.play.blink{animation:breathe .7s ease-in-out infinite;border-color:var(--warn);color:var(--warn)}
 
 /* ---------- media explorer drawer ---------- */
@@ -234,20 +240,23 @@ details.adv summary b{color:var(--ink);font-weight:400}
 
 /* ---------- mixer ---------- */
 .mixer{display:grid;grid-template-columns:1fr 300px 1fr;border-top:1px solid var(--line);background:rgba(7,5,15,.62);backdrop-filter:blur(16px)}
-.deck{padding:8px 16px 10px;display:grid;grid-template-rows:auto 1fr;gap:8px;min-width:0;transition:box-shadow .2s}
+.deck{padding:8px 16px 10px;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;gap:8px;min-width:0;transition:box-shadow .2s}
 .deck.a{--dc:var(--a)} .deck.b{--dc:var(--b)}
 .deck.over{box-shadow:inset 0 0 0 2px var(--dc)}
 .deck .status{display:flex;align-items:center;gap:10px;font:11px var(--mono);min-width:0}
 .deck .letter{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#000;background:var(--dc);box-shadow:0 0 16px var(--dc);flex:none}
-.deck .now{font:600 14px var(--ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.deck .now{font:600 14px var(--ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:40px}
 .deck .meta{color:var(--muted);flex:none}
-.deck .nxt{margin-left:auto;color:var(--muted);flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38%}
+.deck .nxt{margin-left:auto;color:var(--muted);flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38%;min-width:0}
 .deck .nxt.warn{color:var(--warn)}
 .deck .pos{color:var(--muted);flex:none}
 .strip{display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
-.deck.b .tr{order:4} .deck.b .vol{order:3} .deck.b .eq{order:2;justify-content:flex-end} .deck.b .fx{order:1}
+.deck.b .tr{order:5} .deck.b .lp{order:4} .deck.b .vol{order:3} .deck.b .eq{order:2;justify-content:flex-end} .deck.b .fx{order:1}
 .tr{display:grid;grid-template-columns:1fr 1fr;gap:5px;align-self:end}
 .tr .tbtn{height:31px;padding:0 11px;font-size:11px}
+.lp{display:flex;flex-direction:column;align-items:center;gap:4px;font:9.5px var(--mono);color:var(--muted);letter-spacing:.08em}
+.lp .seg button{padding:6px 9px;font-size:10.5px} .lp .seg button.on{background:var(--dc);color:#000}
+.deck .bounce{height:22px;padding:0 7px;font-size:12px;text-transform:none}
 .tbtn.play.on{background:var(--dc)}
 .vol{display:grid;grid-template-columns:auto auto;gap:3px 5px;justify-items:center;align-items:end;font:9.5px var(--mono);color:var(--muted);letter-spacing:.08em}
 .vol span{grid-column:1/-1}
@@ -282,10 +291,11 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
   <header class="top">
     <div class="brand">
       <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="none" stroke="#22d3ee" stroke-width="3"/><line x1="69" y1="69" x2="80" y2="80" stroke="#bef264" stroke-width="3" stroke-linecap="round"/><rect x="38" y="38" width="24" height="24" fill="none" stroke="#bef264" stroke-width="3"/><rect x="44" y="44" width="12" height="12" fill="none" stroke="#22d3ee" stroke-width="3"/></svg>
-      LSDJ <small>LOOM</small>
+      LSDJ
     </div>
+    <span class="lname" id="lname" contenteditable="true" spellcheck="false" title="click to rename · the loom autosaves">untitled loom · 30 Oct</span><span class="saved" id="saved">saved</span>
     <button class="tbtn" id="explorer">☰ explorer</button>
-    <span class="zoom"><button class="tbtn" id="zout" title="zoom out (−)">−</button><b id="zval"></b><button class="tbtn" id="zin" title="zoom in (=)">+</button></span>
+    <span class="zoom"><button class="tbtn" id="zout" title="zoom out (−)">−</button><button class="tbtn" id="zfit" title="fit the whole loom (Z)">fit</button><button class="tbtn" id="zin" title="zoom in (=)">+</button></span>
     <div class="sp"></div>
     <div class="clock"><b id="clock">00:00</b> · master <b>124.0</b> bpm · <b id="count"></b></div>
     <div class="sp"></div>
@@ -376,12 +386,14 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
 
 <div class="pop help" id="help">
   <h4>how to read the loom</h4>
-  <p><b>loom</b> — the canvas. Left to right is musical time in bars; down is alternatives. Every pill is a <b>thread</b>: one Stable Audio 3 clip, continued from the tail of its parent. <b>−</b> / <b>=</b> (or ⌘-wheel) zoom the bar scale.</p>
+  <p><b>loom</b> — the canvas. Left to right is musical time in bars; down is alternatives. Every pill is a <b>thread</b>: one Stable Audio 3 clip, continued from the tail of its parent. Zoom with <b>−</b> / <b>+</b> / <b>fit</b> (keys − = Z), ⌘-wheel at the cursor, or drag the ruler up and down like a DAW; sideways scrolls.</p>
   <p><b>weave</b> — the dashed “what next?” after any leaf (or ✱ on any node) renders what follows. Ask for 1–4 <b>takes</b> of the same prompt: they render as siblings in a bracket, you cue each from the join, then <b>✓ keep</b> one and the rest are discarded. Pick a <b>LoRA</b> stack and the SA3 knobs (cfg, apg, drift from the parent, negative prompt, seed) in the same popover.</p>
   <p><b>shuttle</b> — a deck's playhead. <b>→A</b>/<b>→B</b> ties a node as that deck's <em>next</em>: through the tree if it's downstream, a jump (or a return) at the seam if not. Ties queue; <b>⨯</b> on a tied node unties it. Shift-click, or drop a node on the shuttle, <b>cuts</b> to it on the next bar. Where nothing is tied the shuttle <b>holds</b> the last four bars: the tag counts down to it and turns amber at eight. It never falls silent, and it never picks for you unless <b>auto</b> is on for that deck.</p>
   <p><b>cue</b> — ⌾ auditions a node in the headphones, from the join (four bars before it) so you hear the transition, not just the clip. Click inside a waveform to cue from that bar instead; on the node a deck is playing, the click moves that deck's playhead.</p>
   <p><b>trim</b> — drag a node's left or right edge to skip an intro or end at the drop (snaps to bars). Like a clip in a DAW the trimmed audio is hidden, not dimmed: the node gets shorter and the tree closes up behind it, because left-to-right is real time.</p>
   <p><b>deck panel</b> — what's playing, bars to the seam and what's there, then transport, fader, EQ and FX. Drop a node on it to tie. <b>explorer</b> — rate, tag, sort and filter the library; “in key” keeps only songs that mix with what a deck is playing.</p>
+  <p><b>loop</b> — 4 / 8 / 16 on the deck loops from the current bar (the FLX4's auto-loop); press it again to carry on from wherever the playhead is. A hold at an untied seam is the same thing drawn in amber. A tie back up the tree is a loop at song scale.</p>
+  <p><b>saving</b> — there is no save button. The loom autosaves under the name in the top bar (click it to rename); the explorer's <b>looms</b> tab lists them. A <em>set</em> is what left the master: ● rec records it, and ⤓ on a deck bounces what that deck played to the songs library.</p>
   <p>Drag the background to pan. Nothing here makes sound; it's a mockup.</p>
 </div>
 
@@ -508,21 +520,25 @@ function render(){layout()
   const Hh=rowY(rows)+60;loom.style.width=W+'px';loom.style.height=Hh+'px';svg.setAttribute('width',W);svg.setAttribute('height',Hh)
   const step=PX>=32?4:PX>=12?8:16
   let rl='';for(let b=0;b*PX+PADX<W;b+=step)rl+=`<span style="left:${PADX+b*PX}px">${b}</span>`;$('#ruler').innerHTML=rl;$('#ruler').style.width=W+'px'
-  $('#zval').textContent=`${PX}px / bar`
   for(const k of['A','B'])status(k)
   $('#count').textContent=`${Object.values(N).filter(n=>!n.ghost).length} threads · ${Object.values(N).filter(n=>n.ghost).length} weaving`}
 
-/* ---------- zoom ---------- */
-function zoom(f){const px=Math.max(6,Math.min(48,Math.round(PX*f)));if(px===PX)return
-  const cx=canvas.scrollLeft+canvas.clientWidth/2,bar=(cx-PADX)/PX;PX=px
-  loom.classList.add('zooming');render();paint();canvas.scrollLeft=PADX+bar*PX-canvas.clientWidth/2
-  requestAnimationFrame(()=>loom.classList.remove('zooming'))}
-$('#zin').onclick=()=>zoom(1.25);$('#zout').onclick=()=>zoom(.8)
-canvas.addEventListener('wheel',e=>{if(!(e.ctrlKey||e.metaKey))return;e.preventDefault();zoom(e.deltaY<0?1.1:.9)},{passive:false})
+/* ---------- zoom: anchored at the cursor, like a DAW ---------- */
+function setZoom(px,ax){px=Math.max(6,Math.min(48,Math.round(px)));if(px===PX)return
+  const sr=canvas.getBoundingClientRect(),off=(ax??sr.left+canvas.clientWidth/2)-sr.left,bar=(canvas.scrollLeft+off-PADX)/PX;PX=px
+  loom.classList.add('zooming');render();paint();canvas.scrollLeft=PADX+bar*PX-off;requestAnimationFrame(()=>loom.classList.remove('zooming'))}
+const zoom=(f,ax)=>setZoom(PX*f,ax)
+function fit(){const bars=Math.max(...Object.values(N).map(n=>(n.x+n.w-PADX)/PX));setZoom((canvas.clientWidth-PADX-SLOT_W-40)/bars);canvas.scrollTo({left:0,top:0,behavior:'smooth'})}
+$('#zin').onclick=()=>zoom(1.25);$('#zout').onclick=()=>zoom(.8);$('#zfit').onclick=fit
+canvas.addEventListener('wheel',e=>{if(!(e.ctrlKey||e.metaKey))return;e.preventDefault();zoom(e.deltaY<0?1.1:.9,e.clientX)},{passive:false})
+let rz=null
+$('#ruler').addEventListener('pointerdown',e=>{rz={x:e.clientX,lx:e.clientX,y:e.clientY,px:PX};e.currentTarget.setPointerCapture(e.pointerId);e.stopPropagation()})
+$('#ruler').addEventListener('pointermove',e=>{if(!rz)return;setZoom(rz.px*Math.exp((rz.y-e.clientY)/90),rz.x);canvas.scrollLeft-=e.clientX-rz.lx;rz.lx=e.clientX})
+$('#ruler').addEventListener('pointerup',()=>rz=null)
 
 /* ---------- shuttles ---------- */
 const sh={}
-for(const k of['A','B']){sh[k]={};for(const c of['trail','head','tag']){const e=document.createElement('div');e.className=c==='head'?'phead':c;e.style.setProperty('--dc',`var(--${k.toLowerCase()})`);loom.appendChild(e);sh[k][c]=e}
+for(const k of['A','B']){sh[k]={};for(const c of['trail','head','tag','loop']){const e=document.createElement('div');e.className=c==='head'?'phead':c==='loop'?'loopr':c;if(c==='loop')e.innerHTML='<span></span>';e.style.setProperty('--dc',`var(--${k.toLowerCase()})`);loom.appendChild(e);sh[k][c]=e}
   const t=sh[k].tag;t.title='drop a node here to cut to it on the next bar'
   t.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-node')){e.preventDefault();t.classList.add('over')}})
   t.addEventListener('dragleave',()=>t.classList.remove('over'))
@@ -531,6 +547,7 @@ const tiny=s=>s.length>19?s.slice(0,17)+'…':s
 function seam(k){const d=D[k],n=N[d.node]
   const left=Math.max(0,outOf(n)-d.pos).toFixed(0)
   if(!d.playing)return{left,tag:`${k} ⏸`,warn:false}
+  if(d.loop)return{left:'⟲',tag:`${k} · ⟲ ${d.loop.len} · ×${d.loop.n}`,warn:false}
   const nx=d.queue[0];const au=!nx&&d.auto?kids(n.id).find(x=>!x.ghost):null
   if(d.hold)return{left,tag:nx?`${k} · hold · ⟳ ${Math.round(N[nx].progress*100)}%`:`${k} · hold`,warn:true}
   if(nx)return{left,tag:`${k} · ${left} → ${N[nx].ghost?'⟳ ':''}${tiny(N[nx].prompt)}`,warn:false}
@@ -538,8 +555,9 @@ function seam(k){const d=D[k],n=N[d.node]
   return{left,tag:`${k} · ${left} → HOLD`,warn:+left<=8}}
 function paint(){const sr=stage.getBoundingClientRect()
   for(const k of['A','B']){const d=D[k],n=N[d.node],s=sh[k],y=rowY(n.row)
-    const x=Math.max(n.x,Math.min(n.x+(d.pos-inOf(n))*PX,n.x+n.w))
-    s.trail.style.left=n.x+'px';s.trail.style.top=y+'px';s.trail.style.width=(x-n.x)+'px'
+    const x=Math.max(n.x,Math.min(n.x+(d.pos-inOf(n))*PX,n.x+n.w)),lp=loopOf(k),tl=lp?n.x+(lp.start-inOf(n))*PX:n.x
+    s.trail.style.left=tl+'px';s.trail.style.top=y+'px';s.trail.style.width=Math.max(0,x-tl)+'px'
+    const L=s.loop;L.classList.toggle('on',!!lp);if(lp){L.classList.toggle('hold',!!lp.hold);L.style.left=tl+'px';L.style.top=y+'px';L.style.width=(lp.end-lp.start)*PX+'px';L.style.height=H+'px';L.firstChild.textContent=lp.hold?'⟲ hold · last 4':`⟲ ${lp.len} · ×${lp.n}`}
     s.head.style.left=x+'px';s.head.style.top=(y-8)+'px';s.head.style.height=(H+16)+'px'
     const sm=seam(k);s.tag.style.left=x+'px';s.tag.style.top=(y-28)+'px';s.tag.textContent=sm.tag;s.tag.classList.toggle('hold',sm.warn)
     const nx=$('#nxt-'+k);nx.textContent=sm.tag.replace(/^[AB] (· )?/,'');nx.classList.toggle('warn',sm.warn)
@@ -551,6 +569,7 @@ let last=performance.now(),t0=last
 function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
   for(const k of['A','B']){const d=D[k];if(!d.playing)continue;const n=N[d.node];const was=Math.floor(d.pos);d.pos+=dt*tempoOf(n)/240
     if(d.cut&&Math.floor(d.pos)>was){const id=d.cut;d.cut=null;d.queue=[];go(k,id,0);dirty=true;toast(`${k} cut → “${short(N[id].prompt)}”`);continue}
+    if(d.loop&&d.pos>=d.loop.end){d.pos-=d.loop.end-d.loop.start;d.loop.n++;continue}
     const end=outOf(n);if(d.pos<end)continue
     let nx=d.queue[0],viaAuto=false
     if(!nx&&d.auto){const c=kids(n.id).find(x=>!x.ghost);if(c){nx=c.id;viaAuto=true}}
@@ -559,16 +578,16 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
   for(const n of Object.values(N))if(n.ghost){n.progress=Math.min(1,n.progress+dt/n.dur)
     if(n.progress>=1){n.ghost=false;dirty=true;toast(`rendered “${short(n.prompt)}”${n.take?` · take ${n.takeN}`:''} · ready to cue`)}
     else{const i=els.get(n.id)?.querySelector('.prog i');if(i)i.style.width=(n.progress*100)+'%'}}
-  if(dirty)render();paint();meters();const s=Math.floor((t-t0)/1000);$('#clock').textContent=`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
+  if(dirty){touched();render()}paint();meters();const s=Math.floor((t-t0)/1000);$('#clock').textContent=`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
   requestAnimationFrame(tick)}
 
 /* ---------- actions ---------- */
-function go(k,id,pos){const d=D[k];if(d.node!==id){d.hist.push(d.node);if(d.hist.length>8)d.hist.shift()}d.node=id;d.pos=inOf(N[id])+pos;d.hold=false}
+function go(k,id,pos){const d=D[k];if(d.node!==id){d.hist.push(d.node);if(d.hist.length>8)d.hist.shift()}d.node=id;d.pos=inOf(N[id])+pos;d.hold=false;d.loop=null}
 function threadTo(k,id,cut=false){const d=D[k],name=short(N[id].prompt)
-  if(cut){if(d.playing){d.cut=id;toast(`${k} cuts → “${name}” on the next bar`)}else{d.queue=[];go(k,id,0);toast(`${k} loaded “${name}” at the top`)}render();return}
+  if(cut){if(d.playing){d.cut=id;toast(`${k} cuts → “${name}” on the next bar`)}else{d.queue=[];go(k,id,0);toast(`${k} loaded “${name}” at the top`)}touched();render();return}
   const qi=d.queue.indexOf(id)
-  if(qi>=0){d.queue=d.queue.slice(0,qi);toast(`${k} untied “${name}”${d.queue.length?'':' — will hold at the seam'}`);render();return}
-  if(!d.playing&&!d.queue.length){go(k,id,0);toast(`${k} loaded “${name}” at the top`);render();return}
+  if(qi>=0){d.queue=d.queue.slice(0,qi);toast(`${k} untied “${name}”${d.queue.length?'':' — will hold at the seam'}`);touched();render();return}
+  if(!d.playing&&!d.queue.length){go(k,id,0);toast(`${k} loaded “${name}” at the top`);touched();render();return}
   const tail=d.queue.at(-1)??d.node
   if(tail===id){toast(`${k} is already headed there — tie something after it`);return}
   const anc=ancestors(id),i=anc.indexOf(tail)
@@ -576,13 +595,19 @@ function threadTo(k,id,cut=false){const d=D[k],name=short(N[id].prompt)
     const until=(outOf(N[d.node])-d.pos)+d.queue.slice(0,-1).reduce((s,q)=>s+lenOf(N[q]),0)
     toast(`${k} ties → “${name}” · in ${until.toFixed(0)} bars`)}
   else{d.queue=[...d.queue,id];toast(`${k} ties → “${name}” · ${ancestors(tail).includes(id)?'returns':'jumps'} at the seam`)}
-  render()}
+  touched();render()}
+const loopOf=k=>{const d=D[k],n=N[d.node];return d.loop||(d.hold?{start:outOf(n)-4,end:outOf(n),hold:true}:null)}
+function setLoop(k,len){const d=D[k],n=N[d.node]
+  if(d.loop?.len===len){d.loop=null;toast(`${k} loop off — carries on`)}
+  else{const end0=outOf(n);let start=Math.floor(d.pos),end=start+len;if(end>end0){end=end0;start=Math.max(inOf(n),end-len)}
+    d.loop={start,end,len,n:1};d.hold=false;toast(`${k} ⟲ ${len} bars from bar ${start-inOf(n)+1}`)}
+  touched();render()}
 function toggleCue(id){cue=cue?.node===id?null:{node:id,join:!!N[id].parent};render()}
 const inUse=id=>['A','B'].some(k=>D[k].node===id||D[k].queue.includes(id))
 function discard(ids){const gone=ids.filter(id=>!inUse(id)&&!kids(id).length);for(const id of gone){delete N[id];if(cue?.node===id)cue=null;if(selected===id)selected=null}return gone.length}
 function keep(id){const n=N[id],sib=kids(n.parent).filter(x=>x.take===n.take&&x.id!==id).map(x=>x.id)
   const g=discard(sib);for(const x of Object.values(N))if(x.take===n.take)delete x.take
-  render();toast(`kept take ${n.takeN} · ${g} discarded${g<sib.length?' (a deck still holds one)':''}`)}
+  touched();render();toast(`kept take ${n.takeN} · ${g} discarded${g<sib.length?' (a deck still holds one)':''}`)}
 
 /* ---------- weave popover ---------- */
 const LORAS=['666-midtempo-bass','colundi-idm','industrial-techno','opera','zentai-chiptune']
@@ -617,7 +642,7 @@ function weave(pid,text,tieTo){const p=N[pid];const base=(text||'').trim()||p.pr
   for(let i=0;i<P.takes;i++){const id='g'+(++gid);ids.push(id)
     add(id,pid,base,P.bars,p.key,{ghost:true,progress:0,dur:2.6+i*1.1+P.bars/16,loras:stack(),seed:seed!==null?seed+i:Math.floor(Math.random()*2**31),
       ...(P.takes>1?{take,takeN:i+1}:{})})}
-  render();if(tieTo)threadTo(tieTo,ids[0]);else toast(`weaving ${P.takes} take${P.takes>1?'s':''} after “${short(p.prompt)}”${stack().length?' · ⟐ '+stack().map(l=>l.n).join(' + '):''}`)}
+  touched();render();if(tieTo)threadTo(tieTo,ids[0]);else toast(`weaving ${P.takes} take${P.takes>1?'s':''} after “${short(p.prompt)}”${stack().length?' · ⟐ '+stack().map(l=>l.n).join(' + '):''}`)}
 $('#weave').onclick=()=>{weave(popParent,$('#popText').value);pop.classList.remove('open')}
 pop.querySelectorAll('[data-tie]').forEach(b=>b.onclick=()=>{weave(popParent,$('#popText').value,b.dataset.tie);pop.classList.remove('open')})
 $('#popText').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#weave').click()}if(e.key==='Escape')pop.classList.remove('open')}
@@ -625,7 +650,7 @@ $('#popText').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();
 loom.addEventListener('click',e=>{
   const act=e.target.closest('[data-act]');const node=e.target.closest('.node');const slot=e.target.closest('.slot')
   if(act&&node){const id=node.dataset.id;const a=act.dataset.act
-    if(a==='cue')toggleCue(id);else if(a==='weave')openWeave(id,act);else if(a==='keep')keep(id);else if(a==='drop'){const g=discard([id]);render();toast(g?'take discarded':'a deck still holds that take')}else threadTo(a,id,e.shiftKey);return}
+    if(a==='cue')toggleCue(id);else if(a==='weave')openWeave(id,act);else if(a==='keep')keep(id);else if(a==='drop'){const g=discard([id]);touched();render();toast(g?'take discarded':'a deck still holds that take')}else threadTo(a,id,e.shiftKey);return}
   if(slot){openWeave(slot.dataset.slot,slot);return}
   const wv=e.target.closest('.wave')
   if(wv&&node&&!N[node.dataset.id].ghost){const n=N[node.dataset.id],r=wv.getBoundingClientRect()
@@ -638,11 +663,11 @@ loom.addEventListener('click',e=>{
   selected=null;pop.classList.remove('open');render()})
 document.addEventListener('click',e=>{if(!e.target.closest('.pop,[data-act],.slot,#helpbtn'))pop.classList.remove('open');if(!e.target.closest('#help,#helpbtn'))$('#help').classList.remove('open')})
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){pop.classList.remove('open');$('#help').classList.remove('open');$('#settings').classList.remove('open')}
-  if(e.target.matches('input,textarea'))return;if(e.key==='=' ||e.key==='+')zoom(1.25);if(e.key==='-')zoom(.8);if(e.key==='0')zoom(20/PX)})
+  if(e.target.matches('input,textarea'))return;if(e.key==='='||e.key==='+')zoom(1.25);if(e.key==='-')zoom(.8);if(e.key==='0')setZoom(20);if(e.key==='z'||e.key==='Z')fit()})
 
 // pan by dragging the background
 let pan=null
-canvas.addEventListener('pointerdown',e=>{if(e.target.closest('.node,.slot,.tools'))return;pan={x:e.clientX,y:e.clientY,l:canvas.scrollLeft,t:canvas.scrollTop};canvas.classList.add('panning');canvas.setPointerCapture(e.pointerId)})
+canvas.addEventListener('pointerdown',e=>{if(e.target.closest('.node,.slot,.tools,.ruler'))return;pan={x:e.clientX,y:e.clientY,l:canvas.scrollLeft,t:canvas.scrollTop};canvas.classList.add('panning');canvas.setPointerCapture(e.pointerId)})
 canvas.addEventListener('pointermove',e=>{if(!pan)return;canvas.scrollLeft=pan.l-(e.clientX-pan.x);canvas.scrollTop=pan.t-(e.clientY-pan.y)})
 canvas.addEventListener('pointerup',()=>{pan=null;canvas.classList.remove('panning')})
 
@@ -650,6 +675,17 @@ canvas.addEventListener('pointerup',()=>{pan=null;canvas.classList.remove('panni
 loom.addEventListener('dragstart',e=>{const n=e.target.closest('.node');if(!n||hd){e.preventDefault();return}e.dataTransfer.setData('text/lsdj-node',n.dataset.id);e.dataTransfer.effectAllowed='link'})
 canvas.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-song'))e.preventDefault()})
 canvas.addEventListener('drop',e=>{const i=e.dataTransfer.getData('text/lsdj-song');if(i==='')return;e.preventDefault();seed(LIB[+i])})
+
+/* ---------- autosave ---------- */
+const LOOMS=[{name:'untitled loom · 30 Oct',threads:11,when:'open now · autosaving',p:'ambient dub → dub techno → … · lo-fi → jazz → soul · drone'},
+  {name:'friday warmup',threads:14,when:'2 d ago · played 38 min',p:'deep house, rain on glass → disco strings → …'},
+  {name:'dub excursions',threads:31,when:'1 w ago · played 1 h 12',p:'ambient dub, tape delay → dub techno → acid …'},
+  {name:'opera experiments',threads:6,when:'3 w ago',p:'alien opera + opera LoRA · takes ×4'}]
+const sv=$('#saved');let svT
+function touched(){sv.textContent='saving…';clearTimeout(svT);svT=setTimeout(()=>{sv.textContent='saved';LOOMS[0].threads=Object.values(N).filter(n=>!n.ghost).length;if(TAB==='looms')lib()},700)}
+const lname=$('#lname')
+lname.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();lname.blur()}}
+lname.onblur=()=>{const t=lname.textContent.trim()||'untitled loom';lname.textContent=t;if(t!==LOOMS[0].name){LOOMS[0].name=t;touched()}}
 
 /* ---------- explorer ---------- */
 const LIB=[{t:'Alien Opera #66',p:'alien opera',bpm:68,key:'Bm',len:120,tags:['drone'],r:4,d:0.2},
@@ -660,11 +696,15 @@ const LIB=[{t:'Alien Opera #66',p:'alien opera',bpm:68,key:'Bm',len:120,tags:['d
   {t:'Cosmic Lullaby #144',p:'throat singing drum and bass, 174 BPM, G minor, rolling breakbeat and deep reese',bpm:174,key:'Gm',len:213,tags:['dnb'],r:4,d:14},
   {t:'Electric Halo #55',p:'psychic techno, midtempo microsound glitch 666 WITCH RAVE',bpm:106,key:'Am',len:240,tags:['witch','glitch'],r:1,d:30},
   {t:'Velvet Static #9',p:'ambient dub, tape delay, submerged chords, 124 BPM',bpm:124,key:'Am',len:180,tags:['ambient'],r:5,d:0.5}]
-const F={min:0,key:null,tags:new Set()}
+const F={min:0,key:null,tags:new Set()};let TAB='songs'
 const mmss=s=>`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`
 const ago=d=>d<1?'today':d<2?'yesterday':d<7?`${d}d ago`:d<30?`${Math.round(d/7)}w ago`:'older'
 const SORT={recent:(a,b)=>a.d-b.d,rating:(a,b)=>b.r-a.r||a.d-b.d,bpm:(a,b)=>a.bpm-b.bpm,key:(a,b)=>hue(a.key)-hue(b.key)||a.key.localeCompare(b.key),name:(a,b)=>a.t.localeCompare(b.t),len:(a,b)=>b.len-a.len}
-function lib(){const q=$('#q').value.trim().toLowerCase(),deckKey=F.key&&N[D[F.key].node].key
+const TABS={looms:()=>`<div class="row" data-newloom style="cursor:pointer"><span class="t" style="color:var(--cue)">+ new loom</span><span class="k">empty canvas · autosaves</span></div>`+LOOMS.map((l,i)=>`<div class="row" style="cursor:default"><span class="t">${l.name}</span><span class="k">${l.threads} threads · ${l.when}</span><span class="p">${l.p}</span><div class="acts">${i?`<button class="tbtn" data-lopen="${i}">open</button>`:`<button class="tbtn on">open now</button>`}<button class="tbtn" data-ldup="${i}">duplicate</button>${i?`<button class="tbtn" data-ldel="${i}">delete</button>`:''}</div></div>`).join(''),
+  samples:()=>'<div class="empty">generated pads and one-shots · as in the app today</div>',presets:()=>'<div class="empty">prompt + LoRA + settings recipes · as in the app today</div>'}
+function lib(){$('#q').placeholder=TAB==='songs'?'search songs… (#tag, key, bpm)':`search ${TAB}…`
+  if(TAB!=='songs'){$('#filters').style.display='none';$('#rows').innerHTML=TABS[TAB]();return}$('#filters').style.display=''
+  const q=$('#q').value.trim().toLowerCase(),deckKey=F.key&&N[D[F.key].node].key
   const tags=[...new Set(LIB.flatMap(s=>s.tags))]
   $('#filters').innerHTML=`<button class="chip ${F.min?'on':''}" data-f="min">★ 4+</button><button class="chip a ${F.key==='A'?'on':''}" data-f="A" title="keys that mix with what A is playing">in key · A</button><button class="chip b ${F.key==='B'?'on':''}" data-f="B" title="keys that mix with what B is playing">in key · B</button>`+tags.map(t=>`<button class="chip ${F.tags.has(t)?'on':''}" data-f="tag" data-t="${t}">#${t}</button>`).join('')
   const rows=LIB.map((s,i)=>({s,i})).filter(({s})=>(!F.min||s.r>=4)&&(!deckKey||inKey(s.key,deckKey))&&[...F.tags].every(t=>s.tags.includes(t))
@@ -676,8 +716,12 @@ function lib(){const q=$('#q').value.trim().toLowerCase(),deckKey=F.key&&N[D[F.k
 $('#q').oninput=lib;$('#sort').onchange=lib
 $('#filters').onclick=e=>{const b=e.target.closest('[data-f]');if(!b)return;const f=b.dataset.f
   if(f==='min')F.min=F.min?0:4;else if(f==='tag'){F.tags.has(b.dataset.t)?F.tags.delete(b.dataset.t):F.tags.add(b.dataset.t)}else F.key=F.key===f?null:f;lib()}
-function seed(s){const id='r'+(++gid);add(id,null,s.p,16,s.key,{bpm:s.bpm,seedFrom:'seed · '+s.t});render();toast(`new thread seeded from “${s.t}”`);requestAnimationFrame(()=>{const n=N[id];canvas.scrollTo({top:Math.max(0,rowY(n.row)-120),behavior:'smooth'})})}
+function seed(s){const id='r'+(++gid);add(id,null,s.p,16,s.key,{bpm:s.bpm,seedFrom:'seed · '+s.t});touched();render();toast(`new thread seeded from “${s.t}”`);requestAnimationFrame(()=>{const n=N[id];canvas.scrollTo({top:Math.max(0,rowY(n.row)-120),behavior:'smooth'})})}
 $('#rows').addEventListener('click',e=>{const b=e.target.closest('[data-seed]');if(b)return seed(LIB[+b.dataset.seed])
+  if(e.target.closest('[data-newloom]'))return toast('new loom — the current one stays saved (mock)')
+  const lo=e.target.closest('[data-lopen]');if(lo)return toast(`opening “${LOOMS[+lo.dataset.lopen].name}” (mock)`)
+  const ld=e.target.closest('[data-ldup]');if(ld){const l=LOOMS[+ld.dataset.ldup];LOOMS.splice(+ld.dataset.ldup+1,0,{...l,name:l.name+' copy',when:'just now'});lib();return toast(`duplicated “${l.name}”`)}
+  const lx=e.target.closest('[data-ldel]');if(lx){const [l]=LOOMS.splice(+lx.dataset.ldel,1);lib();return toast(`deleted “${l.name}” · its renders stay in songs`)}
   const st=e.target.closest('.stars i');if(st){const s=LIB[+st.parentElement.dataset.i];s.r=s.r===+st.dataset.r?0:+st.dataset.r;lib();return}
   const tg=e.target.closest('.tg[data-t]');if(tg){F.tags.add(tg.dataset.t);lib();return}
   const ad=e.target.closest('[data-add]');if(ad){const t=prompt('tag')?.trim().replace(/^#/,'');if(t){LIB[+ad.dataset.add].tags.push(t);lib()}}})
@@ -703,15 +747,16 @@ $('#drawerClose').onclick=()=>drawer.classList.remove('open')
 drawer.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-node')){e.preventDefault();drawer.classList.add('over')}})
 drawer.addEventListener('dragleave',()=>drawer.classList.remove('over'))
 drawer.addEventListener('drop',e=>{drawer.classList.remove('over');const id=e.dataTransfer.getData('text/lsdj-node');if(!id)return;const path=[...ancestors(id),id];toast(`bounced ${path.length} threads to songs · “${short(N[id].prompt)}” (${path.reduce((s,i)=>s+lenOf(N[i]),0)} bars)`)})
-drawer.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{drawer.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active')})
+drawer.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{drawer.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');TAB=t.textContent;lib()})
 
 /* ---------- mixer ---------- */
 const C=2*Math.PI*13
 const knob=(l,v)=>`<div class="knob" data-v="${v}"><svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="13" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="3" stroke-dasharray="${C*.75} ${C}" transform="rotate(135 17 17)"/><circle class="arc" cx="17" cy="17" r="13" fill="none" stroke="var(--dc,var(--cue))" stroke-width="3" stroke-linecap="round" stroke-dasharray="${C*.75*v} ${C}" transform="rotate(135 17 17)"/></svg>${l}</div>`
 const deckHTML=k=>`<section class="deck ${k.toLowerCase()}" data-deck="${k}">
-  <div class="status"><span class="letter">${k}</span><span class="now" id="now-${k}"></span><span class="meta" id="meta-${k}"></span><span class="nxt" id="nxt-${k}"></span><span class="pos" id="pos-${k}"></span></div>
+  <div class="status"><span class="letter">${k}</span><span class="now" id="now-${k}"></span><span class="meta" id="meta-${k}"></span><span class="nxt" id="nxt-${k}"></span><span class="pos" id="pos-${k}"></span><button class="tbtn bounce" data-dact="bounce" title="bounce what ${k} has played to the songs library">⤓</button></div>
   <div class="strip">
     <div class="tr"><button class="tbtn play on" data-dact="play">▶</button><button class="tbtn" data-dact="dcue">cue</button><button class="tbtn" data-dact="sync">sync</button><button class="tbtn" data-dact="auto" title="autopilot: follow the first rendered child when nothing is tied">auto</button></div>
+    <div class="lp"><span class="seg" data-loop title="loop from the current bar (FLX4 auto-loop); press again to carry on"><button>4</button><button>8</button><button>16</button></span><span>loop</span></div>
     <div class="vol"><input type="range" class="v" data-vol="${k}" min="0" max="1" step=".01" value="${D[k].vol}"><div class="vm" id="vm-${k}"><i style="--l:30%"></i><i style="--l:40%"></i></div><span>vol</span></div>
     <div class="eq">${knob('trim',.5)}${knob('hi',.5)}${knob('mid',.5)}${knob('low',.5)}</div>
     <div class="fx"><select><option>Filter</option><option>Dub Echo</option><option>Space</option><option>Crush</option><option>Noise</option><option>Sweep</option></select>${knob('fx',.5)}</div>
@@ -723,9 +768,12 @@ $('#mixer').innerHTML=deckHTML('A')+`<section class="core">
 
 function status(k){const d=D[k],n=N[d.node]
   $('#now-'+k).textContent=n.prompt;$('#meta-'+k).textContent=`${n.key} · ${tempoOf(n)} bpm${n.loras?.length?' · ⟐ '+n.loras.map(l=>l.n).join('+'):''}`
-  const deck=document.querySelector(`.deck[data-deck=${k}]`);deck.querySelector('[data-dact=play]').classList.toggle('on',d.playing);deck.querySelector('[data-dact=dcue]').classList.toggle('on',d.cue);deck.querySelector('[data-dact=auto]').classList.toggle('on',d.auto)}
+  const deck=document.querySelector(`.deck[data-deck=${k}]`);deck.querySelector('[data-dact=play]').classList.toggle('on',d.playing);deck.querySelector('[data-dact=dcue]').classList.toggle('on',d.cue);deck.querySelector('[data-dact=auto]').classList.toggle('on',d.auto)
+  deck.querySelectorAll('[data-loop] button').forEach(b=>b.classList.toggle('on',d.loop?.len===+b.textContent))}
 document.querySelectorAll('.deck').forEach(deck=>{const k=deck.dataset.deck
-  deck.addEventListener('click',e=>{const b=e.target.closest('[data-dact]');if(!b)return;const d=D[k]
+  deck.addEventListener('click',e=>{const lb=e.target.closest('[data-loop] button');if(lb)return setLoop(k,+lb.textContent)
+    const b=e.target.closest('[data-dact]');if(!b)return;const d=D[k]
+    if(b.dataset.dact==='bounce'){const p=[...d.hist,d.node];return toast(`bounced what ${k} played · ${p.length} threads · ${p.reduce((s,i)=>s+lenOf(N[i]),0)} bars → songs`)}
     if(b.dataset.dact==='play'){d.playing=!d.playing;toast(`${k} ${d.playing?'play':'pause'}`)}
     if(b.dataset.dact==='dcue'){d.cue=!d.cue}
     if(b.dataset.dact==='sync')toast(`${k} synced to ${k==='A'?'B':'A'} (varispeed, ±8%)`)
@@ -748,7 +796,7 @@ document.addEventListener('pointermove',e=>{if(!hd)return;const d=Math.round((e.
   for(const k of['A','B'])if(D[k].node===n.id)D[k].pos=Math.max(inOf(n),Math.min(outOf(n)-.01,D[k].pos))
   if(cue?.node===n.id&&cue.from!=null)cue.from=Math.max(inOf(n),Math.min(outOf(n)-1,cue.from))
   render();paint()})
-document.addEventListener('pointerup',()=>{if(!hd)return;const n=hd.n;hd=null;loom.classList.remove('zooming');toast(`“${short(n.prompt)}” plays bars ${inOf(n)+1}–${outOf(n)} of ${n.bars}`)})
+document.addEventListener('pointerup',()=>{if(!hd)return;const n=hd.n;hd=null;loom.classList.remove('zooming');touched();toast(`“${short(n.prompt)}” plays bars ${inOf(n)+1}–${outOf(n)} of ${n.bars}`)})
 const lv={A:[.4,.5],B:[.4,.5],M:[.4,.5]}
 const walk=a=>a.map(v=>Math.max(.08,Math.min(1,v+(Math.random()-.5)*.25)))
 function meters(){const x=+$('#xf').value,g={A:Math.min(1,(1-x)*2),B:Math.min(1,x*2)}
