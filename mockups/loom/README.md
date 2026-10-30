@@ -51,6 +51,21 @@ AI co-DJ (MCP) — plus two additions the loom needs: the **Theme** switch at th
 top of Appearance, and the Stable Audio 3 model and LoRA adapters listed under
 Models next to the Magenta RT models.
 
+## Visual language (the microdose)
+
+Everything decorative is tied to something musical, and it stays behind the
+work: an **aurora** of blurred colour that breathes once a bar at the master
+tempo and glows under each deck's playhead; node colour by **key** on the
+circle of fifths, waveforms with peaks in that hue over a white-hot body;
+deck badges and playheads that **pulse on their own deck's beat**, so two
+unsynced decks visibly disagree and SYNC visibly locks them; a small
+**Lissajous scope** in its own window beside the master controls, drawn from
+the two decks' levels in their colours; a slow sap of light along every thread; a **ripple** from a node
+when you tie, cut or keep; a conic ring around whatever is cued; crawling
+grain; two slow counter-rotating spirals. Settings → Visuals: **off /
+microdose / full** (full adds a sheen sweep over nodes and brighter layers).
+Microdose is the default.
+
 ## Generation settings exposed (what the backend already takes)
 
 The weave popover maps 1:1 onto `/api/generate` for `kind: track`:

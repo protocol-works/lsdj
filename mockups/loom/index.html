@@ -22,16 +22,17 @@ button{background:none;border:0;cursor:pointer}
 
 /* ---------- aurora: the psychedelic underlay ---------- */
 .aurora{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;filter:saturate(1.3);animation:hue 90s linear infinite}
-.aurora i{position:absolute;width:60vmax;height:60vmax;border-radius:50%;filter:blur(80px);opacity:.68;mix-blend-mode:screen;animation:drift 48s ease-in-out infinite alternate}
+.aurora i{position:absolute;width:60vmax;height:60vmax;border-radius:50%;filter:blur(80px);opacity:.68;mix-blend-mode:screen;animation:drift 48s ease-in-out infinite alternate,pulse calc(var(--beat,.5s)*4) ease-in-out infinite}
 .aurora i:nth-child(1){background:radial-gradient(circle,#4c1d95 0%,transparent 60%);left:-20vmax;top:-10vmax}
-.aurora i:nth-child(2){background:radial-gradient(circle,#0e7490 0%,transparent 60%);right:-25vmax;top:0;animation-duration:61s}
-.aurora i:nth-child(3){background:radial-gradient(circle,#9d174d 0%,transparent 60%);left:30vw;bottom:-30vmax;animation-duration:73s;animation-delay:-20s}
-.aurora i:nth-child(4){background:radial-gradient(circle,#3f6212 0%,transparent 60%);left:55vw;top:20vh;width:40vmax;height:40vmax;animation-duration:39s;animation-delay:-9s;opacity:.35}
+.aurora i:nth-child(2){background:radial-gradient(circle,#0e7490 0%,transparent 60%);right:-25vmax;top:0;animation-duration:61s,calc(var(--beat,.5s)*4)}
+.aurora i:nth-child(3){background:radial-gradient(circle,#9d174d 0%,transparent 60%);left:30vw;bottom:-30vmax;animation-duration:73s,calc(var(--beat,.5s)*4);animation-delay:-20s}
+.aurora i:nth-child(4){background:radial-gradient(circle,#3f6212 0%,transparent 60%);left:55vw;top:20vh;width:40vmax;height:40vmax;animation-duration:39s,calc(var(--beat,.5s)*4);animation-delay:-9s;opacity:.35}
 .aurora .glow{width:36vmax;height:36vmax;filter:blur(90px);opacity:.26;animation:none;transition:left .5s linear}
 .aurora .glow.a{background:radial-gradient(circle,var(--a) 0%,transparent 60%);left:calc(var(--ax) - 18vmax);top:6vh}
 .aurora .glow.b{background:radial-gradient(circle,var(--b) 0%,transparent 60%);left:calc(var(--bx) - 18vmax);top:18vh}
-.aurora .spiral{position:absolute;inset:-60%;background:conic-gradient(from 0deg,transparent 0 38%,rgba(255,255,255,.04) 50%,transparent 62% 100%);animation:spin 110s linear infinite;mix-blend-mode:screen}
-.grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.07;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .7 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.aurora .spiral{position:absolute;inset:-60%;background:conic-gradient(from 0deg,transparent 0 38%,rgba(255,255,255,.07) 50%,transparent 62% 100%);animation:spin 110s linear infinite;mix-blend-mode:screen;opacity:.8}
+.aurora .spiral2{position:absolute;inset:-60%;background:conic-gradient(from 180deg,transparent 0 41%,hsla(290,90%,70%,.06) 50%,transparent 59% 100%);animation:spin 170s linear infinite reverse;mix-blend-mode:screen;opacity:.8}
+.grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.07;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .7 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");animation:grain .5s steps(4) infinite}
 @keyframes drift{from{transform:translate(0,0) scale(1)}to{transform:translate(12vw,8vh) scale(1.25)}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes hue{to{filter:saturate(1.3) hue-rotate(360deg)}}
@@ -39,6 +40,11 @@ button{background:none;border:0;cursor:pointer}
 @keyframes ring{to{--ang:360deg}}
 @keyframes flow{to{stroke-dashoffset:-12}}
 @keyframes breathe{50%{opacity:.55}}
+@keyframes pulse{50%{filter:blur(80px) brightness(1.18)}}
+@keyframes grain{0%{background-position:0 0}25%{background-position:-23px 17px}50%{background-position:31px -9px}75%{background-position:-11px -29px}100%{background-position:0 0}}
+@keyframes beat{0%{box-shadow:0 0 16px var(--dc),0 0 0 0 color-mix(in srgb,var(--dc) 70%,transparent)}100%{box-shadow:0 0 16px var(--dc),0 0 0 12px transparent}}
+@keyframes throb{50%{box-shadow:0 0 12px 3px var(--dc),0 0 40px 10px var(--dc)}}
+@keyframes rip{to{transform:scale(1.1,1.6);opacity:0;box-shadow:0 0 0 1px var(--dc),0 0 34px 12px color-mix(in srgb,var(--dc) 45%,transparent)}}
 
 /* ---------- shell ---------- */
 .app{position:relative;z-index:2;height:100%;display:grid;grid-template-rows:46px 1fr 150px}
@@ -74,6 +80,7 @@ button{background:none;border:0;cursor:pointer}
 .threads{position:absolute;inset:0;overflow:visible;pointer-events:none}
 .thread{fill:none;stroke:rgba(255,255,255,.16);stroke-width:1.5;transition:d .5s}
 .thread.ghost{stroke-dasharray:3 4}
+.thread.sap{stroke:rgba(255,255,255,.55);stroke-width:1.5;stroke-dasharray:2 16;animation:flow 2.6s linear infinite;opacity:.5}
 .thread.a{stroke:var(--a);color:var(--a)} .thread.b{stroke:var(--b);color:var(--b)}
 .thread.past{opacity:.5;stroke-width:2.5}
 .thread.future{stroke-width:3;stroke-dasharray:7 5;animation:flow 1s linear infinite;filter:drop-shadow(0 0 5px currentColor)}
@@ -97,7 +104,9 @@ button{background:none;border:0;cursor:pointer}
 .node.ghost .prog{display:block}
 .node .prog i{display:block;height:100%;width:0;background:var(--cue);box-shadow:0 0 8px var(--cue);transition:width .2s linear}
 .node .wave{position:absolute;left:10px;width:calc(100% - 20px);top:7px;height:24px;fill:currentColor;cursor:crosshair}
-.node .wave .pk{opacity:.28} .node .wave .rms{opacity:.85}
+.node .wave .pk{fill:hsl(var(--h) 90% 72%);opacity:.5} .node .wave .rms{fill:#fff;opacity:.72;mix-blend-mode:screen}
+.node .sheen{display:none;position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(115deg,transparent 35%,rgba(255,255,255,.09) 50%,transparent 65%) 0 0/250% 100%;animation:shimmer 7s linear infinite}
+.vis-full .node:not(.ghost) .sheen{display:block}
 .node .h{position:absolute;top:5px;bottom:5px;width:7px;border-radius:4px;background:rgba(255,255,255,.5);opacity:0;cursor:ew-resize;z-index:2}
 .node .h.l{left:2px} .node .h.r{right:2px}
 .node:hover .h,.node.selected .h{opacity:.45} .node .h:hover{opacity:1}
@@ -126,6 +135,7 @@ button{background:none;border:0;cursor:pointer}
 .takes span{position:absolute;left:-2px;bottom:calc(100% + 3px);font:10px var(--mono);color:var(--muted);letter-spacing:.04em;white-space:nowrap}
 .takes span b{color:var(--cue);font-weight:400}
 
+.ripple{position:absolute;border-radius:14px;pointer-events:none;z-index:5;box-shadow:0 0 0 2px var(--dc);animation:rip .7s ease-out forwards}
 .slot{position:absolute;height:62px;border-radius:14px;border:1px dashed rgba(255,255,255,.18);display:flex;align-items:center;gap:10px;padding:0 14px;color:var(--muted);cursor:text;transition:left .5s cubic-bezier(.2,.8,.2,1),top .5s cubic-bezier(.2,.8,.2,1),border-color .2s;white-space:nowrap;overflow:hidden}
 .slot:hover{border-color:var(--cue);color:var(--ink)}
 .slot .plus{width:22px;height:22px;border-radius:50%;border:1px solid currentColor;display:grid;place-items:center;flex:none}
@@ -133,7 +143,7 @@ button{background:none;border:0;cursor:pointer}
 .slot b{font-weight:600}
 
 .trail{position:absolute;height:62px;border-radius:14px;pointer-events:none;background:linear-gradient(90deg,transparent,var(--dc));opacity:.22;mix-blend-mode:screen;z-index:2}
-.phead{position:absolute;width:2px;margin-left:-1px;pointer-events:none;background:#fff;box-shadow:0 0 8px 2px var(--dc),0 0 26px 5px var(--dc);z-index:3}
+.phead{position:absolute;width:2px;margin-left:-1px;pointer-events:none;background:#fff;box-shadow:0 0 8px 2px var(--dc),0 0 26px 5px var(--dc);z-index:3;animation:throb var(--beat,.5s) ease-in-out infinite}
 .tag{position:absolute;transform:translateX(-50%);pointer-events:auto;font:700 10px var(--mono);color:#000;background:var(--dc);padding:1px 7px;border-radius:999px;box-shadow:0 0 14px var(--dc);z-index:3;white-space:nowrap}
 .tag.hold{background:var(--warn);box-shadow:0 0 14px var(--warn)}
 .tag.over{transform:translateX(-50%) scale(1.25)}
@@ -240,12 +250,13 @@ details.adv summary b{color:var(--ink);font-weight:400}
 .help p{margin:6px 0} .help b{color:var(--cue);font-family:var(--mono);font-weight:400;font-size:11.5px}
 
 /* ---------- mixer ---------- */
-.mixer{display:grid;grid-template-columns:1fr 300px 1fr;border-top:1px solid var(--line);background:rgba(7,5,15,.62);backdrop-filter:blur(16px)}
+.mixer{display:grid;grid-template-columns:1fr 350px 1fr;border-top:1px solid var(--line);background:rgba(7,5,15,.62);backdrop-filter:blur(16px)}
 .deck{padding:8px 16px 10px;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;gap:8px;min-width:0;transition:box-shadow .2s}
 .deck.a{--dc:var(--a)} .deck.b{--dc:var(--b)}
 .deck.over{box-shadow:inset 0 0 0 2px var(--dc)}
 .deck .status{display:flex;align-items:center;gap:10px;font:11px var(--mono);min-width:0}
-.deck .letter{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#000;background:var(--dc);box-shadow:0 0 16px var(--dc);flex:none}
+.deck .letter{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#000;background:var(--dc);box-shadow:0 0 16px var(--dc);flex:none;animation:beat var(--beat,.5s) ease-out infinite}
+.deck:not(.playing) .letter{animation:none}
 .deck .now{font:600 14px var(--ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:40px}
 .deck .meta{color:var(--muted);flex:none}
 .deck .nxt{margin-left:auto;color:var(--muted);flex:0 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38%;min-width:0}
@@ -271,21 +282,26 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
 .knob svg{width:46px;height:46px}
 .fx{display:flex;align-items:flex-end;gap:8px}
 .fx select{appearance:none;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:10.5px var(--mono);height:30px;margin-bottom:17px}
-.core{padding:8px 16px 10px;display:grid;grid-template-rows:auto 1fr;gap:8px;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.core{padding:8px 16px 10px;position:relative;display:grid;grid-template-rows:auto 1fr;gap:8px;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.scopewin{flex:1;align-self:stretch;min-width:90px;position:relative;border-radius:10px;background:rgba(0,0,0,.38);border:1px solid var(--line);overflow:hidden;box-shadow:inset 0 0 24px rgba(0,0,0,.6)}
+.scope{position:absolute;inset:0;width:100%;height:100%;display:block}
 .xf{display:flex;align-items:center;gap:10px;font:11px var(--mono)}
 .xf span.a{color:var(--a)} .xf span.b{color:var(--b)}
 .xf input{flex:1;appearance:none;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--a),var(--b));margin:0}
 .xf input::-webkit-slider-thumb{appearance:none;width:14px;height:26px;border-radius:4px;background:#f3f4f6;box-shadow:0 0 12px rgba(255,255,255,.5)}
-.master{display:flex;align-items:flex-end;justify-content:center;gap:26px}
+.master{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
 .meter{display:flex;gap:3px;align-items:flex-end;height:72px}
 .meter i{width:8px;background:linear-gradient(0deg,var(--cue),#f59e0b 75%,#ef4444);height:var(--l);border-radius:2px;opacity:.9;transition:height .08s}
 
+.vis-off .aurora,.vis-off .grain,.vis-off .thread.sap{display:none} .vis-off .scopewin{visibility:hidden}
+.vis-off .deck .letter,.vis-off .phead,.vis-off .node.ghost{animation:none}
+.vis-full .aurora i{opacity:.85} .vis-full .aurora .spiral,.vis-full .aurora .spiral2{opacity:1} .vis-full .grain{opacity:.1} .vis-full .scopewin{border-color:rgba(255,255,255,.2)} .vis-full .thread.sap{opacity:.8}
 .toast{position:fixed;left:50%;bottom:166px;transform:translate(-50%,10px);opacity:0;transition:.25s;padding:8px 14px;border-radius:10px;background:rgba(12,8,26,.92);border:1px solid var(--line);font:11.5px var(--mono);z-index:30;pointer-events:none;white-space:nowrap}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 </style>
 </head>
-<body>
-<div class="aurora"><i></i><i></i><i></i><i></i><i class="glow a"></i><i class="glow b"></i><div class="spiral"></div></div>
+<body class="vis-micro">
+<div class="aurora"><i></i><i></i><i></i><i></i><i class="glow a"></i><i class="glow b"></i><div class="spiral"></div><div class="spiral2"></div></div>
 <div class="grain"></div>
 
 <div class="app">
@@ -331,7 +347,7 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
         <section class="theme"><h5>appearance</h5>
           <div class="kv"><span class="l">Theme<small>the deck surface: everything else is shared</small></span><span class="seg" id="theme"><button>DJ</button><button class="on">Loom</button></span></div>
           <p class="hint"><b>DJ</b> is the two deck columns you have today. <b>Loom</b> is this. The mixer, explorer, engine, generation and FLX4 stay the same either way.</p>
-          <div class="kv"><span class="l">Performance visuals<small>aurora, grain, glow</small></span><input type="checkbox" class="sw" checked></div>
+          <div class="kv"><span class="l">Visuals<small>aurora, grain, beat pulse, scope, sheen</small></span><span class="seg" id="vis"><button>off</button><button class="on">microdose</button><button>full</button></span></div>
         </section>
         <section><h5>audio</h5>
           <div class="kv"><span class="l">Output</span><select><option>MacBook Pro Speakers</option><option>DDJ-FLX4</option><option>Scarlett 2i2</option></select></div>
@@ -473,7 +489,7 @@ function makeNode(n){const el=document.createElement('div');el.className='node';
   el.style.setProperty('--h',hue(n.key))
   el.innerHTML=`${n.parent?'':`<span class="seed">${n.seedFrom}</span>`}${wave(n)}
   <div class="head"><span class="prompt" title="${esc(n.prompt)}">${n.prompt}</span><span class="meta" title="seed ${n.seed}${n.loras?.length?' · '+loraTitle(n):''}"></span></div>
-  <i class="h l" title="drag to trim the start (snaps to bars)"></i><i class="h r" title="drag to trim the end (snaps to bars)"></i><i class="cuept"></i><div class="prog"><i></i></div>
+  <i class="h l" title="drag to trim the start (snaps to bars)"></i><i class="h r" title="drag to trim the end (snaps to bars)"></i><i class="cuept"></i><i class="sheen"></i><div class="prog"><i></i></div>
   <div class="tools"><button class="keep" data-act="keep" title="keep this take, discard its siblings">✓ keep</button><button class="drop" data-act="drop" title="discard this take">⨯</button><button class="cue" data-act="cue" title="audition in headphones, from the join">⌾ cue</button><button class="ta" data-act="A" title="thread deck A through this">→ A</button><button class="tb" data-act="B" title="thread deck B through this">→ B</button><button data-act="weave" title="weave what comes next">✱</button></div>`
   return el}
 
@@ -527,7 +543,7 @@ function render(){layout()
   for(const[id,el]of slotEls)if(!want.has(id)){el.remove();slotEls.delete(id)}
   // threads: the tree, then each deck's path (played, then tied) on top
   let out=''
-  for(const c of Object.values(N)){if(!c.parent)continue;out+=`<path class="thread${c.ghost?' ghost':''}" d="${edgeD(N[c.parent],c)}"/>`}
+  for(const c of Object.values(N)){if(!c.parent)continue;{const d=edgeD(N[c.parent],c);out+=`<path class="thread${c.ghost?' ghost':''}" d="${d}"/>${c.ghost?'':`<path class="thread sap" d="${d}"/>`}`}}
   svg.innerHTML=out+deckPaths('A')+deckPaths('B')
   const Hh=rowY(rows)+60;loom.style.width=W+'px';loom.style.height=Hh+'px';svg.setAttribute('width',W);svg.setAttribute('height',Hh)
   const step=PX>=32?4:PX>=12?8:16
@@ -571,7 +587,7 @@ function paint(){const sr=stage.getBoundingClientRect()
     const x=Math.max(n.x,Math.min(n.x+(d.pos-inOf(n))*PX,n.x+n.w)),lp=loopOf(k),tl=lp?n.x+(lp.start-inOf(n))*PX:n.x
     s.trail.style.left=tl+'px';s.trail.style.top=y+'px';s.trail.style.width=Math.max(0,x-tl)+'px'
     const L=s.loop;L.classList.toggle('on',!!lp);if(lp){L.classList.toggle('hold',!!lp.hold);L.style.left=tl+'px';L.style.top=y+'px';L.style.width=(lp.end-lp.start)*PX+'px';L.style.height=H+'px';L.firstChild.textContent=lp.hold?'⟲ hold · last 4':`⟲ ${lp.len} · ×${lp.n}`}
-    s.head.style.left=x+'px';s.head.style.top=(y-8)+'px';s.head.style.height=(H+16)+'px'
+    s.head.style.setProperty('--beat',60/tempoOf(n)+'s');s.head.style.left=x+'px';s.head.style.top=(y-8)+'px';s.head.style.height=(H+16)+'px'
     const sm=seam(k);s.tag.style.left=x+'px';s.tag.style.top=(y-28)+'px';s.tag.textContent=sm.tag;s.tag.classList.toggle('hold',sm.warn)
     const nx=$('#nxt-'+k);nx.textContent=sm.tag.replace(/^[AB] (· )?/,'');nx.classList.toggle('warn',sm.warn)
     document.querySelector(`.deck[data-deck=${k}] [data-dact=play]`).classList.toggle('blink',sm.warn&&d.playing)
@@ -596,8 +612,10 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
   requestAnimationFrame(tick)}
 
 /* ---------- actions ---------- */
+function ripple(id,k){const n=N[id];if(!n||n.row==null)return;const r=document.createElement('i');r.className='ripple';r.style.cssText=`left:${n.x}px;top:${rowY(n.row)}px;width:${n.w}px;height:${H}px;--dc:${k?`var(--${k.toLowerCase()})`:'var(--cue)'}`;loom.appendChild(r);r.onanimationend=()=>r.remove()}
 function go(k,id,pos){const d=D[k];if(d.node!==id){d.hist.push(d.node);if(d.hist.length>8)d.hist.shift()}d.node=id;d.pos=inOf(N[id])+pos;d.hold=false;d.loop=null}
 function threadTo(k,id,cut=false){const d=D[k],name=short(N[id].prompt)
+  ripple(id,k)
   if(cut){if(d.playing){d.cut=id;toast(`${k} cuts → “${name}” on the next bar`)}else{d.queue=[];go(k,id,0);toast(`${k} loaded “${name}” at the top`)}touched();render();return}
   const qi=d.queue.indexOf(id)
   if(qi>=0){d.queue=d.queue.slice(0,qi);toast(`${k} untied “${name}”${d.queue.length?'':' — will hold at the seam'}`);touched();render();return}
@@ -621,7 +639,7 @@ const inUse=id=>['A','B'].some(k=>D[k].node===id||D[k].queue.includes(id))
 function discard(ids){const gone=ids.filter(id=>!inUse(id)&&!kids(id).length);for(const id of gone){delete N[id];if(cue?.node===id)cue=null;if(selected===id)selected=null}return gone.length}
 function keep(id){const n=N[id],sib=kids(n.parent).filter(x=>x.take===n.take&&x.id!==id).map(x=>x.id)
   const g=discard(sib);for(const x of Object.values(N))if(x.take===n.take)delete x.take
-  touched();render();toast(`kept take ${n.takeN} · ${g} discarded${g<sib.length?' (a deck still holds one)':''}`)}
+  touched();render();ripple(id);toast(`kept take ${n.takeN} · ${g} discarded${g<sib.length?' (a deck still holds one)':''}`)}
 
 /* ---------- weave popover ---------- */
 const LORAS=['666-midtempo-bass','colundi-idm','industrial-techno','opera','zentai-chiptune']
@@ -756,7 +774,7 @@ $('#theme').onclick=e=>{const b=e.target.closest('button');if(!b)return
   $('#theme').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b))}
 $('#tempo').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('#tempo').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));toast(`sync range ${b.textContent}`)}
 let RA=true;$('#ra').onchange=e=>{RA=e.target.checked;toast(RA?'render ahead on':'render ahead off — leaves will hold')}
-$('.set .sw').onchange=e=>{document.querySelector('.aurora').style.opacity=document.querySelector('.grain').style.opacity=e.target.checked?'':'0';toast(e.target.checked?'performance visuals on':'performance visuals off')}
+$('#vis').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('#vis').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));document.body.className='vis-'+(b.textContent==='microdose'?'micro':b.textContent);toast(`visuals: ${b.textContent}`)}
 const cfgFor=h=>h==='Claude Code'?`claude mcp add --transport http lsdj http://127.0.0.1:7340/mcp --header "Authorization: Bearer lsdj_…7f3a"`:JSON.stringify({mcpServers:{lsdj:{url:'http://127.0.0.1:7340/mcp',headers:{Authorization:'Bearer lsdj_…7f3a'}}}},null,1)
 const harness=$('#harness');const cfg=()=>$('#cfg').textContent=cfgFor(harness.value);harness.onchange=cfg;cfg()
 $('#copyCfg').onclick=e=>{e.target.textContent='copied ✓';setTimeout(()=>e.target.textContent='copy',1400)}
@@ -784,12 +802,12 @@ const deckHTML=k=>`<section class="deck ${k.toLowerCase()}" data-deck="${k}">
   </div></section>`
 $('#mixer').innerHTML=deckHTML('A')+`<section class="core">
   <div class="xf"><span class="a">A</span><input type="range" id="xf" min="0" max="1" step=".01" value=".5"><span class="b">B</span></div>
-  <div class="master">${knob('cue mix',.4)}<div class="meter" id="meter"><i style="--l:40%"></i><i style="--l:52%"></i></div>${knob('master',.8)}</div>
+  <div class="master"><div class="scopewin"><canvas class="scope" id="scope"></canvas></div>${knob('cue mix',.4)}<div class="meter" id="meter"><i style="--l:40%"></i><i style="--l:52%"></i></div>${knob('master',.8)}</div>
 </section>`+deckHTML('B')
 
 function status(k){const d=D[k],n=N[d.node]
   $('#now-'+k).textContent=n.prompt;$('#meta-'+k).textContent=`${n.key} · ${tempoOf(n)} bpm${n.loras?.length?' · ⟐ '+n.loras.map(l=>l.n).join('+'):''}`
-  const deck=document.querySelector(`.deck[data-deck=${k}]`);deck.querySelector('[data-dact=play]').classList.toggle('on',d.playing);deck.querySelector('[data-dact=dcue]').classList.toggle('on',d.cue);deck.querySelector('[data-dact=auto]').classList.toggle('on',d.auto)
+  const deck=document.querySelector(`.deck[data-deck=${k}]`);deck.classList.toggle('playing',d.playing);deck.style.setProperty('--beat',60/tempoOf(n)+'s');deck.querySelector('[data-dact=play]').classList.toggle('on',d.playing);deck.querySelector('[data-dact=dcue]').classList.toggle('on',d.cue);deck.querySelector('[data-dact=auto]').classList.toggle('on',d.auto)
   deck.querySelectorAll('[data-loop] button').forEach(b=>b.classList.toggle('on',d.loop?.len===+b.textContent))}
 document.querySelectorAll('.deck').forEach(deck=>{const k=deck.dataset.deck
   deck.addEventListener('click',e=>{const lb=e.target.closest('[data-loop] button');if(lb)return setLoop(k,+lb.textContent)
@@ -822,12 +840,19 @@ const lv={A:[.4,.5],B:[.4,.5],M:[.4,.5]}
 const walk=a=>a.map(v=>Math.max(.08,Math.min(1,v+(Math.random()-.5)*.25)))
 function meters(){const x=+$('#xf').value,g={A:Math.min(1,(1-x)*2),B:Math.min(1,x*2)}
   for(const k of['A','B']){lv[k]=walk(lv[k]);const on=D[k].playing?D[k].vol:0;const el=$('#vm-'+k);el.children[0].style.setProperty('--l',(lv[k][0]*on*100)+'%');el.children[1].style.setProperty('--l',(lv[k][1]*on*100)+'%')}
-  lv.M=walk(lv.M);const m=Math.max(D.A.playing?D.A.vol*g.A:0,D.B.playing?D.B.vol*g.B:0);$('#meter').children[0].style.setProperty('--l',(lv.M[0]*m*100)+'%');$('#meter').children[1].style.setProperty('--l',(lv.M[1]*m*100)+'%')}
+  lv.M=walk(lv.M);const m=Math.max(D.A.playing?D.A.vol*g.A:0,D.B.playing?D.B.vol*g.B:0);$('#meter').children[0].style.setProperty('--l',(lv.M[0]*m*100)+'%');$('#meter').children[1].style.setProperty('--l',(lv.M[1]*m*100)+'%');scope(g)}
+const sc=$('#scope'),sx=sc.getContext('2d'),ph={A:0,B:0}
+function scope(g){if(sc.width!==sc.clientWidth||sc.height!==sc.clientHeight){sc.width=sc.clientWidth;sc.height=sc.clientHeight}const W=sc.width,Hh=sc.height
+  sx.globalCompositeOperation='destination-out';sx.fillStyle='rgba(0,0,0,.22)';sx.fillRect(0,0,W,Hh);sx.globalCompositeOperation='source-over'
+  for(const k of['A','B']){const d=D[k];if(!d.playing)continue;ph[k]+=tempoOf(N[d.node])/60*.011;const amp=Math.min(1,d.vol*g[k])*(.55+lv[k][0]*.45);if(amp<.03)continue
+    sx.beginPath();for(let i=0;i<=180;i++){const t=i/180*Math.PI*2,px=W/2+Math.sin(t*(k==='A'?3:2)+ph[k])*W*.44*amp,py=Hh/2+Math.sin(t*(k==='A'?2:3))*Hh*.42*amp;i?sx.lineTo(px,py):sx.moveTo(px,py)}
+    sx.strokeStyle=k==='A'?'rgba(192,132,252,.85)':'rgba(34,211,238,.85)';sx.lineWidth=1.1;sx.shadowBlur=9;sx.shadowColor=sx.strokeStyle;sx.stroke()}}
 $('#rec').onclick=e=>{e.currentTarget.classList.toggle('on');toast(e.currentTarget.classList.contains('on')?'recording master → ~/Documents/LSDJ/recordings':'recording stopped')}
 $('#helpbtn').onclick=()=>$('#help').classList.toggle('open')
 
 let tt;function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600)}
 
+document.documentElement.style.setProperty('--beat',60/124+'s')
 lib();render();requestAnimationFrame(tick)
 requestAnimationFrame(()=>{canvas.scrollLeft=0;canvas.scrollTop=0})
 </script>
