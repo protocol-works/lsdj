@@ -28,16 +28,25 @@ and the deck's playhead — the **shuttle** — follows the tied thread.
 | →A / →B | Tie a node as the deck's *next*: through the tree if it is downstream, a jump or a return at the seam if not. Ties queue; ⨯ (the same button, or the rail chip) unties. Shift-click, or drop the node on the shuttle, **cuts** to it on the next bar. |
 | cue | ⌾ auditions a node in the headphones, by default from the *join* (four bars before it) so you hear the transition. Click inside a waveform to cue from that bar instead (a lime marker shows where). Independent of the on-air decks. |
 | scrub | Clicking inside the waveform of the node a deck is playing moves that deck's playhead to that bar (on the beat, in the real thing). |
-| rail | The deck's flattened path (past · now · next) in the mixer. Scrolls under a fade; drop target. |
+| panel | Each deck's strip in the mixer: what's playing, bars to the seam and what's there, then transport, fader with meter, EQ and FX. Drop a node on it to tie. |
 | bounce | Drop a node on the explorer: its root-to-node path is stitched to one song in the library. |
+| theme | A new setting in the settings drawer: **DJ** (the two deck columns the app has today) or **Loom** (this). It switches the deck surface only; the mixer, explorer, engine, generation and FLX4 mapping are shared. |
 
 ## What it keeps from the current app
 
 The mixer (trim, EQ, Color FX, volume with a meter beside the fader, crossfader,
-cue mix, master, record), the media explorer as a drawer (now with star
+cue mix, master, record), kept to one strip per deck, the media explorer as a drawer (now with star
 ratings, tags, sorts, a ★4+ filter and an *in key with deck A/B* filter), and
 the FLX4 mapping. Only the deck surface changes: the loom replaces the two deck
 columns.
+
+## Settings drawer
+
+The settings button opens a right-hand drawer with the sections the app has
+today — Appearance, Audio (output, headphones, tempo range), Models, Recording,
+AI co-DJ (MCP) — plus two additions the loom needs: the **Theme** switch at the
+top of Appearance, and the Stable Audio 3 model and LoRA adapters listed under
+Models next to the Magenta RT models.
 
 ## Generation settings exposed (what the backend already takes)
 
@@ -58,6 +67,14 @@ sidecar. Nothing in the popover needs a new endpoint.
   is right.
 - **2026-10-30, no chord row.** We don't have chord data; the node shows a
   waveform, key and length instead.
+- **2026-10-30, Loom is a theme, not a fork.** The loom ships behind a
+  `Theme: DJ | Loom` setting rather than replacing the deck UI outright, so
+  both surfaces share one engine, mixer, explorer and MIDI layer and either
+  can be dropped later without a migration.
+- **2026-10-30, no rail.** The mixer panel had a row of past · now · next
+  pills per deck. The loom already draws all three (trail, glowing node, dashed
+  tied node), so the panel keeps one line of text instead and the mixer gives
+  the height back to the loom.
 - **2026-10-30, trim hides, it does not dim.** Left-to-right is real time, so a
   trimmed intro cannot stay on screen without lying about when the next node
   starts. Nodes shrink like DAW clips and the handles stay reachable.

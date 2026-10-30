@@ -41,7 +41,7 @@ button{background:none;border:0;cursor:pointer}
 @keyframes breathe{50%{opacity:.55}}
 
 /* ---------- shell ---------- */
-.app{position:relative;z-index:2;height:100%;display:grid;grid-template-rows:46px 1fr 204px}
+.app{position:relative;z-index:2;height:100%;display:grid;grid-template-rows:46px 1fr 150px}
 .top{display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(7,5,15,.55);backdrop-filter:blur(12px)}
 .brand{display:flex;align-items:center;gap:10px;font:700 14px var(--mono);letter-spacing:.08em}
 .brand svg{width:24px;height:24px}
@@ -167,6 +167,26 @@ button{background:none;border:0;cursor:pointer}
 .empty{padding:30px 12px;text-align:center;color:var(--faint);font:11px var(--mono)}
 .drawer footer{padding:10px 12px;border-top:1px solid var(--line);font:10.5px var(--mono);color:var(--faint);line-height:1.5}
 .drawer.over{box-shadow:inset 0 0 0 2px var(--cue)}
+.drawer.right{left:auto;right:0;width:400px;transform:translateX(100%);border-right:0;border-left:1px solid var(--line)}
+.drawer.right.open{transform:none}
+.drawer.right header h3{margin:0;font:11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.set{overflow:auto;flex:1}
+.set section{padding:12px 14px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
+.set h5{margin:0 0 6px;font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.kv{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;font-size:12.5px}
+.kv .l{color:var(--ink);min-width:0} .kv .tbtn{white-space:nowrap;flex:none} .kv .l small{display:block;color:var(--muted);font-size:11px;margin-top:1px}
+.kv select,.kv input[type=text]{appearance:none;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:7px;padding:5px 9px;font:11px var(--mono);color:var(--ink);outline:0;max-width:200px}
+.kv input[type=text]:focus{border-color:var(--cue)}
+.sw{appearance:none;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,.14);position:relative;cursor:pointer;flex:none;margin:0;transition:background .2s}
+.sw::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#e5e7eb;transition:left .2s}
+.sw:checked{background:var(--cue)} .sw:checked::after{left:16px;background:#000}
+.set .hint{font:11px/1.5 var(--ui);color:var(--muted);margin:2px 0 4px}
+.set .row2{display:flex;gap:6px;align-items:center}
+.set pre{margin:6px 0 0;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,.35);border:1px solid var(--line);font:10.5px/1.45 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-all}
+.mdl{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px}
+.mdl .sz{font:10.5px var(--mono);color:var(--faint);margin-left:auto}
+.mdl .ok{color:var(--cue);font-family:var(--mono)}
+.theme .seg button{padding:5px 14px;font-size:11px}
 
 /* ---------- popovers ---------- */
 .pop{position:fixed;z-index:20;width:400px;overflow:auto;scrollbar-width:thin;padding:12px;border-radius:14px;background:rgba(12,8,26,.94);border:1px solid var(--line);backdrop-filter:blur(14px);box-shadow:0 24px 60px -20px #000;display:none}
@@ -214,51 +234,43 @@ details.adv summary b{color:var(--ink);font-weight:400}
 
 /* ---------- mixer ---------- */
 .mixer{display:grid;grid-template-columns:1fr 300px 1fr;border-top:1px solid var(--line);background:rgba(7,5,15,.62);backdrop-filter:blur(16px)}
-.deck{padding:10px 16px 12px;display:grid;grid-template-rows:auto auto 1fr;gap:8px;min-width:0;transition:box-shadow .2s}
+.deck{padding:8px 16px 10px;display:grid;grid-template-rows:auto 1fr;gap:8px;min-width:0;transition:box-shadow .2s}
 .deck.a{--dc:var(--a)} .deck.b{--dc:var(--b)}
 .deck.over{box-shadow:inset 0 0 0 2px var(--dc)}
 .deck .status{display:flex;align-items:center;gap:10px;font:11px var(--mono);min-width:0}
-.deck .letter{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#000;background:var(--dc);box-shadow:0 0 16px var(--dc);flex:none}
-.deck .now{font:600 13px var(--ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.deck .letter{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#000;background:var(--dc);box-shadow:0 0 16px var(--dc);flex:none}
+.deck .now{font:600 14px var(--ui);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .deck .meta{color:var(--muted);flex:none}
-.deck .pos{margin-left:auto;color:var(--muted);flex:none}
-.rail{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;align-items:center;min-height:26px;font:10.5px var(--mono);mask-image:linear-gradient(90deg,transparent,#000 12px,#000 calc(100% - 28px),transparent)}
-.rail::-webkit-scrollbar{display:none}
-.rail .c{padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis;flex:none}
-.rail .c.past{opacity:.45}
-.rail .c.cur{color:var(--ink);border-color:var(--dc);background:linear-gradient(90deg,color-mix(in srgb,var(--dc) 35%,transparent) var(--p),transparent var(--p))}
-.rail .c.next{border-style:dashed;color:var(--ink);border-color:var(--dc);cursor:pointer} .rail .c.next:hover{text-decoration:line-through}
-.rail .c.hold{color:var(--warn);border-color:var(--warn)}
-.rail .c.auto{color:var(--dc);border-color:var(--dc);border-style:dotted}
-.rail .arr{color:var(--faint);flex:none}
-.strip{display:grid;grid-template-columns:auto auto 1fr auto;align-items:end;gap:18px}
-.deck.b .strip{grid-template-columns:auto 1fr auto auto}
+.deck .nxt{margin-left:auto;color:var(--muted);flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38%}
+.deck .nxt.warn{color:var(--warn)}
+.deck .pos{color:var(--muted);flex:none}
+.strip{display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
 .deck.b .tr{order:4} .deck.b .vol{order:3} .deck.b .eq{order:2;justify-content:flex-end} .deck.b .fx{order:1}
 .tr{display:grid;grid-template-columns:1fr 1fr;gap:5px;align-self:end}
-.tr .tbtn{height:28px;padding:0 9px}
+.tr .tbtn{height:31px;padding:0 11px;font-size:11px}
 .tbtn.play.on{background:var(--dc)}
 .vol{display:grid;grid-template-columns:auto auto;gap:3px 5px;justify-items:center;align-items:end;font:9.5px var(--mono);color:var(--muted);letter-spacing:.08em}
 .vol span{grid-column:1/-1}
-input[type=range].v{writing-mode:vertical-lr;direction:rtl;width:22px;height:70px;appearance:none;background:transparent;margin:0}
+input[type=range].v{writing-mode:vertical-lr;direction:rtl;width:22px;height:74px;appearance:none;background:transparent;margin:0}
 input[type=range].v::-webkit-slider-runnable-track{width:4px;background:rgba(255,255,255,.12);border-radius:2px}
 input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px;border-radius:3px;background:#e5e7eb;margin-left:-9px;box-shadow:0 0 10px var(--dc)}
-.vm{display:flex;gap:2px;align-items:flex-end;height:70px;padding:2px 0}
-.vm i{width:5px;height:var(--l);border-radius:1px;background:linear-gradient(0deg,var(--dc),#f59e0b 78%,#ef4444);opacity:.9;transition:height .08s}
+.vm{display:flex;gap:2px;align-items:flex-end;height:74px;padding:2px 0}
+.vm i{width:6px;height:var(--l);border-radius:1px;background:linear-gradient(0deg,var(--dc),#f59e0b 78%,#ef4444);opacity:.9;transition:height .08s}
 .eq{display:flex;gap:10px;align-items:flex-end}
 .knob{display:flex;flex-direction:column;align-items:center;gap:2px;font:9.5px var(--mono);color:var(--muted);letter-spacing:.08em;cursor:ns-resize;user-select:none}
-.knob svg{width:38px;height:38px}
+.knob svg{width:46px;height:46px}
 .fx{display:flex;align-items:flex-end;gap:8px}
-.fx select{appearance:none;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:10.5px var(--mono);height:26px;margin-bottom:14px}
-.core{padding:10px 16px 12px;display:grid;grid-template-rows:auto 1fr;gap:10px;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+.fx select{appearance:none;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:10.5px var(--mono);height:30px;margin-bottom:17px}
+.core{padding:8px 16px 10px;display:grid;grid-template-rows:auto 1fr;gap:8px;border-left:1px solid var(--line);border-right:1px solid var(--line)}
 .xf{display:flex;align-items:center;gap:10px;font:11px var(--mono)}
 .xf span.a{color:var(--a)} .xf span.b{color:var(--b)}
 .xf input{flex:1;appearance:none;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--a),var(--b));margin:0}
 .xf input::-webkit-slider-thumb{appearance:none;width:14px;height:26px;border-radius:4px;background:#f3f4f6;box-shadow:0 0 12px rgba(255,255,255,.5)}
 .master{display:flex;align-items:flex-end;justify-content:center;gap:26px}
-.meter{display:flex;gap:3px;align-items:flex-end;height:66px}
+.meter{display:flex;gap:3px;align-items:flex-end;height:72px}
 .meter i{width:8px;background:linear-gradient(0deg,var(--cue),#f59e0b 75%,#ef4444);height:var(--l);border-radius:2px;opacity:.9;transition:height .08s}
 
-.toast{position:fixed;left:50%;bottom:220px;transform:translate(-50%,10px);opacity:0;transition:.25s;padding:8px 14px;border-radius:10px;background:rgba(12,8,26,.92);border:1px solid var(--line);font:11.5px var(--mono);z-index:30;pointer-events:none;white-space:nowrap}
+.toast{position:fixed;left:50%;bottom:166px;transform:translate(-50%,10px);opacity:0;transition:.25s;padding:8px 14px;border-radius:10px;background:rgba(12,8,26,.92);border:1px solid var(--line);font:11.5px var(--mono);z-index:30;pointer-events:none;white-space:nowrap}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 </style>
 </head>
@@ -280,7 +292,7 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
     <span class="clock"><span class="dot ok"></span>DDJ-FLX4</span>
     <button class="tbtn rec" id="rec">● rec</button>
     <button class="tbtn" id="helpbtn">?</button>
-    <button class="tbtn">settings</button>
+    <button class="tbtn" id="settingsBtn">settings</button>
   </header>
 
   <main class="stage" id="stage">
@@ -300,6 +312,41 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
       <div class="filters" id="filters"></div>
       <div class="rows" id="rows"></div>
       <footer>drag a song onto the loom to seed a new thread · drop a node here to bounce its thread to the songs library</footer>
+    </aside>
+
+    <aside class="drawer right" id="settings">
+      <header><h3>settings</h3><button class="close" id="settingsClose">×</button></header>
+      <div class="set">
+        <section class="theme"><h5>appearance</h5>
+          <div class="kv"><span class="l">Theme<small>the deck surface: everything else is shared</small></span><span class="seg" id="theme"><button>DJ</button><button class="on">Loom</button></span></div>
+          <p class="hint"><b>DJ</b> is the two deck columns you have today. <b>Loom</b> is this. The mixer, explorer, engine, generation and FLX4 stay the same either way.</p>
+          <div class="kv"><span class="l">Performance visuals<small>aurora, grain, glow</small></span><input type="checkbox" class="sw" checked></div>
+        </section>
+        <section><h5>audio</h5>
+          <div class="kv"><span class="l">Output</span><select><option>MacBook Pro Speakers</option><option>DDJ-FLX4</option><option>Scarlett 2i2</option></select></div>
+          <div class="kv"><span class="l">Headphones (cue)</span><select><option>DDJ-FLX4 · phones</option><option>MacBook Pro Speakers</option></select></div>
+          <div class="kv"><span class="l">Tempo range<small>SYNC and pitch fader</small></span><span class="seg" id="tempo"><button class="on">±8 %</button><button>±16 %</button><button>±50 %</button></span></div>
+        </section>
+        <section><h5>models</h5>
+          <div class="mdl">Stable Audio 3 · medium <span class="ok">✓</span><span class="sz">4.1 GB</span></div>
+          <div class="mdl">Magenta RT · mrt2_small <span class="ok">✓</span><span class="sz">443 MB</span></div>
+          <div class="mdl">Magenta RT · mrt2_base <button class="tbtn" data-install="mrt2_base">install</button><span class="sz">1.8 GB</span></div>
+          <div class="kv" style="padding-top:10px"><span class="l">LoRA adapters<small>5 installed · ~/Library/Application Support/LSDJ/sa3-loras</small></span><button class="tbtn" id="addLora">+ add…</button></div>
+          <p class="hint">666-midtempo-bass · colundi-idm · industrial-techno · opera · zentai-chiptune</p>
+        </section>
+        <section><h5>recording</h5>
+          <div class="kv"><span class="l">Recordings folder<small>~/Downloads (default)</small></span><span class="row2"><button class="tbtn" id="chooseFolder">choose…</button></span></div>
+        </section>
+        <section><h5>ai co-dj (mcp)</h5>
+          <p class="hint">Connect your AI tool to drive the decks, mixer, FX, cues and the loom, and read the live state.</p>
+          <div class="kv"><span class="l">Your AI tool</span><select id="harness"><option>Claude Code</option><option>Claude Desktop</option><option>Cursor</option><option>VS Code</option></select></div>
+          <div class="kv"><span class="l">Endpoint</span><span style="font:11px var(--mono);color:var(--muted)">http://127.0.0.1:<b id="mcpPort" style="color:var(--ink);font-weight:400">7340</b>/mcp</span></div>
+          <div class="kv"><span class="l">Bearer token</span><span class="row2"><code id="tok" style="font:10.5px var(--mono);color:var(--muted)">lsdj_••••••••7f3a</code><button class="tbtn" id="rotate">rotate</button></span></div>
+          <div class="kv"><span class="l">Config · JSON</span><button class="tbtn" id="copyCfg">copy</button></div>
+          <pre id="cfg"></pre>
+        </section>
+      </div>
+      <footer>settings persist in the shell's settings.json · model weights live in ~/Library/Application Support/LSDJ</footer>
     </aside>
   </main>
 
@@ -331,10 +378,10 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
   <h4>how to read the loom</h4>
   <p><b>loom</b> — the canvas. Left to right is musical time in bars; down is alternatives. Every pill is a <b>thread</b>: one Stable Audio 3 clip, continued from the tail of its parent. <b>−</b> / <b>=</b> (or ⌘-wheel) zoom the bar scale.</p>
   <p><b>weave</b> — the dashed “what next?” after any leaf (or ✱ on any node) renders what follows. Ask for 1–4 <b>takes</b> of the same prompt: they render as siblings in a bracket, you cue each from the join, then <b>✓ keep</b> one and the rest are discarded. Pick a <b>LoRA</b> stack and the SA3 knobs (cfg, apg, drift from the parent, negative prompt, seed) in the same popover.</p>
-  <p><b>shuttle</b> — a deck's playhead. <b>→A</b>/<b>→B</b> ties a node as that deck's <em>next</em>: through the tree if it's downstream, a jump (or a return) at the seam if not. Ties queue; <b>⨯</b> on a tied node or its rail chip unties it. Shift-click, or drop a node on the shuttle, <b>cuts</b> to it on the next bar. Where nothing is tied the shuttle <b>holds</b> the last four bars: the tag counts down to it and turns amber at eight. It never falls silent, and it never picks for you unless <b>auto</b> is on for that deck.</p>
+  <p><b>shuttle</b> — a deck's playhead. <b>→A</b>/<b>→B</b> ties a node as that deck's <em>next</em>: through the tree if it's downstream, a jump (or a return) at the seam if not. Ties queue; <b>⨯</b> on a tied node unties it. Shift-click, or drop a node on the shuttle, <b>cuts</b> to it on the next bar. Where nothing is tied the shuttle <b>holds</b> the last four bars: the tag counts down to it and turns amber at eight. It never falls silent, and it never picks for you unless <b>auto</b> is on for that deck.</p>
   <p><b>cue</b> — ⌾ auditions a node in the headphones, from the join (four bars before it) so you hear the transition, not just the clip. Click inside a waveform to cue from that bar instead; on the node a deck is playing, the click moves that deck's playhead.</p>
   <p><b>trim</b> — drag a node's left or right edge to skip an intro or end at the drop (snaps to bars). Like a clip in a DAW the trimmed audio is hidden, not dimmed: the node gets shorter and the tree closes up behind it, because left-to-right is real time.</p>
-  <p><b>rail</b> — each deck's flattened path in the mixer: past · now · next. Also a drop target. <b>explorer</b> — rate, tag, sort and filter the library; “in key” keeps only songs that mix with what a deck is playing.</p>
+  <p><b>deck panel</b> — what's playing, bars to the seam and what's there, then transport, fader, EQ and FX. Drop a node on it to tie. <b>explorer</b> — rate, tag, sort and filter the library; “in key” keeps only songs that mix with what a deck is playing.</p>
   <p>Drag the background to pan. Nothing here makes sound; it's a mockup.</p>
 </div>
 
@@ -462,7 +509,7 @@ function render(){layout()
   const step=PX>=32?4:PX>=12?8:16
   let rl='';for(let b=0;b*PX+PADX<W;b+=step)rl+=`<span style="left:${PADX+b*PX}px">${b}</span>`;$('#ruler').innerHTML=rl;$('#ruler').style.width=W+'px'
   $('#zval').textContent=`${PX}px / bar`
-  for(const k of['A','B'])rail(k)
+  for(const k of['A','B'])status(k)
   $('#count').textContent=`${Object.values(N).filter(n=>!n.ghost).length} threads · ${Object.values(N).filter(n=>n.ghost).length} weaving`}
 
 /* ---------- zoom ---------- */
@@ -495,10 +542,9 @@ function paint(){const sr=stage.getBoundingClientRect()
     s.trail.style.left=n.x+'px';s.trail.style.top=y+'px';s.trail.style.width=(x-n.x)+'px'
     s.head.style.left=x+'px';s.head.style.top=(y-8)+'px';s.head.style.height=(H+16)+'px'
     const sm=seam(k);s.tag.style.left=x+'px';s.tag.style.top=(y-28)+'px';s.tag.textContent=sm.tag;s.tag.classList.toggle('hold',sm.warn)
-    const cnt=$('#cnt-'+k);if(cnt)cnt.textContent=sm.left+' ›'
+    const nx=$('#nxt-'+k);nx.textContent=sm.tag.replace(/^[AB] (· )?/,'');nx.classList.toggle('warn',sm.warn)
     document.querySelector(`.deck[data-deck=${k}] [data-dact=play]`).classList.toggle('blink',sm.warn&&d.playing)
     $('#pos-'+k).textContent=`bar ${(d.pos-inOf(n)).toFixed(1)} / ${lenOf(n)}`
-    $('#rail-'+k+' .cur')?.style.setProperty('--p',((d.pos-inOf(n))/lenOf(n)*100).toFixed(1)+'%')
     document.documentElement.style.setProperty(`--${k.toLowerCase()}x`,(sr.left+x-canvas.scrollLeft)+'px')}}
 
 let last=performance.now(),t0=last
@@ -554,8 +600,8 @@ function popSync(){const p=N[popParent],secs=P.bars*240/tempoOf(p)
 let popAnchor=null
 function placePop(){if(!popAnchor)return;const r=popAnchor.getBoundingClientRect(),h=pop.offsetHeight
   let x=r.left,y=r.bottom+10;if(x+410>innerWidth)x=innerWidth-420
-  const maxY=innerHeight-214-h;if(y>maxY)y=Math.max(56,maxY)
-  pop.style.left=x+'px';pop.style.top=y+'px';pop.style.maxHeight=(innerHeight-214-56)+'px'}
+  const maxY=innerHeight-160-h;if(y>maxY)y=Math.max(56,maxY)
+  pop.style.left=x+'px';pop.style.top=y+'px';pop.style.maxHeight=(innerHeight-160-56)+'px'}
 function openWeave(pid,anchor){popParent=pid;popAnchor=anchor;$('#popParent').textContent='“'+N[pid].prompt+'”';$('#popText').value='';pop.classList.add('open');popSync();$('#popText').focus()}
 pop.querySelector('details.adv').ontoggle=placePop
 $('#chips').onclick=e=>{const c=e.target.closest('.chip');if(!c)return;const t=$('#popText');t.value=(t.value?t.value+', ':'')+c.textContent;t.focus()}
@@ -591,7 +637,7 @@ loom.addEventListener('click',e=>{
   if(node){selected=selected===node.dataset.id?null:node.dataset.id;render();return}
   selected=null;pop.classList.remove('open');render()})
 document.addEventListener('click',e=>{if(!e.target.closest('.pop,[data-act],.slot,#helpbtn'))pop.classList.remove('open');if(!e.target.closest('#help,#helpbtn'))$('#help').classList.remove('open')})
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){pop.classList.remove('open');$('#help').classList.remove('open')}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){pop.classList.remove('open');$('#help').classList.remove('open');$('#settings').classList.remove('open')}
   if(e.target.matches('input,textarea'))return;if(e.key==='=' ||e.key==='+')zoom(1.25);if(e.key==='-')zoom(.8);if(e.key==='0')zoom(20/PX)})
 
 // pan by dragging the background
@@ -638,6 +684,21 @@ $('#rows').addEventListener('click',e=>{const b=e.target.closest('[data-seed]');
 $('#rows').addEventListener('dragstart',e=>{const r=e.target.closest('.row');if(!r)return;e.dataTransfer.setData('text/lsdj-song',r.dataset.i)})
 const drawer=$('#drawer')
 $('#explorer').onclick=()=>drawer.classList.toggle('open')
+const settings=$('#settings')
+$('#settingsBtn').onclick=()=>settings.classList.toggle('open')
+$('#settingsClose').onclick=()=>settings.classList.remove('open')
+$('#theme').onclick=e=>{const b=e.target.closest('button');if(!b)return
+  if(b.textContent==='DJ'){toast('DJ is the deck-column UI you have today — this mockup only draws Loom');return}
+  $('#theme').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b))}
+$('#tempo').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('#tempo').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));toast(`sync range ${b.textContent}`)}
+$('.set .sw').onchange=e=>{document.querySelector('.aurora').style.opacity=document.querySelector('.grain').style.opacity=e.target.checked?'':'0';toast(e.target.checked?'performance visuals on':'performance visuals off')}
+const cfgFor=h=>h==='Claude Code'?`claude mcp add --transport http lsdj http://127.0.0.1:7340/mcp --header "Authorization: Bearer lsdj_…7f3a"`:JSON.stringify({mcpServers:{lsdj:{url:'http://127.0.0.1:7340/mcp',headers:{Authorization:'Bearer lsdj_…7f3a'}}}},null,1)
+const harness=$('#harness');const cfg=()=>$('#cfg').textContent=cfgFor(harness.value);harness.onchange=cfg;cfg()
+$('#copyCfg').onclick=e=>{e.target.textContent='copied ✓';setTimeout(()=>e.target.textContent='copy',1400)}
+$('#rotate').onclick=()=>{$('#tok').textContent='lsdj_••••••••'+Math.random().toString(16).slice(2,6);toast('token rotated — copies you shared stop working')}
+$('#chooseFolder').onclick=()=>toast('(native folder picker)')
+$('#addLora').onclick=()=>toast('(native file picker · a LoRA adapter folder for sa3 medium)')
+settings.addEventListener('click',e=>{const b=e.target.closest('[data-install]');if(b){b.textContent='downloading…';b.disabled=true;toast(`installing ${b.dataset.install} (mock)`)}})
 $('#drawerClose').onclick=()=>drawer.classList.remove('open')
 drawer.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-node')){e.preventDefault();drawer.classList.add('over')}})
 drawer.addEventListener('dragleave',()=>drawer.classList.remove('over'))
@@ -648,8 +709,7 @@ drawer.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{drawer.querySelectorAl
 const C=2*Math.PI*13
 const knob=(l,v)=>`<div class="knob" data-v="${v}"><svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="13" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="3" stroke-dasharray="${C*.75} ${C}" transform="rotate(135 17 17)"/><circle class="arc" cx="17" cy="17" r="13" fill="none" stroke="var(--dc,var(--cue))" stroke-width="3" stroke-linecap="round" stroke-dasharray="${C*.75*v} ${C}" transform="rotate(135 17 17)"/></svg>${l}</div>`
 const deckHTML=k=>`<section class="deck ${k.toLowerCase()}" data-deck="${k}">
-  <div class="status"><span class="letter">${k}</span><span class="now" id="now-${k}"></span><span class="meta" id="meta-${k}"></span><span class="pos" id="pos-${k}"></span></div>
-  <div class="rail" id="rail-${k}"></div>
+  <div class="status"><span class="letter">${k}</span><span class="now" id="now-${k}"></span><span class="meta" id="meta-${k}"></span><span class="nxt" id="nxt-${k}"></span><span class="pos" id="pos-${k}"></span></div>
   <div class="strip">
     <div class="tr"><button class="tbtn play on" data-dact="play">▶</button><button class="tbtn" data-dact="dcue">cue</button><button class="tbtn" data-dact="sync">sync</button><button class="tbtn" data-dact="auto" title="autopilot: follow the first rendered child when nothing is tied">auto</button></div>
     <div class="vol"><input type="range" class="v" data-vol="${k}" min="0" max="1" step=".01" value="${D[k].vol}"><div class="vm" id="vm-${k}"><i style="--l:30%"></i><i style="--l:40%"></i></div><span>vol</span></div>
@@ -661,14 +721,7 @@ $('#mixer').innerHTML=deckHTML('A')+`<section class="core">
   <div class="master">${knob('cue mix',.4)}<div class="meter" id="meter"><i style="--l:40%"></i><i style="--l:52%"></i></div>${knob('master',.8)}</div>
 </section>`+deckHTML('B')
 
-function rail(k){const d=D[k],n=N[d.node];let h=''
-  for(const id of d.hist.slice(-2))h+=`<span class="c past">${short(N[id].prompt)}</span><span class="arr">›</span>`
-  h+=`<span class="c cur" style="--p:${((d.pos-inOf(n))/lenOf(n)*100).toFixed(1)}%">${short(n.prompt)}</span>`
-  h+=`<span class="arr" id="cnt-${k}">›</span>`
-  d.queue.forEach((id,i)=>{const q=N[id];h+=(i?`<span class="arr">›</span>`:'')+`<span class="c next" data-untie="${id}" title="click to untie">${q.ghost?'⟳ ':''}${short(q.prompt)}</span>`})
-  if(!d.queue.length){const au=d.auto?kids(n.id).find(x=>!x.ghost):null
-    h+=au?`<span class="c auto">auto › ${short(au.prompt)}</span>`:`<span class="c hold">${d.hold?'holding · last 4 bars':d.auto?'auto · nothing rendered — will hold':kids(n.id).length?'fork ahead — tie a thread':'nothing tied — will hold'}</span>`}
-  const el=$('#rail-'+k);el.innerHTML=h;el.scrollLeft=Math.max(0,el.querySelector('.cur').offsetLeft-el.offsetLeft-120)
+function status(k){const d=D[k],n=N[d.node]
   $('#now-'+k).textContent=n.prompt;$('#meta-'+k).textContent=`${n.key} · ${tempoOf(n)} bpm${n.loras?.length?' · ⟐ '+n.loras.map(l=>l.n).join('+'):''}`
   const deck=document.querySelector(`.deck[data-deck=${k}]`);deck.querySelector('[data-dact=play]').classList.toggle('on',d.playing);deck.querySelector('[data-dact=dcue]').classList.toggle('on',d.cue);deck.querySelector('[data-dact=auto]').classList.toggle('on',d.auto)}
 document.querySelectorAll('.deck').forEach(deck=>{const k=deck.dataset.deck
@@ -678,7 +731,6 @@ document.querySelectorAll('.deck').forEach(deck=>{const k=deck.dataset.deck
     if(b.dataset.dact==='sync')toast(`${k} synced to ${k==='A'?'B':'A'} (varispeed, ±8%)`)
     if(b.dataset.dact==='auto'){d.auto=!d.auto;toast(d.auto?`${k} autopilot on — follows the first rendered child when nothing is tied`:`${k} autopilot off — holds when nothing is tied`)}
     render()})
-  deck.addEventListener('click',e=>{const u=e.target.closest('[data-untie]');if(u)threadTo(k,u.dataset.untie)})
   deck.querySelector('[data-vol]').oninput=e=>D[k].vol=+e.target.value
   deck.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-node')){e.preventDefault();deck.classList.add('over')}})
   deck.addEventListener('dragleave',()=>deck.classList.remove('over'))
