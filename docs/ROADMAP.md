@@ -379,6 +379,53 @@ phrase markers land on real 8/16/32-bar boundaries; the energy meter rises
 and falls monotonically across a known build→drop; new intents and fields
 unit-tested; verified by `verify_m25.mjs` and a human checklist.
 
+## M26 — The loom: a branching playback surface
+
+**Status: 📋 planned (2026-10-30), design mockup done.** The design is
+settled in [`mockups/loom/README.md`](../mockups/loom/README.md) — vocabulary,
+shuttle rules, open questions — and the decisions behind it are
+[ADR-0038](adr/0038-the-loom-a-branching-playback-surface-as-a-theme.md)
+(Proposed; Accepted once the hardware checklist passes). The loom ships as a
+second **theme** (`DJ | Loom`) over the same engine, mixer, explorer and FLX4
+mapping, so the DJ booth stays the default and the regression suite until the
+loom has been played on. Verified by
+[`loom-checklist.md`](loom-checklist.md) on the device.
+
+**Goal:** play a set as a path through a tree of Stable Audio 3 clips —
+weave continuations live, cue takes in the phones, tie each deck through the
+branch you want — without the set ever going silent by accident.
+
+Scope, ordered by risk:
+
+1. **The seam.** A queued clip on the deck's buffer source, swapped on the
+   audio thread at a chosen frame — no reload, no gap, no allocation on the
+   callback.
+2. **Never silent.** A pure scheduler gives every deck with a node a plan —
+   hold the last four bars, a loop, or a queued swap — on a nominal bar grid
+   clamped to the real clip.
+3. **Weave.** Children continue the parent's last four bars (SA3 continue,
+   ADR-0037); every render is a library song; takes, keep and discard;
+   render ahead behind an on-air leaf.
+4. **The surface.** Canvas with ties, cuts, trims, loops 4/8/16, cue from a
+   bar, DAW-style zoom, a one-strip-per-deck mixer bar; looms autosave
+   beside the songs.
+5. **Show hardening.** Failure drills, relaunch, a prepared loom with its
+   LoRA threads pre-rendered, and a silence scan of the master recording
+   (`scripts/silence_gaps.py`).
+
+**Exit criteria:** Settings → Appearance → Theme `DJ` shows today's booth
+unchanged and `Loom` shows the loom, and the choice persists. In Loom a root
+woven from a prompt (several takes) can be cued take by take in the phones,
+one kept and tied to deck A; on play the deck holds the node's last four bars
+at an untied seam and hands over to a tied child on the bar by engine swap,
+with no gap or click; shift-click cuts on the next bar; render ahead grows an
+auto child behind an on-air leaf; loops 4/8/16 sit on the nominal grid; trim
+hides intros and outros; zoom works like a DAW; the loom autosaves and
+reopens after a relaunch. Gate green, the engine swap proven
+sample-continuous by a Rust test, the checklist ticked on the FLX4, and a
+recorded 30-minute rehearsal set with zero unintended silences — then the
+show.
+
 ## Native migration: Tauri + Rust (the next phase)
 
 **Status: ✅ Phases 1–2 implemented (2026-06-16) — the native app is the
@@ -472,6 +519,8 @@ time-stretch graduated into the Native migration phase.)
   beyond the shipped pad/cue echoes (needs the FLX4 output map).
 - **Style motion** — automate the style-pad cursor (LFO between targets,
   or record and loop a pad gesture).
+- **Warm LoRA merge sidecar** — keep a merged DiT resident per stack so LoRA
+  threads weave live (today ≈128 s per render).
 
 ## Standing risks
 
