@@ -1,0 +1,257 @@
+/* ---- mixer ---- */
+
+/* The loom theme's mixer bar: deck A | core | deck B in one 150 px row under
+   the canvas. The ui/* primitives keep their own look; this section only
+   lays them out and compacts them to the bar's height. */
+.loom-mixer {
+  --loom-mixer-fader: 4.6rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 350px minmax(0, 1fr);
+  height: 150px;
+  border-top: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.loom-mixer__deck {
+  --loom-mixer-deck: var(--color-deck-a);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-4);
+}
+
+.loom-mixer__deck--b {
+  --loom-mixer-deck: var(--color-deck-b);
+}
+
+/* One status line, never two: the title gives way first, then the tag. */
+.loom-mixer__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  white-space: nowrap;
+  font: var(--text-s) var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.loom-mixer__letter {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  font: 700 var(--text-m) var(--font-ui);
+  color: var(--color-on-accent);
+  background: var(--loom-mixer-deck);
+}
+
+.loom-mixer__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 700 var(--text-m) var(--font-ui);
+  color: var(--color-text);
+}
+
+.loom-mixer__title--empty {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.loom-mixer__next {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.loom-mixer__next--warn {
+  color: var(--color-led-warn);
+}
+
+.loom-mixer__bar {
+  flex: none;
+}
+
+/* Deck B mirrors deck A: transport on the outside edge, FX by the core. In a
+   window too narrow for the whole strip it scrolls rather than overlapping
+   the core. */
+.loom-mixer__strip {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.loom-mixer__deck--b .loom-mixer__strip {
+  flex-direction: row-reverse;
+}
+
+.loom-mixer__transport {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+}
+
+.loom-mixer__transport .ui-transport {
+  width: auto;
+  height: var(--control-height);
+}
+
+.loom-mixer__transport .ui-transport svg {
+  width: var(--text-l);
+  height: var(--text-l);
+}
+
+.loom-mixer__strip .ui-segmented-field {
+  flex: none;
+}
+
+.loom-mixer__strip .ui-segmented__option {
+  min-width: 0;
+}
+
+.loom-mixer__fader {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.loom-mixer__fader .ui-vfader__well {
+  height: var(--loom-mixer-fader);
+}
+
+.loom-mixer__fader .ui-vfader__input {
+  height: calc(var(--loom-mixer-fader) - 2 * var(--space-2));
+}
+
+/* Meters match the fader well (deck) or the core's row so the LEDs squeeze
+   rather than the bar growing. */
+.loom-mixer .ui-levelmeter {
+  height: var(--loom-mixer-fader);
+}
+
+.loom-mixer .ui-levelmeter__segment {
+  flex: 1;
+  height: auto;
+}
+
+/* Trim/EQ two by two and the FX select over its knob: both fit the fader's
+   height and keep the strip inside a 1440 px window. */
+.loom-mixer__eq {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: var(--space-1) var(--space-2);
+}
+
+.loom-mixer__fx {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.loom-mixer__fx .ui-field {
+  flex: none;
+}
+
+.loom-mixer__core {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-4);
+  border-left: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
+}
+
+.loom-mixer__crossfade {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.loom-mixer__crossfade-slider {
+  flex: 1;
+}
+
+.loom-mixer__edge {
+  font: 700 var(--text-m) var(--font-mono);
+}
+
+.loom-mixer__edge--a {
+  color: var(--color-deck-a);
+}
+
+.loom-mixer__edge--b {
+  color: var(--color-deck-b);
+}
+
+.loom-mixer__master {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+}
+
+.loom-mixer__scope-column {
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* The scope's window: the visuals pass draws the Lissajous canvas inside it. */
+.loom-mixer__scope {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface-inset);
+  box-shadow: var(--inset-border);
+}
+
+.loom-mixer__meter {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.loom-mixer__core .ui-levelmeter {
+  height: calc(var(--loom-mixer-fader) - var(--space-4));
+}
+
+.loom-mixer__caption {
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-silkscreen);
+}
+
+/* The app's narrow breakpoint stacks the decks; the bar stacks with it. */
+@media (max-width: 64rem) {
+  .loom-mixer {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .loom-mixer__core {
+    border: 0;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
+  }
+}

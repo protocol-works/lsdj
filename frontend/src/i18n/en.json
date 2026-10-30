@@ -608,6 +608,18 @@
   },
   "loom": {
     "title": "Loom",
-    "empty": "Weave a thread to begin: drop a song here, or press +."
+    "empty": "Weave a thread to begin: drop a song here, or press +.",
+    "deck": {
+      "now": "Now playing",
+      "next": "{{bars}} → {{title}}",
+      "hold": "HOLD",
+      "auto": "Auto",
+      "autoHint": "Autopilot: take the first rendered child when nothing is tied",
+      "late": "{{seconds}} s late",
+      "bar": "bar {{bar}} / {{length}}",
+      "loop": "Loop",
+      "bounce": "Bounce what this deck played to songs",
+      "nothingTied": "Nothing tied — tie a node to this deck"
+    }
   }
 }
