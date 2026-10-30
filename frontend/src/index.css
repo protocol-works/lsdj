@@ -157,6 +157,11 @@ body {
   border-bottom: 2px solid var(--color-accent);
 }
 
+/* Loom theme: the loom bar (name, saved mark, menu, status) portals in here. */
+.app__loom-bar {
+  min-width: 0;
+}
+
 /* The status cluster — warnings + switches + MIDI — rides the right edge. */
 .app__statusbar-right {
   margin-left: auto;

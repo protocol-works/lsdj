@@ -16,6 +16,8 @@ export const TAIL_BARS = 4
 /** The shortest body a trim or a dropped song may have. */
 export const MIN_BARS = 4
 export const DEFAULT_BARS = 16
+/** HOLD turns amber this many bars before an untied seam. */
+export const HOLD_WARN_BARS = 8
 export const DEFAULT_BPM = 124
 
 /** Measured render cost, in seconds. `rate`: SA3 medium composes 2:00 in

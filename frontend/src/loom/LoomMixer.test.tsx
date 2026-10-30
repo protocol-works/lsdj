@@ -155,6 +155,18 @@ describe('LoomMixer transport', () => {
     fireEvent.click(eight)
     expect(onLoop).toHaveBeenLastCalledWith(null)
   })
+
+  it('ties a loom node dropped on the panel and ignores a song file', () => {
+    const onDropNode = vi.fn()
+    render(<LoomMixer {...makeProps({ decks: { a: makeDeck(), b: makeDeck({ onDropNode }) } })} />)
+    const drop = (data: string) =>
+      fireEvent.drop(deckPanel('b'), { dataTransfer: { getData: () => data } })
+
+    drop('song.wav')
+    expect(onDropNode).not.toHaveBeenCalled()
+    drop('loom:n7')
+    expect(onDropNode).toHaveBeenCalledWith('n7')
+  })
 })
 
 describe('LoomMixer channel strip', () => {

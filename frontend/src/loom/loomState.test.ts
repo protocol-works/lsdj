@@ -91,6 +91,13 @@ describe('render results', () => {
     expect(node(retried, 't2')?.error).toBeUndefined()
   })
 
+  it('retry puts a failed render back to rendering and ignores any other node', () => {
+    const failed = run(withTakes(), { type: 'render_failed', id: 't2', error: '502: timed out' })
+    const retried = run(failed, { type: 'retry', id: 't2' })
+    expect(node(retried, 't2')).toMatchObject({ status: 'rendering', error: undefined })
+    expect(loomReducer(retried, { type: 'retry', id: 't1' })).toBe(retried)
+  })
+
   it('learns a key by file and keeps the same state when nothing changes', () => {
     const state = run(seedState(), { type: 'key_known', file: 'n5.wav', key: '11B' })
     expect(node(state, 'n5')?.key).toBe('11B')

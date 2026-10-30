@@ -15,19 +15,17 @@ import { Button } from '../ui/Button'
 import { fitPxPerBar, LAYOUT, layoutLoom, PX_DEFAULT, zoomAnchored, type NodeBox } from './layout'
 import { LoomNode, type NodeActions, type PeaksSource, type Peaks, type RenderProgress } from './LoomNode'
 import { LoomRuler } from './LoomRuler'
-import { kids, nodeById, type LoomNode as LoomNodeModel, type LoomState } from './loomState'
+import { nodeById, type LoomNode as LoomNodeModel, type LoomState } from './loomState'
+import { deckSeam } from './schedule'
 import {
   barSeconds,
   barStartSeconds,
-  barsToSeam,
   fmtClock,
   holdRegion,
-  lateBy,
+  HOLD_WARN_BARS,
   loopRegion,
   nodeEndSeconds,
   nodeStartSeconds,
-  renderEta,
-  TAIL_BARS,
 } from './timing'
 import { WeavePopover, type WeaveDeck, type WeaveForm } from './WeavePopover'
 import './loom.css'
@@ -66,6 +64,9 @@ export type LoomViewProps = {
   onWeave: (parentId: string | null, form: WeaveForm) => void
   onSelect: (id: string | null) => void
   renderAhead: boolean
+  /** The media explorer is open: its rating keys own `0` (clear), so the zoom
+   * reset leaves it alone. */
+  explorerOpen?: boolean
 }
 
 const DECKS: DeckId[] = ['a', 'b']
@@ -75,7 +76,6 @@ const SLOT_WIDTH = 236
 const CANVAS_MARGIN = 120
 // The deck's own path: the last few nodes it played, so a long set stays legible.
 const TRAIL_NODES = 8
-const HOLD_WARN_BARS = 8
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 const deckLetter = (deck: DeckId) => (deck === 'a' ? 'mixer.deckA' : 'mixer.deckB')
@@ -108,24 +108,6 @@ function jumpPath(from: NodeBox, to: NodeBox) {
   }
   const mid = (x0 + x1) / 2
   return `M${x0},${y0}C${mid},${y0} ${mid},${y1} ${x1},${y1}`
-}
-
-/** What waits at a deck's seam: the first tie, else (auto on) the first
- * rendered child; `hold` when the deck will loop its last bars instead. */
-function deckSeam(state: LoomState, deck: DeckId, node: LoomNodeModel, position: number, progress: Record<string, RenderProgress>) {
-  const runtime = state.decks[deck]
-  const tied = nodeById(state.loom.nodes, runtime.queue[0] ?? null)
-  const auto = !tied && runtime.auto ? (kids(state.loom.nodes, node.id).find((k) => k.status === 'ready') ?? null) : null
-  const next = tied ?? auto
-  let late = 0
-  if (next?.status === 'rendering') {
-    const eta =
-      progress[next.id]?.eta ??
-      renderEta({ bars: next.bars, tailBars: next.parentId ? TAIL_BARS : 0, bpm: next.bpm, loras: next.loras })
-    late = lateBy(eta - (progress[next.id]?.elapsed ?? 0), nodeEndSeconds(node) - position)
-  }
-  const hold = !next || next.status === 'failed' || next.status === 'missing' || late > 0
-  return { bars: barsToSeam(node, position), next, auto: auto !== null, late, hold }
 }
 
 /** The loom canvas: ruler, threads, nodes, take brackets, the decks'
@@ -256,7 +238,7 @@ export function LoomView(props: LoomViewProps) {
       if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return
       if (event.key === '=' || event.key === '+') view.zoomBy(1.25)
       else if (event.key === '-') view.zoomBy(0.8)
-      else if (event.key === '0') view.zoomTo(PX_DEFAULT)
+      else if (event.key === '0' && !latest.current.explorerOpen) view.zoomTo(PX_DEFAULT)
       else if (event.key === 'z' || event.key === 'Z') view.fit()
       else if (event.key === 'Escape') view.stopCue()
       else return

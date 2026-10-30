@@ -706,6 +706,38 @@
       "advanced": "SA3 settings",
       "go": "Weave ×{{takes}}",
       "goAndTie": "Weave & tie {{deck}}"
+    },
+    "bar": {
+      "name": "Loom name",
+      "saved": "Saved",
+      "saving": "Saving…",
+      "menu": "Loom menu",
+      "new": "New loom",
+      "open": "Open…",
+      "openLabel": "Open a loom",
+      "openItem_one": "{{name}} · {{count}} node",
+      "openItem_other": "{{name}} · {{count}} nodes",
+      "duplicate": "Duplicate",
+      "delete": "Delete…",
+      "confirmDelete": "Delete “{{name}}”? Its songs stay in the library.",
+      "confirm": "Delete",
+      "cancel": "Cancel",
+      "defaultName": "Untitled loom",
+      "copyName": "{{name}} copy"
+    },
+    "status": {
+      "saveFailed": "Autosave failed: {{message}}",
+      "openFailed": "That loom could not be opened",
+      "deleteFailed": "The loom could not be deleted: {{message}}",
+      "songsOnly": "The loom weaves library songs only: save or import the file first",
+      "notReady": "“{{title}}” has not rendered yet",
+      "loadFailed": "Deck {{deck}} could not load “{{title}}”",
+      "queueFailed": "Deck {{deck}} could not queue “{{title}}”, so it holds",
+      "cueFailed": "“{{title}}” could not be cued",
+      "dropFailed": "“{{file}}” could not join the loom: {{message}}",
+      "discardRefused": "A node a deck is on or has tied, or one with children, stays",
+      "trimRefused": "A node with children keeps its out-point: trim its start instead",
+      "parentFailed": "its parent did not render"
     }
   }
 }

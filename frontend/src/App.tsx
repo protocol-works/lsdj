@@ -71,7 +71,7 @@ import {
 } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 import { PerformanceVisuals } from './visuals/PerformanceVisuals'
-import { LoomBooth } from './loom/LoomBooth'
+import { LoomBooth, type LoomBoothHandle } from './loom/LoomBooth'
 
 /** The agent harnesses we tailor a connection snippet for. A `command` harness gets
  * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
@@ -387,6 +387,9 @@ function App() {
       return next
     })
   }, [])
+  // The loom booth: song loads land in it, and its bar renders in the status bar.
+  const loomRef = useRef<LoomBoothHandle>(null)
+  const [loomBarSlot, setLoomBarSlot] = useState<HTMLDivElement | null>(null)
 
   // Where master-bus recordings are saved (empty = the OS Downloads folder,
   // the default). A shell-persisted store setting (ADR-0020 phase A):
@@ -631,6 +634,16 @@ function App() {
         )
         return
       }
+      // The loom runs its own nominal loops off the FLX4 loop section
+      // (LoomBooth subscribes); every other intent keeps its meaning.
+      if (
+        theme === 'loom' &&
+        (intent.kind === 'track_beat_loop' ||
+          intent.kind === 'track_loop_halve' ||
+          intent.kind === 'track_loop_double')
+      ) {
+        return
+      }
       applyAppIntent(
         intent,
         { a: deckA, b: deckB },
@@ -657,11 +670,14 @@ function App() {
   )
 
   // Track items flip the deck to playback; the way back lives on the deck
-  // itself ("Back to live", ADR-0013: loading decides the mode).
+  // itself ("Back to live", ADR-0013: loading decides the mode). In Loom
+  // theme the song becomes a node and the deck is tied to it.
   const handleLoadTrack = useCallback(
     (deck: DeckId, source: TrackSource, title: string) =>
-      (deck === 'a' ? deckA : deckB).loadTrack(source, title),
-    [deckA, deckB],
+      theme === 'loom' && loomRef.current
+        ? loomRef.current.loadSong(deck, source, title)
+        : (deck === 'a' ? deckA : deckB).loadTrack(source, title),
+    [deckA, deckB, theme],
   )
   // Load a saved sample into a deck's loop-slot bank (ADR-0022) — the Samples-tab
   // counterpart of handleLoadTrack, routed to the deck's `loadSampleToSlot`.
@@ -900,6 +916,7 @@ function App() {
           elements (the native selects, the MIDI button) so they stay clickable. */}
       <header className="app__statusbar" data-tauri-drag-region="deep">
         <Logo />
+        {theme === 'loom' && <div className="app__loom-bar" ref={setLoomBarSlot} />}
         <div className="app__statusbar-right">
           {ramWarning && (
             <p className="app__warning" role="status">
@@ -1072,6 +1089,9 @@ function App() {
       )}
       {theme === 'loom' ? (
         <LoomBooth
+          ref={loomRef}
+          barSlot={loomBarSlot}
+          mediaOpen={mediaOpen}
           deckA={deckA}
           deckB={deckB}
           channels={channels}

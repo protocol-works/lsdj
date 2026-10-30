@@ -826,3 +826,52 @@
     border-bottom: 1px solid var(--color-border);
   }
 }
+
+/* The loom chrome in the top bar: name, saved mark, menu, status line. */
+.loom-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.loom-bar__name {
+  flex: 0 1 14rem;
+  min-width: 6rem;
+}
+
+.loom-bar__saved,
+.loom-bar__status {
+  font: 400 var(--text-s) var(--font-ui);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.loom-bar__status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-led-warn);
+}
+
+.loom-bar__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-m);
+  background: var(--color-surface-raised);
+  font: 400 var(--text-s) var(--font-ui);
+  color: var(--color-text);
+}
+
+.loom-bar__confirm p {
+  margin: 0;
+}
+
+.loom-bar__confirm-actions {
+  display: flex;
+  gap: var(--space-2);
+}

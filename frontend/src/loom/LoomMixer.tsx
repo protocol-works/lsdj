@@ -43,6 +43,8 @@ export type LoomDeckPanel = {
   onSetFx: (kind: FxKind | null) => void
   onSetFxAmount: (amount: number) => void
   onBounce?: () => void
+  /** A loom node dragged onto the panel (`text/plain` = `loom:<id>`): tie it. */
+  onDropNode?: (id: string) => void
   /** The deck's beat clock, for the badge pulse (visuals pass). */
   getBeat?: () => { periodSeconds: number; beatAtContext: number } | null
 }
@@ -154,6 +156,17 @@ function LoomDeck({
       className={`loom-mixer__deck loom-mixer__deck--${deckId}`}
       role="group"
       aria-label={t('deck.title', { id: deckId })}
+      onDragOver={(event) => {
+        if (deck.onDropNode) event.preventDefault()
+      }}
+      onDrop={(event) => {
+        const data = event.dataTransfer.getData('text/plain')
+        if (!deck.onDropNode || !data.startsWith('loom:')) return
+        // Handled here: the booth's song drop must not see it too.
+        event.preventDefault()
+        event.stopPropagation()
+        deck.onDropNode(data.slice('loom:'.length))
+      }}
     >
       <div className="loom-mixer__status">
         <span className="loom-mixer__letter">

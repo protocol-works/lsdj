@@ -97,6 +97,8 @@ export type LoomAction =
     }
   | { type: 'rendered'; id: string; file: string; durationSeconds: number }
   | { type: 'render_failed'; id: string; error: string }
+  // A failed render goes back in the queue with the same recipe.
+  | { type: 'retry'; id: string }
   | { type: 'key_known'; file: string; key: string }
   | { type: 'file_missing'; file: string }
   | { type: 'trim'; id: string; in: number; out: number }
@@ -332,6 +334,12 @@ export function loomReducer(state: LoomState, action: LoomAction): LoomState {
         state,
         (n) => n.id === action.id,
         () => ({ status: 'failed', error: action.error }),
+      )
+    case 'retry':
+      return patchNodes(
+        state,
+        (n) => n.id === action.id && n.status === 'failed',
+        () => ({ status: 'rendering', error: undefined }),
       )
     case 'key_known':
       return patchNodes(

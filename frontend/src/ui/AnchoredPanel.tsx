@@ -70,6 +70,9 @@ export function AnchoredPanel({
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node
       if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return
+      // A panel opened from inside this one is portalled beside it, not into
+      // it (a LoRA rack inside the weave form): a press there is still inside.
+      if (target instanceof Element && target.closest('.ui-anchored-panel')) return
       onCloseRef.current()
     }
     const onKeyDown = (event: KeyboardEvent) => {

@@ -63,26 +63,9 @@ export function WeavePopover({
   const [tempo, setTempo] = useState(String(DEFAULT_BPM))
   const [steering, setSteering] = useState<Sa3SteeringDraft>(DEFAULT_SA3_STEERING)
   const bodyRef = useRef<HTMLDivElement>(null)
-  // The LoRA rack opens its own AnchoredPanel, portalled outside this one: a
-  // press inside it must not count as an outside press that dismisses the
-  // weave. A key press clears it so Escape still closes.
-  const pressedInOtherPanel = useRef(false)
 
   useEffect(() => {
-    if (!open) return
-    bodyRef.current?.querySelector('input')?.focus()
-    const onPointerDown = (event: PointerEvent) => {
-      pressedInOtherPanel.current = (event.target as Element).closest?.('.ui-anchored-panel') != null
-    }
-    const onKeyDown = () => {
-      pressedInOtherPanel.current = false
-    }
-    window.addEventListener('pointerdown', onPointerDown, true)
-    window.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown, true)
-      window.removeEventListener('keydown', onKeyDown, true)
-    }
+    if (open) bodyRef.current?.querySelector('input')?.focus()
   }, [open])
 
   const bpm = parent ? parent.bpm : Number(tempo)
@@ -134,9 +117,7 @@ export function WeavePopover({
     <AnchoredPanel
       open={open}
       anchorRef={anchorRef}
-      onClose={() => {
-        if (!pressedInOtherPanel.current) onClose()
-      }}
+      onClose={onClose}
       label={t('loom.weave.label')}
       className="loom-weave"
     >

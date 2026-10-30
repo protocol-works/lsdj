@@ -72,8 +72,10 @@ expected behaviour is the shuttle rules in
 - [ ] Return: →A on a node back up the tree. At the seam the deck jumps back
       on the bar; the loom draws a return arc.
 - [ ] **Cut lands on the bar.** Shift-click →A (or drop a node on deck A's
-      shuttle): the deck moves to the node on the next bar — not at once and
-      not at the seam.
+      shuttle): the deck moves to the node on the first bar line at least 2 s
+      out (`CUT_LEAD_SECONDS`, room for the clip to decode — usually the next
+      bar or the one after) — not at once, never off the beat, and not later
+      than the seam. Note any cut that lands off the beat.
 - [ ] Weave & tie A from the weave popover: the takes render and the first is
       tied to deck A without a further press.
 - [ ] **Autopilot takes the first rendered child.** AUTO on for deck A, an

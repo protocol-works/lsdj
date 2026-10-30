@@ -259,6 +259,14 @@ describe('LoomView zoom', () => {
     fireEvent.keyDown(prompt, { key: '0' })
     expect(props.onPxPerBar).not.toHaveBeenCalled()
   })
+
+  it('leaves 0 to the open explorer (it clears a rating) but keeps - and =', () => {
+    const { props } = renderView({ pxPerBar: 30, explorerOpen: true })
+    fireEvent.keyDown(document.body, { key: '0' })
+    expect(props.onPxPerBar).not.toHaveBeenCalled()
+    fireEvent.keyDown(document.body, { key: '-' })
+    expect(props.onPxPerBar).toHaveBeenLastCalledWith(24)
+  })
 })
 
 describe('WeavePopover', () => {
