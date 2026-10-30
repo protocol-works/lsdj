@@ -235,6 +235,14 @@ body {
   min-width: 0;
 }
 
+/* Loom theme: the loom takes the booth's space. */
+.loom-booth {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 @media (max-width: 64rem) {
   .app {
     height: auto;

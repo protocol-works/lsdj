@@ -464,6 +464,13 @@
     "close": "Close",
     "appearance": "Appearance",
     "performanceVisuals": "Performance visuals",
+    "theme": "Theme",
+    "themes": {
+      "dj": "DJ",
+      "loom": "Loom"
+    },
+    "renderAhead": "Render ahead",
+    "renderAheadHint": "Behind every node an on-air deck lands on, grow one auto continuation so a hold is a choice, not an accident. Skipped for LoRA threads (≈2 min per render).",
     "audio": "Audio",
     "tempoRange": "Tempo range",
     "tempoRangeOption": "±{{percent}} %",
@@ -598,5 +605,9 @@
     "advanced": "Advanced base override",
     "anotherInstall": "Another model install is in progress.",
     "confirmDelete": "Delete {{name}}? It is selected for this generation and will be removed from the next request."
+  },
+  "loom": {
+    "title": "Loom",
+    "empty": "Weave a thread to begin: drop a song here, or press +."
   }
 }

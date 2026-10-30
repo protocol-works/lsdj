@@ -41,6 +41,7 @@ import { AccentPicker } from './ui/AccentPicker'
 import { OutputDevicePicker } from './ui/OutputDevicePicker'
 import { BeatViewPicker } from './ui/BeatViewPicker'
 import { Switch } from './ui/Switch'
+import { SegmentedControl } from './ui/SegmentedControl'
 import { Select } from './ui/Select'
 import {
   deletePreset,
@@ -52,6 +53,7 @@ import {
   updateAppSettings,
   upsertPresets,
   type AccentTheme,
+  type AppTheme,
   type BeatViewLayout,
 } from './persistence'
 import { Logo } from './ui/Logo'
@@ -69,6 +71,7 @@ import {
 } from './audio/track'
 import { handleShortcutKey } from './shortcuts'
 import { PerformanceVisuals } from './visuals/PerformanceVisuals'
+import { LoomBooth } from './loom/LoomBooth'
 
 /** The agent harnesses we tailor a connection snippet for. A `command` harness gets
  * a one-line CLI; a `config` harness gets a JSON block for its settings file (the
@@ -350,6 +353,37 @@ function App() {
     setPerformanceVisuals((enabled) => {
       const next = !enabled
       updateAppSettings({ performanceVisuals: next })
+      return next
+    })
+  }, [])
+  // The booth theme (DJ decks or the loom) rides <html data-theme> like the
+  // accent; only the booth swaps, everything around it is shared.
+  const [theme, setTheme] = useState<AppTheme>(
+    () => loadAppSettings().theme ?? 'dj',
+  )
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+  const handleTheme = useCallback((value: AppTheme) => {
+    setTheme(value)
+    updateAppSettings({ theme: value })
+  }, [])
+  // Stable across App's ~10 Hz re-renders (see tempoRangeOptions).
+  const themeOptions = useMemo(
+    () =>
+      (['dj', 'loom'] as const).map((value) => ({
+        value,
+        label: t(`settings.themes.${value}`),
+      })),
+    [t],
+  )
+  const [renderAhead, setRenderAhead] = useState(
+    () => loadAppSettings().renderAhead ?? true,
+  )
+  const handleRenderAhead = useCallback(() => {
+    setRenderAhead((enabled) => {
+      const next = !enabled
+      updateAppSettings({ renderAhead: next })
       return next
     })
   }, [])
@@ -891,6 +925,12 @@ function App() {
         <section className="modelmgr__section">
           <h3 className="modelmgr__heading">{t('settings.appearance')}</h3>
           <div className="settings-appearance">
+            <SegmentedControl
+              label={t('settings.theme')}
+              value={theme}
+              options={themeOptions}
+              onChange={handleTheme}
+            />
             <BeatViewPicker
               label={t('beatview.layout')}
               value={beatView}
@@ -914,6 +954,16 @@ function App() {
               on={performanceVisuals}
               onClick={handlePerformanceVisuals}
             />
+            {theme === 'loom' && (
+              <>
+                <Switch
+                  label={t('settings.renderAhead')}
+                  on={renderAhead}
+                  onClick={handleRenderAhead}
+                />
+                <p className="settings-mcp__hint">{t('settings.renderAheadHint')}</p>
+              </>
+            )}
           </div>
         </section>
         <section className="modelmgr__section">
@@ -1020,105 +1070,123 @@ function App() {
           deckB={deckB}
         />
       )}
-      <div className="app__booth">
-        <DeckColumn
-          deckId="a"
-          state={deckA.state}
-          onPlay={() => void deckA.play()}
-          onStop={deckA.stop}
-          onSetModel={deckA.setModel}
-          onRestart={deckA.restartWorker}
-          shiftedDeck={shiftedDeck}
-          primed={deckA.primed}
-          fx={deckA.fx}
-          onSetFx={deckA.setFx}
-          onSetFxAmount={deckA.setFxAmount}
-          loop={deckA.loop}
-          onLoopPad={deckA.toggleLoopPad}
-          onClearLoopPad={deckA.clearLoopPad}
-          onSetLoopSeconds={deckA.setLoopSeconds}
-          onGenerateToPad={deckA.generateToPad}
-          generateError={deckA.generateError}
-          bpm={deckA.bpm}
-          onSampleOtherDeck={handleSampleForA}
-          canSample={deckB.mode === 'playback' ? deckB.track !== null : deckB.state.playing}
-          onSavePreset={handleSavePreset}
-          mode={deckA.mode}
-          track={deckA.track}
-          onLeavePlayback={deckA.leavePlayback}
-          onSeekTrack={deckA.seekTrack}
-          onSetTrackRate={deckA.setTrackRate}
+      {theme === 'loom' ? (
+        <LoomBooth
+          deckA={deckA}
+          deckB={deckB}
+          channels={channels}
+          crossfade={crossfade}
+          onCrossfade={handleCrossfade}
+          cueMix={cueMix}
+          onCueMix={handleCueMix}
+          getPhaseOffset={getPhaseOffset}
+          onSyncA={handleSyncA}
+          onSyncB={handleSyncB}
           tempoRange={tempoRange}
-          onSyncTrack={handleSyncA}
-          onHotCuePad={deckA.hotCuePad}
-          onClearHotCue={deckA.clearHotCue}
-          onLoopIn={deckA.loopIn}
-          onLoopOut={deckA.loopOut}
-          onLoopExit={deckA.loopExit}
-          onBeatLoop={deckA.beatLoop}
-          onHalveLoop={deckA.halveLoop}
-          onDoubleLoop={deckA.doubleLoop}
-          getTrackPeaks={deckA.getTrackPeaks}
+          renderAhead={renderAhead}
+          performanceVisuals={performanceVisuals}
         />
-        <div className="app__center">
-          {(beatView === 'center' || beatView === 'vertical') && (
-            <BeatView
-              vertical={beatView === 'vertical'}
-              getSourceA={deckA.getZoomSource}
-              getSourceB={deckB.getZoomSource}
-              deckA={deckA}
-              deckB={deckB}
+      ) : (
+        <div className="app__booth">
+          <DeckColumn
+            deckId="a"
+            state={deckA.state}
+            onPlay={() => void deckA.play()}
+            onStop={deckA.stop}
+            onSetModel={deckA.setModel}
+            onRestart={deckA.restartWorker}
+            shiftedDeck={shiftedDeck}
+            primed={deckA.primed}
+            fx={deckA.fx}
+            onSetFx={deckA.setFx}
+            onSetFxAmount={deckA.setFxAmount}
+            loop={deckA.loop}
+            onLoopPad={deckA.toggleLoopPad}
+            onClearLoopPad={deckA.clearLoopPad}
+            onSetLoopSeconds={deckA.setLoopSeconds}
+            onGenerateToPad={deckA.generateToPad}
+            generateError={deckA.generateError}
+            bpm={deckA.bpm}
+            onSampleOtherDeck={handleSampleForA}
+            canSample={deckB.mode === 'playback' ? deckB.track !== null : deckB.state.playing}
+            onSavePreset={handleSavePreset}
+            mode={deckA.mode}
+            track={deckA.track}
+            onLeavePlayback={deckA.leavePlayback}
+            onSeekTrack={deckA.seekTrack}
+            onSetTrackRate={deckA.setTrackRate}
+            tempoRange={tempoRange}
+            onSyncTrack={handleSyncA}
+            onHotCuePad={deckA.hotCuePad}
+            onClearHotCue={deckA.clearHotCue}
+            onLoopIn={deckA.loopIn}
+            onLoopOut={deckA.loopOut}
+            onLoopExit={deckA.loopExit}
+            onBeatLoop={deckA.beatLoop}
+            onHalveLoop={deckA.halveLoop}
+            onDoubleLoop={deckA.doubleLoop}
+            getTrackPeaks={deckA.getTrackPeaks}
+          />
+          <div className="app__center">
+            {(beatView === 'center' || beatView === 'vertical') && (
+              <BeatView
+                vertical={beatView === 'vertical'}
+                getSourceA={deckA.getZoomSource}
+                getSourceB={deckB.getZoomSource}
+                deckA={deckA}
+                deckB={deckB}
+              />
+            )}
+            <MixerStrip
+              channels={channels}
+              crossfade={crossfade}
+              onCrossfadeChange={handleCrossfade}
+              cueMix={cueMix}
+              onCueMixChange={handleCueMix}
+              getPhaseOffset={getPhaseOffset}
             />
-          )}
-          <MixerStrip
-            channels={channels}
-            crossfade={crossfade}
-            onCrossfadeChange={handleCrossfade}
-            cueMix={cueMix}
-            onCueMixChange={handleCueMix}
-            getPhaseOffset={getPhaseOffset}
+          </div>
+          <DeckColumn
+            deckId="b"
+            state={deckB.state}
+            onPlay={() => void deckB.play()}
+            onStop={deckB.stop}
+            onSetModel={deckB.setModel}
+            onRestart={deckB.restartWorker}
+            shiftedDeck={shiftedDeck}
+            primed={deckB.primed}
+            fx={deckB.fx}
+            onSetFx={deckB.setFx}
+            onSetFxAmount={deckB.setFxAmount}
+            loop={deckB.loop}
+            onLoopPad={deckB.toggleLoopPad}
+            onClearLoopPad={deckB.clearLoopPad}
+            onSetLoopSeconds={deckB.setLoopSeconds}
+            onGenerateToPad={deckB.generateToPad}
+            generateError={deckB.generateError}
+            bpm={deckB.bpm}
+            onSampleOtherDeck={handleSampleForB}
+            canSample={deckA.mode === 'playback' ? deckA.track !== null : deckA.state.playing}
+            onSavePreset={handleSavePreset}
+            mode={deckB.mode}
+            track={deckB.track}
+            onLeavePlayback={deckB.leavePlayback}
+            onSeekTrack={deckB.seekTrack}
+            onSetTrackRate={deckB.setTrackRate}
+            tempoRange={tempoRange}
+            onSyncTrack={handleSyncB}
+            onHotCuePad={deckB.hotCuePad}
+            onClearHotCue={deckB.clearHotCue}
+            onLoopIn={deckB.loopIn}
+            onLoopOut={deckB.loopOut}
+            onLoopExit={deckB.loopExit}
+            onBeatLoop={deckB.beatLoop}
+            onHalveLoop={deckB.halveLoop}
+            onDoubleLoop={deckB.doubleLoop}
+            getTrackPeaks={deckB.getTrackPeaks}
           />
         </div>
-        <DeckColumn
-          deckId="b"
-          state={deckB.state}
-          onPlay={() => void deckB.play()}
-          onStop={deckB.stop}
-          onSetModel={deckB.setModel}
-          onRestart={deckB.restartWorker}
-          shiftedDeck={shiftedDeck}
-          primed={deckB.primed}
-          fx={deckB.fx}
-          onSetFx={deckB.setFx}
-          onSetFxAmount={deckB.setFxAmount}
-          loop={deckB.loop}
-          onLoopPad={deckB.toggleLoopPad}
-          onClearLoopPad={deckB.clearLoopPad}
-          onSetLoopSeconds={deckB.setLoopSeconds}
-          onGenerateToPad={deckB.generateToPad}
-          generateError={deckB.generateError}
-          bpm={deckB.bpm}
-          onSampleOtherDeck={handleSampleForB}
-          canSample={deckA.mode === 'playback' ? deckA.track !== null : deckA.state.playing}
-          onSavePreset={handleSavePreset}
-          mode={deckB.mode}
-          track={deckB.track}
-          onLeavePlayback={deckB.leavePlayback}
-          onSeekTrack={deckB.seekTrack}
-          onSetTrackRate={deckB.setTrackRate}
-          tempoRange={tempoRange}
-          onSyncTrack={handleSyncB}
-          onHotCuePad={deckB.hotCuePad}
-          onClearHotCue={deckB.clearHotCue}
-          onLoopIn={deckB.loopIn}
-          onLoopOut={deckB.loopOut}
-          onLoopExit={deckB.loopExit}
-          onBeatLoop={deckB.beatLoop}
-          onHalveLoop={deckB.halveLoop}
-          onDoubleLoop={deckB.doubleLoop}
-          getTrackPeaks={deckB.getTrackPeaks}
-        />
-      </div>
+      )}
       <MediaExplorer
         presets={presets}
         onLoadPreset={handleLoadPreset}

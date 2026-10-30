@@ -182,6 +182,24 @@ describe('persistence', () => {
     expect(loadAppSettings().tempoRange).toBeUndefined()
   })
 
+  it('round-trips the theme and drops an unknown one', () => {
+    expect(loadAppSettings().theme).toBeUndefined()
+    updateAppSettings({ theme: 'loom' })
+    expect(loadAppSettings().theme).toBe('loom')
+    updateAppSettings({ theme: 'dj' })
+    expect(loadAppSettings().theme).toBe('dj')
+    updateAppSettings({ theme: 'disco' as never })
+    expect(loadAppSettings().theme).toBeUndefined()
+  })
+
+  it('round-trips render ahead and drops a non-boolean', () => {
+    expect(loadAppSettings().renderAhead).toBeUndefined()
+    updateAppSettings({ renderAhead: false })
+    expect(loadAppSettings().renderAhead).toBe(false)
+    updateAppSettings({ renderAhead: 'yes' as never })
+    expect(loadAppSettings().renderAhead).toBeUndefined()
+  })
+
   it('round-trips the media source and drops a blank or non-string one', () => {
     expect(loadAppSettings().mediaSource).toBeUndefined()
     updateAppSettings({ mediaSource: 'Warm-up' })

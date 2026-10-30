@@ -10,7 +10,7 @@ import { AudioEngineProvider } from './audio/AudioEngineProvider'
 import type { AudioEngine } from './audio/types'
 import { createControlBus, type ControlBus } from './control/bus'
 import { ControlBusProvider } from './control/ControlBusProvider'
-import { loadAppSettings } from './persistence'
+import { loadAppSettings, updateAppSettings } from './persistence'
 
 // The LSDJ brand mark renders through three.js / react-three-fiber, which needs
 // a real WebGL context and ResizeObserver — neither exists in jsdom. These
@@ -132,5 +132,60 @@ describe('App settings drawer', () => {
     expect(
       screen.getByRole('switch', { name: 'Performance visuals' }),
     ).toHaveAttribute('aria-checked', 'false')
+  })
+})
+
+describe('App theme', () => {
+  it('defaults to the DJ booth', () => {
+    renderApp(makeEngine())
+
+    expect(screen.getByRole('region', { name: 'Deck a' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Deck b' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Loom')).toBeNull()
+  })
+
+  it('picking Loom swaps the booth for the loom and persists the theme', () => {
+    renderApp(makeEngine())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Render ahead' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Loom' }))
+
+    expect(screen.getByLabelText('Loom')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Deck a' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Deck b' })).toBeNull()
+    expect(document.documentElement.dataset.theme).toBe('loom')
+    expect(loadAppSettings().theme).toBe('loom')
+    expect(
+      screen.getByRole('switch', { name: 'Render ahead' }),
+    ).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('picking DJ restores the deck columns', () => {
+    updateAppSettings({ theme: 'loom' })
+    renderApp(makeEngine())
+    expect(screen.getByLabelText('Loom')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    fireEvent.click(screen.getByRole('radio', { name: 'DJ' }))
+
+    expect(screen.queryByLabelText('Loom')).toBeNull()
+    expect(screen.getByRole('region', { name: 'Deck a' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Deck b' })).toBeInTheDocument()
+    expect(loadAppSettings().theme).toBe('dj')
+  })
+
+  it('persists the render-ahead switch', () => {
+    updateAppSettings({ theme: 'loom' })
+    renderApp(makeEngine())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Render ahead' }))
+
+    expect(
+      screen.getByRole('switch', { name: 'Render ahead' }),
+    ).toHaveAttribute('aria-checked', 'false')
+    expect(loadAppSettings().renderAhead).toBe(false)
   })
 })
