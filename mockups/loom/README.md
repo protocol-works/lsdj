@@ -1,9 +1,10 @@
 # Loom mockup
 
 A static, dependency-free mockup of the **looming** UI for LSDJ: an alternative
-front end on the same Rust engine, Magenta RT decks, and Stable Audio 3
-generation. Nothing here makes sound. Open `index.html` in a browser (or
-`python3 -m http.server --directory mockups/loom`).
+front end on the same Rust engine and Stable Audio 3 generation. Nothing here
+makes sound. Open `index.html` in a browser (or
+`python3 -m http.server --directory mockups/loom`; the `loom-mockup` entry in
+`.claude/launch.json` does the same).
 
 ## The idea
 
@@ -18,21 +19,46 @@ and the deck's playhead — the **shuttle** — follows the tied thread.
 
 | Word | Meaning |
 | ---- | ------- |
-| loom | The canvas. x = bars, y = branches. Several roots can coexist (a forest). |
-| thread | A node: one clip (prompt, key, chords, bars), rendered from its parent's last bars. A root is seeded from a prompt or a library song. |
-| live thread | A Magenta RT stream as a node: open-ended, steered from the style pad, pulsing right edge. Freeze it to get a fixed thread to branch from. |
-| weave | "What next?" after any node: render N candidate children (prompt + flavour variants). They shimmer as ghosts with a progress bar until the audio exists. |
+| loom | The canvas. x = bars, y = branches. Several roots can coexist (a forest). Zoom the bar scale with − / = (0 resets) or ⌘-wheel. |
+| thread | A node: one clip (prompt, key, bars, seed, LoRA stack), rendered from its parent's last bars. A root is seeded from a prompt or a library song. |
+| weave | "What next?" after any node: a prompt (or none = continue), how many **takes**, how many bars, a LoRA stack, and the SA3 knobs behind a disclosure. Renders shimmer as ghosts with a progress bar until the audio exists. |
+| take | One of N sibling renders of the same prompt with different seeds, drawn in a bracket. Cue each from the join, then ✓ **keep** one; the others are discarded (⨯ discards a single take). A deck can't lose the take it is on or has tied. |
 | shuttle | A deck's playhead inside the loom. It follows the threads you tied; where none is tied it **holds** the last four bars (amber slot, counting tag). With **auto** on for that deck it follows the first rendered child instead. It never goes silent. |
 | →A / →B | Tie a node as the deck's *next*: through the tree if it is downstream, a jump or a return at the seam if not. Ties queue; ⨯ (the same button, or the rail chip) unties. Shift-click, or drop the node on the shuttle, **cuts** to it on the next bar. |
 | cue | ⌾ auditions a node in the headphones, by default from the *join* (four bars before it) so you hear the transition. Independent of the on-air decks. |
-| rail | The deck's flattened path (past · now · next) in the mixer. Drop target. |
+| rail | The deck's flattened path (past · now · next) in the mixer. Scrolls under a fade; drop target. |
 | bounce | Drop a node on the explorer: its root-to-node path is stitched to one song in the library. |
 
 ## What it keeps from the current app
 
-The mixer (trim, EQ, Color FX, volume, crossfader, cue mix, master, record),
-the media explorer as a drawer, and the FLX4 mapping. Only the deck surface
-changes: the loom replaces the two deck columns.
+The mixer (trim, EQ, Color FX, volume with a meter beside the fader, crossfader,
+cue mix, master, record), the media explorer as a drawer (now with star
+ratings, tags, sorts, a ★4+ filter and an *in key with deck A/B* filter), and
+the FLX4 mapping. Only the deck surface changes: the loom replaces the two deck
+columns.
+
+## Generation settings exposed (what the backend already takes)
+
+The weave popover maps 1:1 onto `/api/generate` for `kind: track`:
+prompt, `seconds` (from bars at the root's tempo), `loras` (up to 4 adapters,
+each with a strength; the real adapters on disk are listed), `cfg` (1.1–4,
+default 3), `apg` (0–1, default 1), `init_noise_level` shown as **drift** from
+the parent's tail (0.01–5, default 0.6), `negative_prompt`, and `seed` (one per
+take: a chosen seed plus the take index, or random). Steps are fixed by the
+sidecar. Nothing in the popover needs a new endpoint.
+
+## Decisions so far
+
+- **2026-10-30, shuttle rules** — below.
+- **2026-10-30, Stable Audio 3 only, for now.** Realtime (Magenta RT) decks are
+  a different instrument: an endless thread with no seam. The first loom is
+  playback-only; live threads return as a later layer once the playback loom
+  is right.
+- **2026-10-30, no chord row.** We don't have chord data; the node shows a
+  waveform, key and length instead.
+- **2026-10-30, takes, not flavours.** "Give me three of this prompt, I'll pick"
+  beats three auto-varied prompts. Variation in *prompt* is the user's job (the
+  chips help); variation in *seed* is the model's.
 
 ## Shuttle rules (settled 2026-10-30)
 
@@ -51,7 +77,7 @@ changes: the loom replaces the two deck columns.
 5. **Seams are quantised.** Tie and untie take effect at the node end, or at
    the next loop boundary while holding. Arriving at a tied node that is still
    rendering holds on the current tail until it is ready, then goes.
-6. **Weave can tie.** "Weave & tie A/B" renders one continuation and ties it at
+6. **Weave can tie.** "Weave & tie A/B" renders the takes and ties the first at
    once, so the on-air deck keeps going in two presses; audition-first stays
    the default for the incoming deck.
 7. **Autopilot is an explicit per-deck toggle, off by default.** When on, an
@@ -67,10 +93,12 @@ changes: the loom replaces the two deck columns.
   also want branches that *overlap* (start 8 bars before the parent ends, for
   a blended transition rendered by the model)?
 - **Render-ahead budget.** SA3 takes minutes per clip; the shuttle moves in
-  real time. Weaving must run well ahead of the playhead. Live threads cover
-  the gap. Is that enough, or does the deck need an automatic "safe
-  continuation" that renders in the background for every on-air node?
-- **How many candidates per weave?** Three is the mockup default. Each is a
-  full render.
-- **Hardware.** FLX4 jog = scrub the loom? Pads = the current node's children
-  (pad 1–4 = tie child 1–4)? Browse knob = move the selection along threads?
+  real time. Weaving must run well ahead of the playhead. Does the deck need
+  an automatic "safe continuation" that renders in the background for every
+  on-air node, and how many takes can the machine afford at once?
+- **Discarded takes.** Gone, or a trash the explorer can show? Rendering is
+  expensive enough that "undo keep" probably matters.
+- **Live decks later.** When Magenta RT returns, is a live thread a node with
+  no end (the earlier mockup) or a separate deck type beside the loom?
+- **Hardware.** FLX4 jog = scrub the loom? Pads = the current node's takes or
+  children (pad 1–4 = tie 1–4)? Browse knob = move the selection along threads?
