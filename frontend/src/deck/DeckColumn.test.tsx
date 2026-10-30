@@ -1591,6 +1591,7 @@ describe('DeckColumn playback mode (M19)', () => {
     cues: Array<number | null>(8).fill(null),
     loop: null,
     pendingLoopIn: null,
+    queued: null,
     ...overrides,
   })
 

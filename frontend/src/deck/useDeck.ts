@@ -139,8 +139,8 @@ export type TrackState = {
   /** A loop IN press awaiting its OUT (already snapped). */
   pendingLoopIn: number | null
   /** The track queued to take over at `switchAt` (track seconds) — the
-   * loom's seam — or null. Optional only so pre-loom fixtures stay valid. */
-  queued?: { title: string; switchAt: number } | null
+   * loom's seam — or null. */
+  queued: { title: string; switchAt: number } | null
 }
 
 /** One hot-cue slot per pad in the bank. */
@@ -255,18 +255,17 @@ export type DeckControls = {
    * the playing one sample-accurately when the playhead reaches
    * `switchAtSeconds`, entering it at `startSeconds`; the deck adopts it
    * (title, tempo, fresh cues, `loadId`) on the poll after the swap. False
-   * off playback; a shell refusal rejects. Replaces an earlier queue. The
-   * loom members are optional only so pre-loom fixtures stay valid. */
-  queueTrack?: (
+   * off playback; a shell refusal rejects. Replaces an earlier queue. */
+  queueTrack: (
     source: TrackSource,
     title: string,
     startSeconds: number,
     switchAtSeconds: number,
   ) => Promise<boolean>
-  clearQueuedTrack?: () => void
+  clearQueuedTrack: () => void
   /** A loop on the loom's nominal grid: any region the engine accepts, no
    * detected-grid gate (`beatLoop` keeps its own). */
-  setTrackLoopRegion?: (start: number, end: number) => void
+  setTrackLoopRegion: (start: number, end: number) => void
   leavePlayback: () => void
   /** Jump the track playhead (overview click / FLX4); playback-mode
    * only, a no-op on the live stream. */
