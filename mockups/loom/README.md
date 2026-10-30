@@ -31,6 +31,7 @@ and the deck's playhead — the **shuttle** — follows the tied thread.
 | panel | Each deck's strip in the mixer: what's playing, bars to the seam and what's there, then transport, fader with meter, EQ and FX. Drop a node on it to tie. |
 | bounce | Drop a node on the explorer: its root-to-node path is stitched to one song in the library. ⤓ on a deck panel bounces what that deck actually played. |
 | loop | 4 / 8 / 16 on the deck loops from the current bar, quantised (the FLX4's auto-loop); press again to carry on from the playhead. Drawn as a bracketed region on the node with the trail cycling inside and `⟲ 8 · ×3` in the deck status. A hold at an untied seam is the same region in amber. A tie back up the tree is a loop at song scale. |
+| render ahead | A setting, on by default: every on-air leaf grows one *auto* continuation (same prompt and stack) as soon as a deck lands on it, so a hold is a choice, not an accident. Ghosts show a live ETA (`⟳ 0:06`, `queued`, `⟐ merging`); a tied ghost that will miss the seam turns the shuttle tag amber with how late it is. |
 | save | There is none. The loom autosaves under the name in the top bar (click to rename; a quiet "saved" mark). The explorer's **looms** tab lists looms to open, duplicate or delete; deleting a loom keeps its renders in songs. A *set* is what left the master: ● rec. |
 | theme | A new setting in the settings drawer: **DJ** (the two deck columns the app has today) or **Loom** (this). It switches the deck surface only; the mixer, explorer, engine, generation and FLX4 mapping are shared. |
 
@@ -69,6 +70,15 @@ sidecar. Nothing in the popover needs a new endpoint.
   is right.
 - **2026-10-30, no chord row.** We don't have chord data; the node shows a
   waveform, key and length instead.
+- **2026-10-30, render time is shown, not hidden.** Measured on this Mac: SA3
+  medium composes 2:00 in 14.9 s (≈0.125× realtime, ROADMAP M19), so a plain
+  16-bar clip renders in ≈7 s and the shuttle is rarely the bottleneck. The
+  expensive thing is a **LoRA stack: ≈128 s flat per render** for the adapter
+  merge (docs/mcp-findings.md #16). The mockup models exactly that (`RENDER`),
+  queues takes one after another, and the weave popover compares render time
+  with the time until the deck reaches the seam. **Implementation
+  prerequisite:** the sidecar must keep the merged DiT warm per stack, or
+  LoRA threads cannot be woven live.
 - **2026-10-30, autosave, no save button.** Every render is already a file in
   the library; the loom is a small graph over them, so it saves itself. Naming
   and listing (the looms tab) are the whole UI. ● rec stays the way to save a
@@ -124,10 +134,9 @@ sidecar. Nothing in the popover needs a new endpoint.
 - **What is a fork, musically?** Children start where the parent ends. Do we
   also want branches that *overlap* (start 8 bars before the parent ends, for
   a blended transition rendered by the model)?
-- **Render-ahead budget.** SA3 takes minutes per clip; the shuttle moves in
-  real time. Weaving must run well ahead of the playhead. Does the deck need
-  an automatic "safe continuation" that renders in the background for every
-  on-air node, and how many takes can the machine afford at once?
+- **Render ahead with a LoRA.** The auto continuation inherits the parent's
+  stack, so behind a LoRA thread it takes ≈2 min. Drop the stack for the
+  safety net (fast, but a style shift) or wait for the warm-merge fix?
 - **Needle drops.** Clicking the playing node's waveform moves the playhead at
   once in the mockup. In the app: next beat, next bar, or immediate with a
   modifier? And does a trim on the node a deck is *playing* take effect now or

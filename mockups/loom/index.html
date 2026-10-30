@@ -187,6 +187,7 @@ button{background:none;border:0;cursor:pointer}
 .sw::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#e5e7eb;transition:left .2s}
 .sw:checked{background:var(--cue)} .sw:checked::after{left:16px;background:#000}
 .set .hint{font:11px/1.5 var(--ui);color:var(--muted);margin:2px 0 4px}
+.pop .hint{font:11px/1.5 var(--ui);color:var(--muted);margin:-2px 0 8px} .pop .hint.warn{color:var(--warn)}
 .set .row2{display:flex;gap:6px;align-items:center}
 .set pre{margin:6px 0 0;padding:8px 10px;border-radius:8px;background:rgba(0,0,0,.35);border:1px solid var(--line);font:10.5px/1.45 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-all}
 .mdl{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px}
@@ -344,6 +345,10 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
           <div class="kv" style="padding-top:10px"><span class="l">LoRA adapters<small>5 installed · ~/Library/Application Support/LSDJ/sa3-loras</small></span><button class="tbtn" id="addLora">+ add…</button></div>
           <p class="hint">666-midtempo-bass · colundi-idm · industrial-techno · opera · zentai-chiptune</p>
         </section>
+        <section><h5>generation</h5>
+          <div class="kv"><span class="l">Render ahead<small>keep one continuation rendering behind every on-air thread</small></span><input type="checkbox" class="sw" id="ra" checked></div>
+          <p class="hint">SA3 medium renders at ≈0.13× realtime here (2:00 in 15 s). A LoRA stack adds ≈2:08 to every render for the adapter merge until the merged model is kept warm.</p>
+        </section>
         <section><h5>recording</h5>
           <div class="kv"><span class="l">Recordings folder<small>~/Downloads (default)</small></span><span class="row2"><button class="tbtn" id="chooseFolder">choose…</button></span></div>
         </section>
@@ -369,6 +374,7 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
   <div class="chips" id="chips"></div>
   <div class="opt"><label>takes</label><span class="seg" id="takes"><button>1</button><button>2</button><button class="on">3</button><button>4</button></span>
     <label style="margin-left:6px">bars</label><span class="seg" id="bars"><button>8</button><button class="on">16</button><button>32</button></span><span class="hint" id="secs"></span></div>
+  <p class="hint" id="etaHint"></p>
   <div class="opt"><label>lora</label><div class="loras" id="loras"></div></div>
   <details class="adv"><summary id="advsum"></summary>
     <div class="r"><span>cfg</span><input type="range" id="cfg" min="1.1" max="4" step=".1" value="3"><output>3.0</output></div>
@@ -392,6 +398,7 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
   <p><b>cue</b> — ⌾ auditions a node in the headphones, from the join (four bars before it) so you hear the transition, not just the clip. Click inside a waveform to cue from that bar instead; on the node a deck is playing, the click moves that deck's playhead.</p>
   <p><b>trim</b> — drag a node's left or right edge to skip an intro or end at the drop (snaps to bars). Like a clip in a DAW the trimmed audio is hidden, not dimmed: the node gets shorter and the tree closes up behind it, because left-to-right is real time.</p>
   <p><b>deck panel</b> — what's playing, bars to the seam and what's there, then transport, fader, EQ and FX. Drop a node on it to tie. <b>explorer</b> — rate, tag, sort and filter the library; “in key” keeps only songs that mix with what a deck is playing.</p>
+  <p><b>render time</b> — ghosts show a live ETA; takes queue one after another; a tied ghost that will miss the seam turns the tag amber with how late it is. With <b>render ahead</b> on (settings) every on-air leaf grows one <em>auto</em> continuation so a hold is a choice, not an accident. A LoRA stack costs ≈2 min per render for the adapter merge, and the popover says so.</p>
   <p><b>loop</b> — 4 / 8 / 16 on the deck loops from the current bar (the FLX4's auto-loop); press it again to carry on from wherever the playhead is. A hold at an untied seam is the same thing drawn in amber. A tie back up the tree is a loop at song scale.</p>
   <p><b>saving</b> — there is no save button. The loom autosaves under the name in the top bar (click it to rename); the explorer's <b>looms</b> tab lists them. A <em>set</em> is what left the master: ● rec records it, and ⤓ on a deck bounces what that deck played to the songs library.</p>
   <p>Drag the background to pan. Nothing here makes sound; it's a mockup.</p>
@@ -427,6 +434,11 @@ const ancestors=id=>{const a=[];let n=N[id];while(n.parent){n=N[n.parent];a.unsh
 const rootOf=id=>{let n=N[id];while(n.parent)n=N[n.parent];return n}
 const tempoOf=n=>rootOf(n.id).bpm||120
 const inOf=n=>n.in||0,outOf=n=>n.out??n.bars,lenOf=n=>outOf(n)-inOf(n)
+const RENDER={base:3,rate:.125,merge:128} // seconds: measured SA3 medium ≈0.125× realtime; a LoRA stack re-merges into the DiT every render
+const eta=(bars,bpm,loras)=>RENDER.base+RENDER.rate*bars*240/bpm+(loras?.length?RENDER.merge:0)
+const fmt=s=>{s=Math.max(0,Math.round(s));return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`}
+const remaining=n=>(n.wait||0)+n.dur-(n.elapsed||0)
+const ghostLabel=n=>{const el=n.elapsed||0,w=n.wait||0;return (n.auto?'auto · ':'')+(el<w?`queued · ${fmt(remaining(n))}`:n.loras?.length&&el-w<RENDER.merge?`⟐ merging · ${fmt(remaining(n))}`:`⟳ ${fmt(remaining(n))}`)}
 const SEMI={C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11}
 function hue(key){const m=/^([A-G][b#]?)(.*)$/.exec(key||'');if(!m)return 280;let s=SEMI[m[1]]??0;if(/^m(?!aj)/.test(m[2]))s=(s+3)%12;return ((s*7)%12)*30}
 const inKey=(a,b)=>{const d=Math.abs(hue(a)-hue(b));return Math.min(d,360-d)<=30}
@@ -493,7 +505,7 @@ function render(){layout()
     if(cp)el.querySelector('.cuept').style.left=10+(cue.from-inOf(n))/lenOf(n)*(n.w-20)+'px'
     el.querySelector('.wave').setAttribute('viewBox',`${inOf(n)/n.bars*100} 0 ${lenOf(n)/n.bars*100} 16`)
     const tr=inOf(n)>0||outOf(n)<n.bars
-    el.querySelector('.meta').innerHTML=`${n.loras?.length?'<i>⟐</i> ':''}${n.key} · ${tr?`${lenOf(n)}<span style="opacity:.55">/${n.bars}</span>`:n.bars}b`
+    el.querySelector('.meta').innerHTML=n.ghost?ghostLabel(n):`${n.auto?'<span style="opacity:.6">auto · </span>':''}${n.loras?.length?'<i>⟐</i> ':''}${n.key} · ${tr?`${lenOf(n)}<span style="opacity:.55">/${n.bars}</span>`:n.bars}b`
     el.querySelector('.h.l').classList.toggle('set',inOf(n)>0);el.querySelector('.h.r').classList.toggle('set',outOf(n)<n.bars)
     el.querySelector('.cue').classList.toggle('active',cue?.node===n.id)
     el.querySelector('.ta').textContent=D.A.queue.includes(n.id)?'⨯ A':'→ A'
@@ -550,7 +562,8 @@ function seam(k){const d=D[k],n=N[d.node]
   if(d.loop)return{left:'⟲',tag:`${k} · ⟲ ${d.loop.len} · ×${d.loop.n}`,warn:false}
   const nx=d.queue[0];const au=!nx&&d.auto?kids(n.id).find(x=>!x.ghost):null
   if(d.hold)return{left,tag:nx?`${k} · hold · ⟳ ${Math.round(N[nx].progress*100)}%`:`${k} · hold`,warn:true}
-  if(nx)return{left,tag:`${k} · ${left} → ${N[nx].ghost?'⟳ ':''}${tiny(N[nx].prompt)}`,warn:false}
+  if(nx&&N[nx].ghost){const late=remaining(N[nx])-left*240/tempoOf(n);return late>0?{left,tag:`${k} · ${left} → ⟳ late ${fmt(late)} · ${tiny(N[nx].prompt)}`,warn:true}:{left,tag:`${k} · ${left} → ⟳ ${tiny(N[nx].prompt)}`,warn:false}}
+  if(nx)return{left,tag:`${k} · ${left} → ${tiny(N[nx].prompt)}`,warn:false}
   if(au)return{left,tag:`${k} · ${left} → auto · ${tiny(au.prompt)}`,warn:false}
   return{left,tag:`${k} · ${left} → HOLD`,warn:+left<=8}}
 function paint(){const sr=stage.getBoundingClientRect()
@@ -568,6 +581,7 @@ function paint(){const sr=stage.getBoundingClientRect()
 let last=performance.now(),t0=last
 function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
   for(const k of['A','B']){const d=D[k];if(!d.playing)continue;const n=N[d.node];const was=Math.floor(d.pos);d.pos+=dt*tempoOf(n)/240
+    if(RA&&!n.ghost&&!n.ahead&&!kids(n.id).length){n.ahead=true;const id='a'+(++gid);add(id,n.id,n.prompt,16,n.key,{ghost:true,progress:0,elapsed:0,wait:0,dur:eta(16,tempoOf(n),n.loras),loras:n.loras,auto:true});dirty=true;toast(`render-ahead: continuing “${short(n.prompt)}” behind ${k}`)}
     if(d.cut&&Math.floor(d.pos)>was){const id=d.cut;d.cut=null;d.queue=[];go(k,id,0);dirty=true;toast(`${k} cut → “${short(N[id].prompt)}”`);continue}
     if(d.loop&&d.pos>=d.loop.end){d.pos-=d.loop.end-d.loop.start;d.loop.n++;continue}
     const end=outOf(n);if(d.pos<end)continue
@@ -575,9 +589,9 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
     if(!nx&&d.auto){const c=kids(n.id).find(x=>!x.ghost);if(c){nx=c.id;viaAuto=true}}
     if(nx&&!N[nx].ghost){if(!viaAuto)d.queue.shift();go(k,nx,d.pos-end);dirty=true;toast(`${k} ${viaAuto?'autopilot ':''}→ “${short(N[nx].prompt)}”`)}
     else{d.pos=end-4;if(!d.hold){d.hold=true;dirty=true;toast(nx?`${k}: next is still rendering — holding the last 4 bars`:`${k}: nothing tied — holding the last 4 bars`)}}}
-  for(const n of Object.values(N))if(n.ghost){n.progress=Math.min(1,n.progress+dt/n.dur)
+  for(const n of Object.values(N))if(n.ghost){n.elapsed=(n.elapsed||0)+dt;n.progress=Math.max(0,Math.min(1,(n.elapsed-(n.wait||0))/n.dur))
     if(n.progress>=1){n.ghost=false;dirty=true;toast(`rendered “${short(n.prompt)}”${n.take?` · take ${n.takeN}`:''} · ready to cue`)}
-    else{const i=els.get(n.id)?.querySelector('.prog i');if(i)i.style.width=(n.progress*100)+'%'}}
+    else{const el=els.get(n.id);if(el){el.querySelector('.prog i').style.width=(n.progress*100)+'%';el.querySelector('.meta').textContent=ghostLabel(n)}}}
   if(dirty){touched();render()}paint();meters();const s=Math.floor((t-t0)/1000);$('#clock').textContent=`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
   requestAnimationFrame(tick)}
 
@@ -619,6 +633,11 @@ $('#loras').innerHTML=LORAS.map(l=>`<span class="lora" data-l="${l}"><span>${l}<
 const stack=()=>Object.entries(P.loras).map(([n,s])=>({n,s}))
 function popSync(){const p=N[popParent],secs=P.bars*240/tempoOf(p)
   $('#secs').textContent=`≈ ${secs.toFixed(0)} s @ ${tempoOf(p)} bpm`
+  const e=eta(P.bars,tempoOf(p),stack()),on=['A','B'].filter(k=>D[k].node===popParent&&D[k].playing)
+  let h=`renders in ${fmt(e)}${P.takes>1?` per take · ${P.takes} takes queue, all in ${fmt(e*P.takes)}`:''}`,warn=false
+  if(stack().length){h+=` · ⟐ the adapter merge is ${fmt(RENDER.merge)} of that, every render`;warn=true}
+  for(const k of on){const toSeam=(outOf(p)-D[k].pos)*240/tempoOf(p);const late=e>toSeam;warn||=late;h+=` · ${k} reaches this seam in ${fmt(toSeam)} → ${late?`late by ${fmt(e-toSeam)}, ${k} will hold`:'in time ✓'}`}
+  $('#etaHint').textContent=h;$('#etaHint').classList.toggle('warn',warn)
   $('#weave').textContent=`weave ×${P.takes}`
   $('#advsum').innerHTML=`sa3 settings · <b>cfg ${(+$('#cfg').value).toFixed(1)} · apg ${(+$('#apg').value).toFixed(2)} · drift ${(+$('#noise').value).toFixed(2)}${$('#neg').value.trim()?' · −“'+$('#neg').value.trim()+'”':''}${$('#seedv').value?' · seed '+$('#seedv').value:''}</b>`
   const s=stack();$('#gohint').textContent=`sa3 medium${s.length?' + '+s.map(l=>l.n).join(' + '):''} · continue from the last 8 bars`;placePop()}
@@ -639,8 +658,9 @@ pop.querySelectorAll('.adv input').forEach(i=>i.oninput=()=>{const o=i.parentEle
 $('#dice').onclick=()=>{$('#seedv').value=Math.floor(Math.random()*2**31);popSync()}
 function weave(pid,text,tieTo){const p=N[pid];const base=(text||'').trim()||p.prompt;const take='t'+(++gid);const ids=[]
   const seed=$('#seedv').value?+$('#seedv').value:null
+  const e=eta(P.bars,tempoOf(p),stack())
   for(let i=0;i<P.takes;i++){const id='g'+(++gid);ids.push(id)
-    add(id,pid,base,P.bars,p.key,{ghost:true,progress:0,dur:2.6+i*1.1+P.bars/16,loras:stack(),seed:seed!==null?seed+i:Math.floor(Math.random()*2**31),
+    add(id,pid,base,P.bars,p.key,{ghost:true,progress:0,elapsed:0,wait:e*i,dur:e,loras:stack(),seed:seed!==null?seed+i:Math.floor(Math.random()*2**31),
       ...(P.takes>1?{take,takeN:i+1}:{})})}
   touched();render();if(tieTo)threadTo(tieTo,ids[0]);else toast(`weaving ${P.takes} take${P.takes>1?'s':''} after “${short(p.prompt)}”${stack().length?' · ⟐ '+stack().map(l=>l.n).join(' + '):''}`)}
 $('#weave').onclick=()=>{weave(popParent,$('#popText').value);pop.classList.remove('open')}
@@ -735,6 +755,7 @@ $('#theme').onclick=e=>{const b=e.target.closest('button');if(!b)return
   if(b.textContent==='DJ'){toast('DJ is the deck-column UI you have today — this mockup only draws Loom');return}
   $('#theme').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b))}
 $('#tempo').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('#tempo').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));toast(`sync range ${b.textContent}`)}
+let RA=true;$('#ra').onchange=e=>{RA=e.target.checked;toast(RA?'render ahead on':'render ahead off — leaves will hold')}
 $('.set .sw').onchange=e=>{document.querySelector('.aurora').style.opacity=document.querySelector('.grain').style.opacity=e.target.checked?'':'0';toast(e.target.checked?'performance visuals on':'performance visuals off')}
 const cfgFor=h=>h==='Claude Code'?`claude mcp add --transport http lsdj http://127.0.0.1:7340/mcp --header "Authorization: Bearer lsdj_…7f3a"`:JSON.stringify({mcpServers:{lsdj:{url:'http://127.0.0.1:7340/mcp',headers:{Authorization:'Bearer lsdj_…7f3a'}}}},null,1)
 const harness=$('#harness');const cfg=()=>$('#cfg').textContent=cfgFor(harness.value);harness.onchange=cfg;cfg()
