@@ -33,6 +33,7 @@ function makeProps(overrides: Partial<LoomViewProps> = {}): LoomViewProps {
     onKeep: vi.fn(),
     onDiscard: vi.fn(),
     onRetry: vi.fn(),
+    onBounce: vi.fn(),
     onWeave: vi.fn(),
     onSelect: vi.fn(),
     renderAhead: true,
@@ -195,6 +196,12 @@ describe('LoomView node tools', () => {
     expect(within(take).getByText(/take 1/)).toBeInTheDocument()
     fireEvent.click(within(take).getByRole('button', { name: '✓ keep' }))
     expect(props.onKeep).toHaveBeenCalledWith('g1')
+  })
+
+  it('bounces a node path from its tools', () => {
+    const { props } = renderView()
+    fireEvent.click(within(nodeEl(PROMPTS.n4)).getByRole('button', { name: 'Bounce the path from its root to here to songs' }))
+    expect(props.onBounce).toHaveBeenCalledWith('n4')
   })
 
   it('shows why a render failed and offers retry', () => {

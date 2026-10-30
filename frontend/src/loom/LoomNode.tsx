@@ -42,6 +42,7 @@ export type NodeActions = {
   discard: (id: string) => void
   retry: (id: string) => void
   weave: (id: string, anchor: HTMLElement) => void
+  bounce: (id: string) => void
   trimPreview: (id: string, inBar: number, outBar: number) => void
   trimCommit: (id: string) => void
 }
@@ -360,6 +361,9 @@ export const LoomNode = memo(function LoomNode({
               onClick={(event) => actions.weave(node.id, event.currentTarget)}
             >
               {t('loom.tools.weaveMark')}
+            </Button>
+            <Button aria-label={t('loom.bounce.path')} title={t('loom.bounce.path')} onClick={() => actions.bounce(node.id)}>
+              {t('loom.bounce.pathMark')}
             </Button>
           </>
         ) : node.status === 'failed' ? (

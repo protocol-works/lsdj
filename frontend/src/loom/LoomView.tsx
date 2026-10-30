@@ -61,6 +61,8 @@ export type LoomViewProps = {
   onKeep: (id: string) => void
   onDiscard: (id: string) => void
   onRetry: (id: string) => void
+  /** Bounce the node's root → node path to one song. */
+  onBounce: (id: string) => void
   onWeave: (parentId: string | null, form: WeaveForm) => void
   onSelect: (id: string | null) => void
   renderAhead: boolean
@@ -184,6 +186,7 @@ export function LoomView(props: LoomViewProps) {
       discard: (id) => latest.current.onDiscard(id),
       retry: (id) => latest.current.onRetry(id),
       weave: openWeave,
+      bounce: (id) => latest.current.onBounce(id),
       trimPreview: (id, inBar, outBar) => {
         trimDraftRef.current = { id, in: inBar, out: outBar }
         setTrimDraft(trimDraftRef.current)

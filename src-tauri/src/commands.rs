@@ -2069,3 +2069,67 @@ pub async fn audition_song_clip(
     state.audition_play(samples);
     Ok(())
 }
+
+/// One slice of a bounce: `start_seconds..end_seconds` of library song `name`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StitchPart {
+    pub name: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// The longest prompt a bounce records: the deck's generate-prompt cap.
+const MAX_BOUNCE_PROMPT_CHARS: usize = 32_000;
+
+/// Bounce a loom path (plan decision 14): stitch `parts` of library songs into one
+/// new song titled `title`, recording `prompt` (the path's node prompts). The shell
+/// reads each part scoped to the songs folder, decodes, stitches and writes off the
+/// main thread (see [`crate::stitch`]); only the new row crosses IPC.
+#[tauri::command]
+pub async fn stitch_songs(
+    app: tauri::AppHandle,
+    parts: Vec<StitchPart>,
+    title: String,
+    prompt: String,
+) -> Result<SongEntry, String> {
+    let title: String = title.chars().take(library::MAX_TITLE_CHARS).collect();
+    let title = library::validate_title(&title)?;
+    let prompt: String = prompt.chars().take(MAX_BOUNCE_PROMPT_CHARS).collect();
+    let handle = app.clone();
+    let entry = tauri::async_runtime::spawn_blocking(move || {
+        let songs = handle.state::<SongLibrary>();
+        // ponytail: every part is decoded at once (≈ 1.5 GB at the 30-minute cap);
+        // decode and append part by part if long bounces run short of memory.
+        let tracks = parts
+            .iter()
+            .map(|part| {
+                let extension = std::path::Path::new(&part.name)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase);
+                crate::decode::decode_to_48k(songs.read(&part.name)?, extension.as_deref())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let spans: Vec<_> = tracks
+            .iter()
+            .zip(&parts)
+            .map(|(track, part)| (track.frames(), part.start_seconds, part.end_seconds))
+            .collect();
+        let slices: Vec<_> = tracks.iter().zip(crate::stitch::plan_stitch(&spans)?).collect();
+        let wav = crate::stitch::wav(&crate::stitch::stitch(&slices))?;
+        songs.record(
+            NewSong {
+                title,
+                prompt,
+                model: "loom-bounce".to_string(),
+                recipe: None,
+            },
+            &wav,
+        )
+    })
+    .await
+    .map_err(|e| format!("bounce failed: {e}"))??;
+    crate::watcher::emit_library_changed(&app, "songs");
+    Ok(entry)
+}

@@ -671,6 +671,15 @@
       "weave": "Weave what comes next",
       "weaveMark": "✱"
     },
+    "bounce": {
+      "path": "Bounce the path from its root to here to songs",
+      "pathMark": "⤓",
+      "title": "{{loom}} · {{node}}",
+      "working": "Bouncing “{{title}}”…",
+      "done": "Bounced to songs: “{{title}}”",
+      "failed": "The bounce failed: {{message}}",
+      "empty": "Nothing rendered to bounce yet"
+    },
     "takes": {
       "rendering": "{{total}} takes · {{ready}}/{{total}} rendered",
       "pick": "{{total}} takes · ⌾ cue each · ✓ keep one"

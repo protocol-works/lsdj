@@ -54,6 +54,7 @@ mod samples;
 mod settings;
 mod sidecar;
 mod songs;
+mod stitch;
 mod store;
 mod style;
 mod style_send;
@@ -904,6 +905,7 @@ pub fn run() {
             commands::save_loom,
             commands::delete_loom,
             commands::audition_song_clip,
+            commands::stitch_songs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

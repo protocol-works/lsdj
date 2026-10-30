@@ -10,6 +10,7 @@ import type { TempoRange } from '../audio/track'
 import { useControlBus } from '../control/busContext'
 import type { DeckControls } from '../deck/useDeck'
 import type { ChannelControls } from '../mixer/MixerStrip'
+import { deckPath, nodePath, pathParts, stitchSongs } from './bounce'
 import { PX_DEFAULT } from './layout'
 import { LoomBar } from './LoomBar'
 import { LoomMixer, type LoomDeckPanel } from './LoomMixer'
@@ -46,6 +47,9 @@ export type LoomBoothProps = {
 export type LoomBoothHandle = {
   loadSong: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
 }
+
+/** How long the bounce line holds in the bar (as `useLoom`'s status). */
+const BOUNCE_STATUS_MS = 6000
 
 const peaks = (file: string, buckets: number) =>
   invoke<Peaks>('library_clip_peaks', { library: 'songs', name: file, buckets })
@@ -90,6 +94,31 @@ export function LoomBooth({
     [bus, beatLoop, stepLoop],
   )
 
+  // ---- bounce: a path stitched into one library song (plan decision 14) ----
+  const [bounced, setBounced] = useState<string | null>(null)
+  useEffect(() => {
+    if (!bounced) return
+    const timer = setTimeout(() => setBounced(null), BOUNCE_STATUS_MS)
+    return () => clearTimeout(timer)
+  }, [bounced])
+  const bounce = (ids: string[], endAt?: number) => {
+    const plan = pathParts(state, ids, t, endAt)
+    if (!plan) {
+      setBounced(t('loom.bounce.empty'))
+      return
+    }
+    setBounced(t('loom.bounce.working', { title: plan.title }))
+    stitchSongs(plan).then(
+      (entry) => setBounced(t('loom.bounce.done', { title: entry.title })),
+      (error: unknown) =>
+        setBounced(t('loom.bounce.failed', { message: error instanceof Error ? error.message : String(error) })),
+    )
+  }
+  // What the deck played, up to its playhead; nothing to offer on an idle deck.
+  const bounceDeck = (deck: DeckId, controls: DeckControls) =>
+    deckPath(state, deck).length > 0 ? () => bounce(deckPath(state, deck), controls.track?.position) : undefined
+  // ---- end bounce ----
+
   const statusOf = (controls: DeckControls) =>
     controls.track && { position: controls.track.position, playing: controls.track.playing, loop: controls.track.loop }
 
@@ -125,6 +154,7 @@ export function LoomBooth({
         onKeep={loom.keep}
         onDiscard={loom.discard}
         onRetry={loom.retry}
+        onBounce={(id) => bounce(nodePath(state, id))}
         onWeave={loom.weave}
         onSelect={loom.select}
         renderAhead={renderAhead}
@@ -133,8 +163,8 @@ export function LoomBooth({
       <LoomMixer
         channels={channels}
         decks={{
-          a: deckPanel(t, loom, 'a', deckA, onSyncA),
-          b: deckPanel(t, loom, 'b', deckB, onSyncB),
+          a: { ...deckPanel(t, loom, 'a', deckA, onSyncA), onBounce: bounceDeck('a', deckA) },
+          b: { ...deckPanel(t, loom, 'b', deckB, onSyncB), onBounce: bounceDeck('b', deckB) },
         }}
         crossfade={crossfade}
         onCrossfade={onCrossfade}
@@ -149,7 +179,7 @@ export function LoomBooth({
             name={state.loom.name}
             currentId={state.loom.id}
             saved={loom.saved}
-            status={loom.status}
+            status={bounced ?? loom.status}
             looms={loom.looms}
             onRename={loom.rename}
             onNew={loom.newLoom}
