@@ -117,6 +117,22 @@ export type DeckChannel = {
    * synchronous. A refusal (unsupported codec, oversize) REJECTS with the
    * shell's reason — an explicit load error. Replaces any previous track. */
   loadTrack: (source: TrackSource, peaksBuckets: number) => Promise<LoadedTrack | null>
+  /** The loom's seamless seam (architecture §3): decode + analyse a library
+   * track like `loadTrack` and queue it to take over this deck's track when
+   * the playhead reaches `switchAtSeconds`, entering it at `startSeconds`.
+   * Resolves with the queued track's numbers; its bands and peaks arrive
+   * with `promoteQueuedTrack`. A `bytes` source or a refusal REJECTS.
+   * Replaces any earlier queue; a load discards it. */
+  queueTrack: (
+    source: TrackSource,
+    startSeconds: number,
+    switchAtSeconds: number,
+  ) => Promise<Pick<LoadedTrack, 'duration' | 'bpm' | 'grid'>>
+  clearQueuedTrack: () => void
+  /** Install the queued track's analysis once the engine swapped (`swaps`
+   * rose): resolves with its band profile (null when unavailable) after the
+   * overview peaks are refreshed for the new buffer. */
+  promoteQueuedTrack: () => Promise<LoadedTrack['bands'] | null>
   /** Start (or resume) the track; from the ended state it restarts at
    * the top. False with no track loaded. */
   playTrack: () => boolean
@@ -144,6 +160,11 @@ export type DeckChannel = {
     /** Context time of this snapshot — lets callers convert the
      * track-domain playhead into the shared audio clock (M20). */
     contextTime: number
+    /** A queued track is waiting for its switch point. */
+    queued: boolean
+    /** Queued hand-overs since the load: a rise means the queued track
+     * now plays. */
+    swaps: number
   } | null
   /** Varispeed (M20, ADR-0014): the playback rate the tempo control
    * set; the transport re-anchors so the playhead stays exact. */

@@ -138,6 +138,9 @@ export type TrackState = {
   loop: TrackLoop | null
   /** A loop IN press awaiting its OUT (already snapped). */
   pendingLoopIn: number | null
+  /** The track queued to take over at `switchAt` (track seconds) — the
+   * loom's seam — or null. Optional only so pre-loom fixtures stay valid. */
+  queued?: { title: string; switchAt: number } | null
 }
 
 /** One hot-cue slot per pad in the bank. */
@@ -248,6 +251,22 @@ export type DeckControls = {
   mode: DeckMode
   track: TrackState | null
   loadTrack: (source: TrackSource, title: string) => Promise<boolean>
+  /** The loom's seam (architecture §3): queue a library track to take over
+   * the playing one sample-accurately when the playhead reaches
+   * `switchAtSeconds`, entering it at `startSeconds`; the deck adopts it
+   * (title, tempo, fresh cues, `loadId`) on the poll after the swap. False
+   * off playback; a shell refusal rejects. Replaces an earlier queue. The
+   * loom members are optional only so pre-loom fixtures stay valid. */
+  queueTrack?: (
+    source: TrackSource,
+    title: string,
+    startSeconds: number,
+    switchAtSeconds: number,
+  ) => Promise<boolean>
+  clearQueuedTrack?: () => void
+  /** A loop on the loom's nominal grid: any region the engine accepts, no
+   * detected-grid gate (`beatLoop` keeps its own). */
+  setTrackLoopRegion?: (start: number, end: number) => void
   leavePlayback: () => void
   /** Jump the track playhead (overview click / FLX4); playback-mode
    * only, a no-op on the live stream. */
@@ -384,6 +403,16 @@ export function useDeck(
     null,
   )
   const trackRateRef = useRef(1)
+  // The queued track's numbers wait here until the engine's swap counter
+  // rises past the last one seen; then they become the track.
+  const queuedRef = useRef<{
+    title: string
+    duration: number
+    bpm: number | null
+    grid: Beatgrid | null
+    switchAt: number
+  } | null>(null)
+  const swapsRef = useRef(0)
   // Hot cues and the pending loop IN (M21): refs beside the state so
   // bus-driven callbacks read fresh values without re-subscribing.
   const trackCuesRef = useRef<(number | null)[]>([])
@@ -957,6 +986,9 @@ export function useDeck(
       )
       trackMetaRef.current = { bpm: trackTempo, grid }
       trackRateRef.current = 1
+      // A load replaces the engine source: its queue and swap count go too.
+      queuedRef.current = null
+      swapsRef.current = 0
       // The local seed matches the fresh bank the set_deck_track mirror
       // opens store-side (the store owns the points, phase D).
       trackCuesRef.current = Array<number | null>(HOT_CUE_COUNT).fill(null)
@@ -976,11 +1008,32 @@ export function useDeck(
         cues: trackCuesRef.current,
         loop: null,
         pendingLoopIn: null,
+        queued: null,
       })
       return true
     },
     [ensureChannel, engine, stop, setMode, state.playing, deckId],
   )
+
+  const queueTrack = useCallback(
+    async (source: TrackSource, title: string, startSeconds: number, switchAtSeconds: number) => {
+      const channel = channelRef.current
+      if (modeRef.current !== 'playback' || !channel) return false
+      const queued = await channel.queueTrack(source, startSeconds, switchAtSeconds)
+      queuedRef.current = { title, ...queued, switchAt: switchAtSeconds }
+      setTrack(
+        (current) => current && { ...current, queued: { title, switchAt: switchAtSeconds } },
+      )
+      return true
+    },
+    [],
+  )
+
+  const clearQueuedTrack = useCallback(() => {
+    queuedRef.current = null
+    channelRef.current?.clearQueuedTrack()
+    setTrack((current) => current && { ...current, queued: null })
+  }, [])
 
   const leavePlayback = useCallback(() => {
     if (modeRef.current !== 'playback') return
@@ -991,6 +1044,8 @@ export function useDeck(
     trackMetaRef.current = null
     trackBandsRef.current = null
     trackRateRef.current = 1
+    queuedRef.current = null
+    swapsRef.current = 0
     trackCuesRef.current = []
     pendingLoopInRef.current = null
     setMode('realtime')
@@ -1099,20 +1154,28 @@ export function useDeck(
     )
   }, [])
 
-  const beatLoop = useCallback((beats: number) => {
+  const setTrackLoopRegion = useCallback((start: number, end: number) => {
     if (modeRef.current !== 'playback') return
-    const status = channelRef.current?.getTrackStatus()
-    if (!status) return
-    const grid = trackMetaRef.current?.grid ?? null
-    const region = beatLoopRegion(status.position, beats, grid, status.duration)
-    // Grid-required: a beat loop on a gridless track is a no-op, not a guess.
-    if (!region) return
-    channelRef.current?.setTrackLoop(region.start, region.end)
+    channelRef.current?.setTrackLoop(start, end)
     // A fresh region drops any half-armed IN, like loopOut and seekTrack.
     pendingLoopInRef.current = null
     const loop = channelRef.current?.getTrackStatus()?.loop ?? null
     setTrack((current) => current && { ...current, loop, pendingLoopIn: null })
   }, [])
+
+  const beatLoop = useCallback(
+    (beats: number) => {
+      if (modeRef.current !== 'playback') return
+      const status = channelRef.current?.getTrackStatus()
+      if (!status) return
+      const grid = trackMetaRef.current?.grid ?? null
+      const region = beatLoopRegion(status.position, beats, grid, status.duration)
+      // Grid-required: a beat loop on a gridless track is a no-op, not a guess.
+      if (!region) return
+      setTrackLoopRegion(region.start, region.end)
+    },
+    [setTrackLoopRegion],
+  )
 
   // Halve/double scale the active loop's length (M23) — pure arithmetic,
   // no grid needed; the engine's planLoopSet re-anchors a playhead the
@@ -1243,13 +1306,69 @@ export function useDeck(
     }
   }, [])
 
+  // The engine swapped to the queued track (the swap counter rose): the
+  // shell installs its analysis, then the deck adopts it as a fresh track.
+  const adoptQueuedTrack = useCallback(
+    (channel: DeckChannel, queued: NonNullable<typeof queuedRef.current>) => {
+      const loadId = trackLoadRef.current
+      void channel
+        .promoteQueuedTrack()
+        .catch(() => null)
+        .then((bands) => {
+          // A load or leave since the swap owns the deck now.
+          if (trackLoadRef.current !== loadId || modeRef.current !== 'playback') return
+          trackBandsRef.current = bands
+            ? bandSourceFromArrays(bands.low, bands.mid, bands.high)
+            : null
+          trackMetaRef.current = { bpm: queued.bpm, grid: queued.grid }
+          trackCuesRef.current = Array<number | null>(HOT_CUE_COUNT).fill(null)
+          pendingLoopInRef.current = null
+          // Drop the identity first: the store opens a fresh cue bank only
+          // when it changes, and two loom takes can share title, tempo and
+          // length.
+          setDeckTrack(deckIndex, null)
+          setDeckTrack(deckIndex, {
+            title: queued.title,
+            bpm: queued.bpm,
+            durationSeconds: queued.duration,
+          })
+          const nextLoadId = ++trackLoadRef.current
+          setTrack(
+            (current) =>
+              current && {
+                ...current,
+                loadId: nextLoadId,
+                title: queued.title,
+                duration: queued.duration,
+                bpm: queued.bpm,
+                grid: queued.grid,
+                cues: trackCuesRef.current,
+                loop: null,
+                pendingLoopIn: null,
+                queued: null,
+              },
+          )
+        })
+    },
+    [deckIndex],
+  )
+
   // The playhead readout follows the channel while a track is loaded —
   // the graph is the source of truth (the LevelMeter pattern).
   useEffect(() => {
     if (mode !== 'playback') return
     const timer = setInterval(() => {
-      const status = channelRef.current?.getTrackStatus()
-      if (!status) return
+      const channel = channelRef.current
+      const status = channel?.getTrackStatus()
+      if (!channel || !status) return
+      // Adopt only with the queued numbers in hand: a swap that beats its
+      // own queueTrack round-trip is adopted on the poll after it resolves.
+      const queued = queuedRef.current
+      if (queued && status.swaps > swapsRef.current) {
+        swapsRef.current = status.swaps
+        queuedRef.current = null
+        adoptQueuedTrack(channel, queued)
+      }
       setTrack(
         (current) =>
           current && {
@@ -1265,7 +1384,7 @@ export function useDeck(
       )
     }, 250)
     return () => clearInterval(timer)
-  }, [mode])
+  }, [mode, adoptQueuedTrack])
 
   const setModel = useCallback(
     (model: string) => {
@@ -1661,6 +1780,9 @@ export function useDeck(
     mode,
     track,
     loadTrack,
+    queueTrack,
+    clearQueuedTrack,
+    setTrackLoopRegion,
     leavePlayback,
     seekTrack,
     nudgeTrack,

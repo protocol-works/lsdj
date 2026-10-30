@@ -794,6 +794,8 @@ type TrackStatusDto = {
   rate: number
   ended: boolean
   loopRegion: { start: number; end: number } | null
+  queued: boolean
+  swaps: number
 }
 
 type LoopSlotDto = { filled: boolean; playing: boolean }
@@ -964,7 +966,29 @@ export function createNativeEngine(): AudioEngine {
         ? { start: dto.loopRegion.start / SAMPLE_RATE, end: dto.loopRegion.end / SAMPLE_RATE }
         : null,
       contextTime: (snapshot?.health.contextFrames ?? 0) / SAMPLE_RATE,
+      queued: dto.queued,
+      swaps: dto.swaps,
     }
+  }
+
+  /** The playing track's band profile (the zoom strip), fetched once per
+   * track. A failure degrades that view, not the load. */
+  function fetchTrackBands(deck: number) {
+    return invoke<ArrayBuffer>('track_bands', { deck })
+      .then(parseBandsFrame)
+      .catch(() => null)
+  }
+
+  /** Cache the playing track's overview peaks so `getTrackPeaks` stays
+   * synchronous. A failure leaves an honest null. */
+  async function fetchTrackPeaks(deck: number, buckets: number) {
+    const fetched = await invoke<{ min: number[]; max: number[] } | null>('track_peaks', {
+      deck,
+      buckets,
+    }).catch(() => null)
+    peaks[deck] = fetched
+      ? { buckets, min: Float32Array.from(fetched.min), max: Float32Array.from(fetched.max) }
+      : null
   }
 
   function pumpStats(now: number) {
@@ -1104,22 +1128,9 @@ export function createNativeEngine(): AudioEngine {
                     : { kind: 'song', name: source.name },
               })
         // The summaries the strip and overview read, fetched once and cached
-        // (the raw PCM never crosses). A bands/peaks failure degrades those
-        // views, not the load.
-        const bands = await invoke<ArrayBuffer>('track_bands', { deck })
-          .then(parseBandsFrame)
-          .catch(() => null)
-        const fetched = await invoke<{ min: number[]; max: number[] } | null>('track_peaks', {
-          deck,
-          buckets: peaksBuckets,
-        }).catch(() => null)
-        peaks[deck] = fetched
-          ? {
-              buckets: peaksBuckets,
-              min: Float32Array.from(fetched.min),
-              max: Float32Array.from(fetched.max),
-            }
-          : null
+        // (the raw PCM never crosses).
+        const bands = await fetchTrackBands(deck)
+        await fetchTrackPeaks(deck, peaksBuckets)
         return {
           ...loaded,
           bands: bands ?? {
@@ -1129,6 +1140,27 @@ export function createNativeEngine(): AudioEngine {
           },
           peaks: peaks[deck],
         }
+      },
+      queueTrack: (source, startSeconds, switchAtSeconds) => {
+        // The in-memory take is never a loom node; only library references queue.
+        if (source.kind === 'bytes') {
+          return Promise.reject(new Error('queue_track_file takes a folder or song source'))
+        }
+        return invoke<Pick<LoadedTrack, 'duration' | 'bpm' | 'grid'>>('queue_track_file', {
+          deck,
+          source,
+          startSeconds,
+          switchAtSeconds,
+        })
+      },
+      clearQueuedTrack: () => send('clear_queued_track', { deck }),
+      promoteQueuedTrack: async () => {
+        await invoke('promote_queued_track', { deck })
+        // The engine already plays the new buffer: refresh the overview at the
+        // resolution the load prefetched, then hand back the promoted bands.
+        const cached = peaks[deck]
+        if (cached) await fetchTrackPeaks(deck, cached.buckets)
+        return fetchTrackBands(deck)
       },
       // The engine ignores the boolean here (useDeck does too); report the cached
       // loaded state for interface compliance.

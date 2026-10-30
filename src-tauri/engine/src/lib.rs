@@ -542,6 +542,41 @@ impl Engine {
         }
     }
 
+    /// Queue a decoded clip to take over the deck's track when its playhead
+    /// reaches `switch_at` (frames of the current track), entering the clip at
+    /// `start_frame` — the loom's seamless seam. A second queue replaces the
+    /// first; `load_track`/`unload_track` discard it with the source. A no-op off
+    /// Playback.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn queue_track(&mut self, deck_index: usize, samples: Vec<f32>, start_frame: f64, switch_at: u64) {
+        if let Some(track) = self.track_mut(deck_index) {
+            track.queue(samples, start_frame, switch_at);
+        }
+    }
+
+    /// Drop the deck's queued clip. A no-op off Playback.
+    ///
+    /// # Panics
+    /// Panics if `deck_index >= DECK_COUNT`.
+    pub fn clear_queued_track(&mut self, deck_index: usize) {
+        if let Some(track) = self.track_mut(deck_index) {
+            track.clear_queued();
+        }
+    }
+
+    /// Drop every buffer a queued swap replaced during the last render. The swap
+    /// itself only moves buffers (no free on the RT path); the render thread calls
+    /// this after each block, where freeing is fine.
+    pub fn drop_retired(&mut self) {
+        for source in self.decks.iter_mut() {
+            if let Some(DeckSource::Playback(track)) = source {
+                drop(track.take_retired());
+            }
+        }
+    }
+
     /// A snapshot of the track's transport (playhead in frames, playing, duration,
     /// rate, ended, loop), or `None` off Playback. Mirrors `getTrackStatus`.
     ///
@@ -2111,6 +2146,43 @@ mod tests {
         engine.play_track(1);
         engine.set_track_rate(1, 1.05);
         assert!(engine.get_track_status(1).is_none(), "a Realtime deck has no track");
+    }
+
+    /// (S4-4b) The queued swap is wired through `Engine`: it hands over during
+    /// `render`, `drop_retired` frees the old buffer, and a load discards a queue
+    /// with the source it belonged to.
+    #[test]
+    fn engine_queue_swaps_in_render_and_load_discards_it() {
+        let mut engine = Engine::new();
+        let _deck_a = engine.create_deck(0);
+        let _deck_b = engine.create_deck(1);
+        let mut out = vec![0.0f32; BLOCK * CHANNELS as usize];
+
+        engine.load_track(0, ramp_track(1_000));
+        engine.play_track(0);
+        engine.queue_track(0, ramp_track(5_000), 0.0, 100);
+        assert!(engine.get_track_status(0).unwrap().queued);
+        engine.render(&mut out, BLOCK);
+        let s = engine.get_track_status(0).unwrap();
+        assert_eq!((s.duration_frames, s.swaps, s.queued), (5_000, 1, false), "swapped inside the block");
+        engine.drop_retired();
+        let Some(DeckSource::Playback(track)) = engine.decks[0].as_mut() else {
+            panic!("deck A is Playback");
+        };
+        assert!(track.take_retired().is_none(), "drop_retired freed the old buffer");
+
+        // A load replaces the source, and the queue goes with it.
+        engine.queue_track(0, ramp_track(5_000), 0.0, 100);
+        engine.load_track(0, ramp_track(1_000));
+        engine.play_track(0);
+        engine.render(&mut out, BLOCK);
+        let s = engine.get_track_status(0).unwrap();
+        assert_eq!((s.duration_frames, s.swaps, s.queued), (1_000, 0, false), "load discarded the queue");
+
+        // Queue controls on a Realtime deck are inert.
+        engine.queue_track(1, ramp_track(5_000), 0.0, 0);
+        engine.clear_queued_track(1);
+        assert!(engine.get_track_status(1).is_none());
     }
 
     /// (S4-5) `render` runs cleanly with both source kinds in path over many

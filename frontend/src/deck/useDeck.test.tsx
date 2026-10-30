@@ -330,6 +330,9 @@ function makeFakeEngine(overrides: Partial<AudioEngine> = {}) {
     saveGeneratedSample: vi.fn(async () => {}),
     stopLayer: vi.fn(),
     loadTrack: vi.fn(async () => loadedTrackDto()),
+    queueTrack: vi.fn(async () => ({ duration: 90, bpm: 124, grid: null })),
+    clearQueuedTrack: vi.fn(),
+    promoteQueuedTrack: vi.fn(async () => null),
     playTrack: vi.fn(() => true),
     pauseTrack: vi.fn(),
     seekTrack: vi.fn(),
@@ -1383,6 +1386,8 @@ describe('useDeck playback mode (M19)', () => {
       rate: 1,
       loop: null,
       contextTime: 100,
+      queued: false,
+      swaps: 0,
     })
     act(() => void vi.advanceTimersByTime(250))
     expect(result.current.track).toMatchObject({
@@ -1443,6 +1448,8 @@ describe('useDeck playback mode (M19)', () => {
       rate: 1,
       loop: null,
       contextTime: 100,
+      queued: false,
+      swaps: 0,
     })
     act(() => result.current.nudgeTrack(2.5))
     expect(channel.seekTrack).toHaveBeenCalledWith(12.5)
@@ -1458,6 +1465,8 @@ describe('useDeck playback mode (M19)', () => {
       rate: 1,
       loop: null,
       contextTime: 100,
+      queued: false,
+      swaps: 0,
     })
     const sentBefore = deckInvokes().length
     await act(async () => result.current.leavePlayback())
@@ -1596,6 +1605,8 @@ describe('useDeck beat clocks (M20)', () => {
       rate: 1.05,
       loop: null,
       contextTime: 200,
+      queued: false,
+      swaps: 0,
     })
     const clock = result.current.getTrackBeat()
     expect(clock).not.toBeNull()
@@ -1709,6 +1720,8 @@ describe('useDeck beat clocks (M20)', () => {
       rate: 1,
       loop: engineLoop,
       contextTime: 200,
+      queued: false,
+      swaps: 0,
     }))
     const rendered = renderDeck(engine)
     act(() => socket(0).serverOpen())
@@ -1765,6 +1778,8 @@ describe('useDeck beat clocks (M20)', () => {
       rate: 1,
       loop: null,
       contextTime: 200,
+      queued: false,
+      swaps: 0,
     })
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
@@ -1838,6 +1853,8 @@ describe('useDeck beat clocks (M20)', () => {
       rate: 1,
       loop: null,
       contextTime: 200,
+      queued: false,
+      swaps: 0,
     })
     const { result } = renderDeck(engine)
     act(() => socket(0).serverOpen())
@@ -2082,5 +2099,149 @@ describe('useDeck realtime mirror + transport projection (ADR-0020)', () => {
     // Every prime parked the deck off air — none was silently swallowed.
     const parks = vi.mocked(channel.setOnAir).mock.calls.filter(([on]) => !on)
     expect(parks.length).toBe(3)
+  })
+})
+
+describe('useDeck queued track (the loom seam)', () => {
+  const NEXT_SOURCE: TrackSource = { kind: 'song', name: 'next-node.wav' }
+
+  /** The engine's read-back around a queued swap: `swaps` is the counter
+   * the hook watches. */
+  const swapStatus = (swaps: number, position = 1) => ({
+    position,
+    duration: 120,
+    playing: true,
+    ended: false,
+    rate: 1,
+    loop: null,
+    contextTime: 100,
+    queued: swaps === 0,
+    swaps,
+  })
+
+  async function playbackDeck(title = 'Node 1') {
+    const { engine, channel } = makeFakeEngine()
+    const rendered = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    await act(async () => {
+      await rendered.result.current.loadTrack(TEST_SOURCE, title)
+    })
+    vi.mocked(channel.getTrackStatus).mockReturnValue(swapStatus(0))
+    return { ...rendered, channel }
+  }
+
+  /** One 250 ms status poll, then let the promotion round-trip settle. */
+  async function poll() {
+    await act(async () => void vi.advanceTimersByTime(250))
+    await act(async () => {})
+  }
+
+  it('adopts the queued track once when the swap counter rises', async () => {
+    const { result, channel } = await playbackDeck()
+    let queued = false
+    await act(async () => {
+      queued = await result.current.queueTrack!(NEXT_SOURCE, 'Node 2', 0, 30)
+    })
+    expect(queued).toBe(true)
+    expect(channel.queueTrack).toHaveBeenCalledWith(NEXT_SOURCE, 0, 30)
+    expect(result.current.track!.queued).toEqual({ title: 'Node 2', switchAt: 30 })
+    const loadId = result.current.track!.loadId
+
+    // Still on the first track: nothing to adopt.
+    await poll()
+    expect(channel.promoteQueuedTrack).not.toHaveBeenCalled()
+    expect(result.current.track!.title).toBe('Node 1')
+
+    vi.mocked(channel.getTrackStatus).mockReturnValue(swapStatus(1))
+    await poll()
+    await poll()
+    expect(channel.promoteQueuedTrack).toHaveBeenCalledTimes(1)
+    expect(result.current.track).toMatchObject({
+      title: 'Node 2',
+      duration: 90,
+      bpm: 124,
+      loadId: loadId + 1,
+      loop: null,
+      queued: null,
+    })
+  })
+
+  it('a swap between identical identities still opens a fresh cue bank', async () => {
+    const { result, channel } = await playbackDeck('Twin')
+    vi.mocked(channel.getTrackStatus).mockReturnValue(swapStatus(0, 10))
+    act(() => result.current.hotCuePad(0))
+    expect(result.current.track!.cues[0]).toBe(10)
+    // Same title, tempo and length as the playing track (two auto takes).
+    vi.mocked(channel.queueTrack).mockResolvedValue({ duration: 120, bpm: null, grid: null })
+    await act(async () => {
+      await result.current.queueTrack!(NEXT_SOURCE, 'Twin', 0, 30)
+    })
+    const before = native.invoke.mock.calls.length
+
+    vi.mocked(channel.getTrackStatus).mockReturnValue(swapStatus(1))
+    await poll()
+    const identities = native.invoke.mock.calls
+      .slice(before)
+      .filter(([cmd]) => cmd === 'set_deck_track')
+      .map(([, args]) => (args as { track: unknown }).track)
+    expect(identities).toEqual([null, { title: 'Twin', bpm: null, durationSeconds: 120 }])
+    expect(result.current.track!.cues[0]).toBeNull()
+  })
+
+  it('a swap that beats its own queue round-trip is adopted once the numbers arrive', async () => {
+    const { result, channel } = await playbackDeck()
+    let resolveQueue: (value: { duration: number; bpm: number | null; grid: null }) => void =
+      () => {}
+    vi.mocked(channel.queueTrack).mockReturnValue(
+      new Promise((resolve) => {
+        resolveQueue = resolve
+      }),
+    )
+    let pending: Promise<boolean> = Promise.resolve(false)
+    act(() => {
+      pending = result.current.queueTrack!(NEXT_SOURCE, 'Cut', 0, 2)
+    })
+    vi.mocked(channel.getTrackStatus).mockReturnValue(swapStatus(1))
+    await poll()
+    expect(channel.promoteQueuedTrack).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveQueue({ duration: 60, bpm: 124, grid: null })
+      await pending
+    })
+    await poll()
+    expect(channel.promoteQueuedTrack).toHaveBeenCalledTimes(1)
+    expect(result.current.track!.title).toBe('Cut')
+  })
+
+  it('clearQueuedTrack empties the queue on the deck and the channel', async () => {
+    const { result, channel } = await playbackDeck()
+    await act(async () => {
+      await result.current.queueTrack!(NEXT_SOURCE, 'Node 2', 0, 30)
+    })
+    act(() => result.current.clearQueuedTrack!())
+    expect(channel.clearQueuedTrack).toHaveBeenCalled()
+    expect(result.current.track!.queued).toBeNull()
+  })
+
+  it('queueTrack is refused off playback', async () => {
+    const { engine, channel } = makeFakeEngine()
+    const { result } = renderDeck(engine)
+    act(() => socket(0).serverOpen())
+    let queued = true
+    await act(async () => {
+      queued = await result.current.queueTrack!(NEXT_SOURCE, 'Node 2', 0, 30)
+    })
+    expect(queued).toBe(false)
+    expect(channel.queueTrack).not.toHaveBeenCalled()
+  })
+
+  it('setTrackLoopRegion reaches the channel without a grid', async () => {
+    const { result, channel } = await playbackDeck()
+    expect(result.current.track!.grid).toBeNull()
+    act(() => result.current.beatLoop(4))
+    expect(channel.setTrackLoop).not.toHaveBeenCalled()
+    act(() => result.current.setTrackLoopRegion!(8, 16))
+    expect(channel.setTrackLoop).toHaveBeenCalledWith(8, 16)
   })
 })

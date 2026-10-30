@@ -132,6 +132,8 @@ pub struct TrackStatusDto {
     pub rate: f64,
     pub ended: bool,
     pub loop_region: Option<LoopRegionDto>,
+    pub queued: bool,
+    pub swaps: u32,
 }
 
 impl From<TrackStatus> for TrackStatusDto {
@@ -143,6 +145,8 @@ impl From<TrackStatus> for TrackStatusDto {
             rate: status.rate,
             ended: status.ended,
             loop_region: status.loop_region.map(LoopRegionDto::from),
+            queued: status.queued,
+            swaps: status.swaps,
         }
     }
 }
@@ -1062,11 +1066,26 @@ fn install_track(
     }
 }
 
+/// Read a scoped track source and run [`analyze_track`] on a `spawn_blocking`
+/// thread: seconds of CPU for a long track, which must block neither the main
+/// thread nor the async runtime. Shared by the load and the queue.
+async fn analyze_source(songs: &SongLibrary, source: TrackSource) -> Result<AnalyzedTrack, String> {
+    let (bytes, name) = match source {
+        TrackSource::Folder { dir, name } => (read_scoped_audio(&dir, &name)?, name),
+        TrackSource::Song { name } => (songs.read(&name)?, name),
+    };
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, extension.as_deref()))
+        .await
+        .map_err(|e| format!("track analysis failed: {e}"))?
+}
+
 /// Load a track onto a deck by scoped reference (ADR-0030): the shell reads,
 /// decodes (symphonia), resamples, analyses, and installs — the webview gets
-/// back `{duration, bpm, grid}` and fetches bands/peaks once. The decode +
-/// analyses run on a `spawn_blocking` thread: seconds of CPU for a long
-/// track, which must block neither the main thread nor the async runtime.
+/// back `{duration, bpm, grid}` and fetches bands/peaks once.
 #[tauri::command]
 pub async fn load_track_file(
     state: tauri::State<'_, Host>,
@@ -1079,19 +1098,92 @@ pub async fn load_track_file(
     if !valid_deck(deck) {
         return Err("invalid deck".to_string());
     }
-    let (bytes, name) = match source {
-        TrackSource::Folder { dir, name } => (read_scoped_audio(&dir, &name)?, name),
-        TrackSource::Song { name } => (songs.read(&name)?, name),
-    };
-    let extension = std::path::Path::new(&name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase);
-    let analyzed =
-        tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, extension.as_deref()))
-            .await
-            .map_err(|e| format!("track analysis failed: {e}"))??;
+    let analyzed = analyze_source(&songs, source).await?;
     Ok(install_track(&state, &feed, &tracks, deck, analyzed))
+}
+
+/// Queue a track to take over a playing deck at a frame — the loom's seamless
+/// seam (architecture §3): decoded and analysed like [`load_track_file`], then
+/// handed to the engine, which swaps buffers when the playhead reaches
+/// `switch_at_seconds` and enters the clip at `start_seconds`. The analysis
+/// waits as the deck's pending one until the webview sees the swap and calls
+/// [`promote_queued_track`]. Replaces any earlier queue on the deck.
+#[tauri::command]
+pub async fn queue_track_file(
+    state: tauri::State<'_, Host>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    songs: tauri::State<'_, SongLibrary>,
+    deck: usize,
+    source: TrackSource,
+    start_seconds: f64,
+    switch_at_seconds: f64,
+) -> Result<LoadedTrackDto, String> {
+    if !valid_deck(deck) {
+        return Err("invalid deck".to_string());
+    }
+    if !(switch_at_seconds.is_finite() && switch_at_seconds >= 0.0) {
+        return Err("invalid switch point".to_string());
+    }
+    let analyzed = analyze_source(&songs, source).await?;
+    // NaN fails both comparisons and is refused with the rest.
+    if !(start_seconds >= 0.0 && start_seconds < analyzed.duration) {
+        return Err("start point outside the track".to_string());
+    }
+    // Parked before the engine can swap, so a promote always finds it.
+    tracks.set_pending(
+        deck,
+        DeckTrack {
+            bpm: analyzed.bpm,
+            bands: analyzed.bands,
+        },
+    );
+    state.queue_track(
+        deck,
+        analyzed.interleaved,
+        start_seconds * SAMPLE_RATE as f64,
+        (switch_at_seconds * SAMPLE_RATE as f64).round() as u64,
+    );
+    Ok(LoadedTrackDto {
+        duration: analyzed.duration,
+        bpm: analyzed.bpm,
+        grid: analyzed.grid,
+    })
+}
+
+/// Drop the deck's queued track and its pending analysis.
+#[tauri::command]
+pub fn clear_queued_track(
+    state: tauri::State<'_, Host>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+) {
+    if valid_deck(deck) {
+        state.clear_queued_track(deck);
+        tracks.clear_pending(deck);
+    }
+}
+
+/// Install the queued track's analysis once the webview sees the engine
+/// swapped (`swaps` advanced) — [`install_track`]'s second half: the live
+/// analysis re-anchors and the echo clock follows the new tempo at the deck's
+/// kept rate. The NON-blocking reset: this sync command runs on the main
+/// thread, where `reset_blocking` could stall for its 500 ms ack. A no-op when
+/// nothing is pending.
+#[tauri::command]
+pub fn promote_queued_track(
+    state: tauri::State<'_, Host>,
+    feed: tauri::State<'_, AnalysisFeed>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+) {
+    if !valid_deck(deck) || !tracks.promote(deck) {
+        return;
+    }
+    feed.reset(deck, state.health().context_frames as f64);
+    let rate = state.track_status(deck).map_or(1.0, |status| status.rate);
+    if let Some(period) = tracks.beat_period_at_rate(deck, rate) {
+        state.set_beat_period(deck, period);
+    }
 }
 
 /// Load an in-memory take onto a deck (the freshly composed WAV that may not

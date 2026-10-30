@@ -186,6 +186,30 @@ pub struct TrackStatus {
     pub ended: bool,
     /// The active loop region, or `None` for linear playback.
     pub loop_region: Option<LoopRegion>,
+    /// A clip is queued to take over at its switch frame (the loom's seam).
+    pub queued: bool,
+    /// Queued hand-overs since this track loaded; the webview adopts the queued
+    /// clip's identity when it rises.
+    pub swaps: u32,
+}
+
+/// A clip waiting to take over a playing deck at a frame (the loom's seamless
+/// seam): its buffer, where to enter it, and the frame of the CURRENT track at
+/// which it takes over. Not boxed: moving it out on the swap must not free on
+/// the RT path.
+struct QueuedTrack {
+    samples: Vec<f32>,
+    duration_frames: u64,
+    start_frame: f64,
+    switch_at: u64,
+}
+
+/// Keep whole interleaved frames only (a stray trailing mono sample would make
+/// the last frame read its R from out of bounds); returns the frame count.
+fn whole_frames(samples: &mut Vec<f32>) -> u64 {
+    let frames = (samples.len() / SAMPLES_PER_FRAME) as u64;
+    samples.truncate(frames as usize * SAMPLES_PER_FRAME);
+    frames
 }
 
 /// A decoded track playing on a deck (ADR-0013). Holds the interleaved-stereo f32
@@ -219,6 +243,13 @@ pub struct BufferSource {
     pending_slip: f64,
     /// The active loop region in frames (ADR-0015), or `None` for linear.
     loop_region: Option<LoopRegion>,
+    /// The clip queued to take over at its switch frame, or `None`.
+    next: Option<QueuedTrack>,
+    /// The buffer the last swap replaced, parked so the RT path never frees it;
+    /// the render thread drops it after each block ([`BufferSource::take_retired`]).
+    retired: Option<Vec<f32>>,
+    /// Queued hand-overs since load.
+    swaps: u32,
 }
 
 impl BufferSource {
@@ -230,10 +261,7 @@ impl BufferSource {
     /// ring allocation. An odd-length input is truncated to whole frames.
     pub fn new(samples: Vec<f32>) -> Self {
         let mut samples = samples;
-        // Keep whole interleaved frames only; a stray trailing mono sample would
-        // make the last frame read its R from out of bounds.
-        let frames = (samples.len() / SAMPLES_PER_FRAME) as u64;
-        samples.truncate(frames as usize * SAMPLES_PER_FRAME);
+        let frames = whole_frames(&mut samples);
         BufferSource {
             samples,
             duration_frames: frames,
@@ -243,7 +271,40 @@ impl BufferSource {
             rate: 1.0,
             pending_slip: 0.0,
             loop_region: None,
+            next: None,
+            retired: None,
+            swaps: 0,
         }
+    }
+
+    /// Queue `samples` (interleaved stereo at [`crate::SAMPLE_RATE`]) to take over
+    /// when the playhead reaches `switch_at`, entering the clip at `start_frame`
+    /// (clamped into it). A second queue replaces the first; an empty clip is
+    /// refused. `seek`, `set_loop` and `clear_loop` keep the queue; a load
+    /// discards it with the source. Non-RT (it may drop a replaced queue).
+    pub fn queue(&mut self, samples: Vec<f32>, start_frame: f64, switch_at: u64) {
+        let mut samples = samples;
+        let frames = whole_frames(&mut samples);
+        if frames == 0 {
+            return;
+        }
+        self.next = Some(QueuedTrack {
+            samples,
+            duration_frames: frames,
+            start_frame: clamp_offset(start_frame, frames),
+            switch_at,
+        });
+    }
+
+    /// Drop the queued clip, if any. Non-RT.
+    pub fn clear_queued(&mut self) {
+        self.next = None;
+    }
+
+    /// Hand the buffer the last swap replaced to the caller to drop off the RT
+    /// path. `None` when nothing swapped since the last call.
+    pub fn take_retired(&mut self) -> Option<Vec<f32>> {
+        self.retired.take()
     }
 
     /// Start (or resume) playback. From the ended state it restarts at the top —
@@ -376,6 +437,8 @@ impl BufferSource {
             rate: self.rate,
             ended: self.ended,
             loop_region: self.loop_region,
+            queued: self.next.is_some(),
+            swaps: self.swaps,
         }
     }
 
@@ -433,6 +496,12 @@ impl BufferSource {
     /// silence, playhead frozen. Reads the buffer + linear-interpolates only — no
     /// alloc, no lock, no syscall.
     ///
+    /// A queued clip takes over when the advance reaches its `switch_at`: this
+    /// frame is still the old track's, the next is the clip's `start_frame` plus
+    /// the overshoot. The check precedes the loop fold and the end park, so a
+    /// seam at the loop end or the exact clip end swaps instead of wrapping or
+    /// going silent. The swap only moves buffers; the old one waits in `retired`.
+    ///
     /// At rate 1.0 the playhead lands on integers, the interpolation weight is 0,
     /// and the output is the buffer sample verbatim.
     #[inline]
@@ -446,6 +515,22 @@ impl BufferSource {
         // Advance by the rate plus any in-flight phase bend, then fold (loop) or
         // detect the natural end. The bend only changes how fast we move forward.
         let next = self.playhead + self.rate + self.consume_slip();
+        if self.next.as_ref().is_some_and(|queued| next >= queued.switch_at as f64) {
+            if let Some(queued) = self.next.take() {
+                // `retired` is always empty here: commands (and so queues) land
+                // between blocks, and the render thread drops it after each one.
+                self.retired = Some(std::mem::replace(&mut self.samples, queued.samples));
+                self.duration_frames = queued.duration_frames;
+                self.playhead = clamp_offset(
+                    queued.start_frame + (next - queued.switch_at as f64),
+                    queued.duration_frames,
+                );
+                self.loop_region = None;
+                self.pending_slip = 0.0;
+                self.swaps += 1;
+            }
+            return frame;
+        }
         match self.loop_region {
             Some(region) => {
                 self.playhead = fold_into_loop(next, region);
@@ -979,5 +1064,213 @@ mod tests {
             "verbatim advance after seek, got step {}",
             second - first
         );
+    }
+
+    // --- The queued swap (the loom's seamless seam, architecture §3) ---
+
+    /// A ramp like [`ramp_buffer`] whose L starts at `first`, so a queued clip's
+    /// frames can never be mistaken for the current track's.
+    fn ramp_from(frames: usize, first: f32) -> Vec<f32> {
+        let mut buf = ramp_buffer(frames);
+        for f in 0..frames {
+            buf[2 * f] += first;
+            buf[2 * f + 1] -= first;
+        }
+        buf
+    }
+
+    /// Counts this thread's heap allocations and frees, so a test can prove a
+    /// stretch of RT code never touches the allocator (thread-local: tests on
+    /// other threads do not disturb the count).
+    struct CountingAlloc;
+
+    thread_local! {
+        static ALLOCATOR_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            let _ = ALLOCATOR_CALLS.try_with(|calls| calls.set(calls.get() + 1));
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            let _ = ALLOCATOR_CALLS.try_with(|calls| calls.set(calls.get() + 1));
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING_ALLOC: CountingAlloc = CountingAlloc;
+
+    fn allocator_calls() -> usize {
+        ALLOCATOR_CALLS.with(|calls| calls.get())
+    }
+
+    /// (T15, R1) The hand-over is sample-continuous: every old frame up to
+    /// `switch_at`, then the clip's `start_frame` on the very next output — no
+    /// zero frame, no repeat — the advance continues inside the clip, and the
+    /// swap never touches the allocator.
+    #[test]
+    fn queued_clip_takes_over_at_switch_at() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.queue(ramp_from(2_000, 5_000.0), 100.0, 600);
+        src.play();
+        src.seek(590.0);
+        let before = allocator_calls();
+        let mut seen = [0.0f32; 20];
+        for frame in seen.iter_mut() {
+            *frame = src.pop_frame().0;
+        }
+        assert_eq!(allocator_calls(), before, "the swap is a move: no alloc or free on the RT path");
+        let expected: Vec<f32> =
+            (590..600).map(|f| f as f32).chain((100..110).map(|f| 5_000.0 + f as f32)).collect();
+        assert_eq!(seen.to_vec(), expected, "old frames up to switch_at, then the clip from start_frame");
+        let s = src.status();
+        assert_eq!(s.duration_frames, 2_000, "the clip's length takes over");
+        assert_eq!(s.playhead, 110.0);
+        assert!(s.playing && !s.ended && !s.queued);
+        assert_eq!(s.swaps, 1);
+    }
+
+    /// (T16) At a fractional rate the advance past `switch_at` carries into the
+    /// clip, and the next frame interpolates the NEW buffer there.
+    #[test]
+    fn queued_swap_carries_the_overshoot() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.set_rate(1.5);
+        src.queue(ramp_from(1_000, 5_000.0), 200.0, 10);
+        src.play();
+        // Reads at 0, 1.5, … 9.0; the seventh advance lands on 10.5.
+        for _ in 0..7 {
+            src.pop_frame();
+        }
+        assert_eq!(src.status().playhead, 200.5, "0.5 frames past switch_at carry into the clip");
+        let (l, _r) = src.pop_frame();
+        assert!((l - 5_200.5).abs() < 1e-3, "the next frame reads the new buffer, got {l}");
+    }
+
+    /// (T17) A seam at the clip's exact end swaps instead of parking silent.
+    #[test]
+    fn switch_at_the_clip_end_swaps_instead_of_parking() {
+        let mut src = BufferSource::new(ramp_buffer(100));
+        src.queue(ramp_from(500, 5_000.0), 0.0, 100);
+        src.play();
+        src.seek(90.0);
+        for f in 90..100 {
+            assert_eq!(src.pop_frame().0, f as f32);
+        }
+        assert_eq!(src.pop_frame().0, 5_000.0, "the clip's first frame follows the old last frame");
+        let s = src.status();
+        assert!(s.playing && !s.ended, "the deck never parked");
+        assert_eq!(s.swaps, 1);
+    }
+
+    /// (T18) A loop ending at `switch_at` (the hold under a tie) hands over at
+    /// its end instead of folding back, and the loop goes with the old track.
+    #[test]
+    fn swap_wins_over_the_loop_fold() {
+        let mut src = BufferSource::new(ramp_buffer(20_000));
+        src.play();
+        src.seek(3_000.0);
+        src.set_loop(3_000, 6_000);
+        src.queue(ramp_from(1_000, 50_000.0), 0.0, 6_000);
+        for f in 3_000..6_000 {
+            assert_eq!(src.pop_frame().0, f as f32);
+        }
+        assert_eq!(src.pop_frame().0, 50_000.0, "the swap, not the fold back to 3000");
+        assert_eq!(src.status().loop_region, None, "the loop left with the old track");
+    }
+
+    /// (T19) A paused deck never swaps, even with its playhead past `switch_at`;
+    /// it hands over on the first advance after play.
+    #[test]
+    fn a_paused_deck_does_not_swap() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.queue(ramp_from(1_000, 5_000.0), 0.0, 10);
+        src.seek(20.0);
+        for _ in 0..100 {
+            assert_eq!(src.pop_frame(), (0.0, 0.0), "paused is silent");
+        }
+        let s = src.status();
+        assert!(s.queued, "the queue waits");
+        assert_eq!(s.swaps, 0);
+        src.play();
+        src.pop_frame();
+        assert_eq!(src.status().swaps, 1, "the first advance after play swaps");
+    }
+
+    /// (T20) A seek keeps the queue; past `switch_at` the swap fires on the next
+    /// frame with the overshoot carried into the clip.
+    #[test]
+    fn a_seek_past_switch_at_swaps_on_the_next_frame() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.play();
+        src.queue(ramp_from(1_000, 5_000.0), 100.0, 500);
+        src.seek(800.0);
+        assert!(src.status().queued, "a seek keeps the queue");
+        assert_eq!(src.pop_frame().0, 800.0, "the frame at the seek target still sounds");
+        assert_eq!(src.status().swaps, 1);
+        assert_eq!(src.pop_frame().0, 5_401.0, "start_frame plus the 301-frame overshoot");
+    }
+
+    /// (T21) A second queue replaces the first: only the latest clip and seam
+    /// count.
+    #[test]
+    fn a_second_queue_replaces_the_first() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.queue(ramp_from(1_000, 5_000.0), 0.0, 20);
+        src.queue(ramp_from(1_000, 9_000.0), 0.0, 50);
+        src.play();
+        for f in 0..50 {
+            assert_eq!(src.pop_frame().0, f as f32, "the replaced seam at 20 never fires");
+        }
+        assert_eq!(src.pop_frame().0, 9_000.0, "the second clip takes over at its own seam");
+        assert_eq!(src.status().swaps, 1);
+    }
+
+    /// (T22) An empty clip is refused (the previous queue stands) and a cleared
+    /// queue never fires.
+    #[test]
+    fn empty_and_cleared_queues_never_swap() {
+        let mut src = BufferSource::new(ramp_buffer(1_000));
+        src.queue(ramp_from(1_000, 5_000.0), 0.0, 10);
+        src.queue(Vec::new(), 0.0, 5);
+        src.play();
+        for _ in 0..11 {
+            src.pop_frame();
+        }
+        assert_eq!(src.pop_frame().0, 5_001.0, "the empty clip left the first queue in place");
+
+        src.queue(ramp_from(1_000, 9_000.0), 0.0, 20);
+        src.clear_queued();
+        assert!(!src.status().queued);
+        for _ in 0..100 {
+            assert!(src.pop_frame().0 < 9_000.0, "a cleared queue never takes over");
+        }
+        assert_eq!(src.status().swaps, 1);
+    }
+
+    /// (T23) The replaced buffer waits in `retired` until taken (the render
+    /// thread drops it), and `swaps` counts each hand-over exactly once.
+    #[test]
+    fn swaps_count_hand_overs_and_retire_the_old_buffer() {
+        let mut src = BufferSource::new(ramp_buffer(100));
+        assert!(src.take_retired().is_none(), "nothing retired before a swap");
+        src.queue(ramp_from(300, 5_000.0), 0.0, 10);
+        src.play();
+        for _ in 0..50 {
+            src.pop_frame();
+        }
+        assert_eq!(src.status().swaps, 1, "frames after the swap do not count again");
+        assert_eq!(src.take_retired().map(|buf| buf.len()), Some(200), "the old 100-frame buffer");
+        assert!(src.take_retired().is_none(), "take empties it");
+
+        src.queue(ramp_from(300, 9_000.0), 0.0, 60);
+        for _ in 0..20 {
+            src.pop_frame();
+        }
+        assert_eq!(src.status().swaps, 2, "the second hand-over counts once");
+        assert_eq!(src.take_retired().map(|buf| buf.len()), Some(600), "the first clip retires in turn");
     }
 }
