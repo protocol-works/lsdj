@@ -104,18 +104,23 @@ export function LoomBooth({
     const timer = setTimeout(() => setBounced(null), BOUNCE_STATUS_MS)
     return () => clearTimeout(timer)
   }, [bounced])
+  const [bouncing, setBouncing] = useState(false)
   const bounce = (ids: string[], endAt?: number) => {
+    if (bouncing) return
     const plan = pathParts(state, ids, t, endAt)
     if (!plan) {
       setBounced(t('loom.bounce.empty'))
       return
     }
+    setBouncing(true)
     setBounced(t('loom.bounce.working', { title: plan.title }))
-    stitchSongs(plan).then(
-      (entry) => setBounced(t('loom.bounce.done', { title: entry.title })),
-      (error: unknown) =>
-        setBounced(t('loom.bounce.failed', { message: error instanceof Error ? error.message : String(error) })),
-    )
+    stitchSongs(plan)
+      .then(
+        (entry) => setBounced(t('loom.bounce.done', { title: entry.title })),
+        (error: unknown) =>
+          setBounced(t('loom.bounce.failed', { message: error instanceof Error ? error.message : String(error) })),
+      )
+      .finally(() => setBouncing(false))
   }
   // What the deck played, up to its playhead; nothing to offer on an idle deck.
   const bounceDeck = (deck: DeckId, controls: DeckControls) =>

@@ -115,8 +115,8 @@ test:
 # the Rust follows a hand-style like the frontend, not rustfmt — clippy is the
 # gate.)
 lint:
-    cd backend && uv run ruff format --check .
-    cd backend && uv run ruff check .
+    cd backend && uv run ruff format --check . ../scripts
+    cd backend && uv run ruff check . ../scripts
     cd frontend && npm run lint
     cd frontend && npx tsc -b
     cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings
