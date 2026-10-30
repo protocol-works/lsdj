@@ -875,3 +875,135 @@
   display: flex;
   gap: var(--space-2);
 }
+
+/* ---- visuals ---- */
+
+/* The microdose (plan §2 decision 12, the mockup's visual language): beat
+   pulses, the sap along the threads, the tie/keep ripple and the scope. All
+   of it only with performance visuals on and motion allowed. The beat
+   phases `--loom-beat-a/b` (0 on the beat → 1) are written onto the booth by
+   `useBeatPulse`; unset, every fallback is at rest. */
+.loom__sap {
+  display: none;
+}
+
+.loom-scope {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* `--loom-glow` is 1 on the beat, decaying to 0 across it. */
+  [data-performance-visuals='on'] .loom-mixer__deck--a,
+  [data-performance-visuals='on'] .loom__shuttle--a,
+  [data-performance-visuals='on'] .loom-node--q-a {
+    --loom-glow: calc(1 - var(--loom-beat-a, 1));
+    --loom-queued: var(--color-deck-a);
+  }
+
+  [data-performance-visuals='on'] .loom-mixer__deck--b,
+  [data-performance-visuals='on'] .loom__shuttle--b,
+  [data-performance-visuals='on'] .loom-node--q-b {
+    --loom-glow: calc(1 - var(--loom-beat-b, 1));
+    --loom-queued: var(--color-deck-b);
+  }
+
+  /* The deck badge: a glow and a ring that leaves it on every beat. */
+  [data-performance-visuals='on'] .loom-mixer__letter {
+    position: relative;
+    box-shadow: 0 0 calc(var(--loom-glow, 0) * 16px) var(--loom-mixer-deck);
+  }
+
+  [data-performance-visuals='on'] .loom-mixer__letter::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    box-shadow: 0 0 0 calc((1 - var(--loom-glow, 0)) * 12px) var(--loom-mixer-deck);
+    opacity: calc(var(--loom-glow, 0) * 0.7);
+    pointer-events: none;
+  }
+
+  /* The playhead throbs on its own deck's beat, so unsynced decks disagree. */
+  [data-performance-visuals='on'] .loom__head {
+    box-shadow:
+      0 0 calc(8px + var(--loom-glow, 0) * 4px) calc(2px + var(--loom-glow, 0) * 1px) var(--loom-deck),
+      0 0 calc(var(--loom-glow, 0) * 40px) calc(var(--loom-glow, 0) * 10px) var(--loom-deck);
+  }
+
+  /* A tied node's dashed border breathes on the beat of the deck coming to
+     it. A pseudo-element, so the node's own shadow (selected, on air) and
+     stacking (its tools) are untouched. */
+  [data-performance-visuals='on'] .loom-node--q-a::before,
+  [data-performance-visuals='on'] .loom-node--q-b::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    box-shadow: 0 0 calc(var(--loom-glow, 0) * 14px) calc(var(--loom-glow, 0) * 2px) var(--loom-queued);
+    pointer-events: none;
+  }
+
+  [data-performance-visuals='on'] .loom__sap {
+    display: inline;
+    fill: none;
+    stroke: var(--color-text);
+    stroke-width: 1.5;
+    stroke-dasharray: 2 16;
+    opacity: 0.4;
+    animation: loom-sap 2.6s linear infinite;
+  }
+
+  [data-performance-visuals='on'] .loom__thread--future {
+    animation: loom-flow 1s linear infinite;
+  }
+
+  /* A one-shot ring off a node when a deck ties it (its colour) or a take is
+     kept (cue green); LoomNode remounts it to fire again. */
+  [data-performance-visuals='on'] .loom-node__ripple {
+    --loom-ripple: var(--color-cue);
+    position: absolute;
+    inset: -1px;
+    z-index: 5;
+    border-radius: inherit;
+    pointer-events: none;
+    animation: loom-rip 0.7s ease-out forwards;
+  }
+
+  [data-performance-visuals='on'] :is(.loom-node--q-a, .loom-node--on-a) .loom-node__ripple {
+    --loom-ripple: var(--color-deck-a);
+  }
+
+  [data-performance-visuals='on'] :is(.loom-node--q-b, .loom-node--on-b) .loom-node__ripple {
+    --loom-ripple: var(--color-deck-b);
+  }
+}
+
+/* The sap's dash period is 18, the future thread's 12: one whole period a
+   cycle, so neither jumps when it loops. */
+@keyframes loom-sap {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+@keyframes loom-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+@keyframes loom-rip {
+  from {
+    opacity: 1;
+    box-shadow: 0 0 0 2px var(--loom-ripple);
+  }
+
+  to {
+    opacity: 0;
+    transform: scale(1.1, 1.6);
+    box-shadow: 0 0 0 1px var(--loom-ripple), 0 0 34px 12px var(--loom-ripple);
+  }
+}

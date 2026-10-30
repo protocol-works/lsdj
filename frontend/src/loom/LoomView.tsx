@@ -373,13 +373,12 @@ export function LoomView(props: LoomViewProps) {
               const child = layout.boxes.get(to)
               if (!parent || !child) return null
               const ghost = nodeById(nodes, to)?.status === 'rendering'
-              return (
-                <path
-                  key={`${from}>${to}`}
-                  className={`loom__thread${ghost ? ' loom__thread--ghost' : ''}`}
-                  d={edgePath(parent, child)}
-                />
-              )
+              const d = edgePath(parent, child)
+              // A rendered edge carries the visuals' sap: a slow light along it.
+              return [
+                <path key={`${from}>${to}`} className={`loom__thread${ghost ? ' loom__thread--ghost' : ''}`} d={d} />,
+                ghost ? null : <path key={`${from}>${to}:sap`} className="loom__sap" d={d} />,
+              ]
             })}
             {DECKS.flatMap((deck) => {
               const runtime = state.decks[deck]

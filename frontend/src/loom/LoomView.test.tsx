@@ -332,3 +332,33 @@ describe('WeavePopover', () => {
     expect(screen.getByText(/A reaches this seam in 0:02 → late by 0:\d\d, A will hold/)).toBeInTheDocument()
   })
 })
+
+describe('LoomView visuals', () => {
+  const ripples = (prompt: string) => nodeEl(prompt).querySelectorAll('.loom-node__ripple')
+
+  it('ripples a node once when a deck ties it', () => {
+    const { props, rerender } = renderView({ state: withDeckA({ nodeId: 'n2' }) })
+    expect(ripples(PROMPTS.n7)).toHaveLength(0)
+    const tied = withDeckA({ nodeId: 'n2', queue: ['n7'] })
+    rerender(<LoomView {...props} state={tied} />)
+    rerender(<LoomView {...props} state={{ ...tied, selected: 'n7' }} />)
+    expect(ripples(PROMPTS.n7)).toHaveLength(1)
+    expect(ripples(PROMPTS.n2)).toHaveLength(0)
+  })
+
+  it('ripples the take that is kept', () => {
+    const { props, rerender, container } = renderView({ state: takesState() })
+    const take = () => container.querySelector<HTMLElement>('[aria-label="acid"]:not(.loom-node--ghost)')!
+    expect(take().querySelectorAll('.loom-node__ripple')).toHaveLength(0)
+    rerender(<LoomView {...props} state={reduce(takesState(), { type: 'keep', id: 'g1' })} />)
+    expect(take().querySelectorAll('.loom-node__ripple')).toHaveLength(1)
+  })
+
+  it('lays a sap along every rendered edge, none along a rendering one', () => {
+    const { container } = renderView({ state: takesState() })
+    const edges = container.querySelectorAll('.loom__thread:not(.loom__thread--a):not(.loom__thread--b)')
+    const ghosts = container.querySelectorAll('.loom__thread--ghost')
+    expect(ghosts.length).toBeGreaterThan(0)
+    expect(container.querySelectorAll('.loom__sap')).toHaveLength(edges.length - ghosts.length)
+  })
+})

@@ -191,7 +191,18 @@ expected behaviour is the shuttle rules in
 - [ ] Loom theme, Performance visuals on: the aurora breathes under the
       playheads at the master tempo, nodes are tinted by key, and the
       Lissajous scope sits beside the master controls.
-- [ ] Performance visuals off: all three are gone and the loom still works.
+- [ ] Two unsynced decks playing: each deck badge, playhead and the dashed
+      border of the node it is tied to pulse on that deck's own beat, so the
+      two visibly disagree; SYNC locks them together.
+- [ ] Tie a node, and keep a take: the node ripples once (deck colour for a
+      tie, cue green for a keep). A slow light runs along every rendered
+      thread; a deck's tied path flows toward the next node.
+- [ ] The scope draws one figure per sounding deck in its colour and grows
+      and shrinks with the channel faders and the crossfader.
+- [ ] Performance visuals off: the aurora, pulses, light, ripples and scope
+      are gone (key tints stay) and the loom still works. With visuals on and
+      macOS Accessibility → Display → Reduce motion on, nothing in the loom
+      moves: no pulses, light, ripples or scope.
 - [ ] DJ theme with visuals on looks as before; there is no scope.
 
 ## Failure drills

@@ -12,6 +12,7 @@ import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
 import { Button } from '../ui/Button'
+import { keyHue } from './keyHue'
 import type { LoomNode as LoomNodeModel } from './loomState'
 import {
   barSeconds,
@@ -76,13 +77,6 @@ const MAX_BUCKETS = 2048
 const TIGHT_PX = 130
 const TINY_PX = 64
 
-/** Camelot number → hue on the circle of fifths: adjacent numbers are a
- * fifth apart and a relative minor/major pair (8A/8B) shares a hue. */
-const keyHue = (key: string | undefined): number | null => {
-  const match = /^(1[0-2]|[1-9])[AB]$/i.exec(key ?? '')
-  return match ? (Number(match[1]) - 1) * 30 : null
-}
-
 /** One bucket per pixel of the whole clip, rounded up to a power of two so
  * a zoom gesture re-fetches a handful of sizes, not one per step. */
 const bucketsFor = (clipPx: number) =>
@@ -132,6 +126,14 @@ export const LoomNode = memo(function LoomNode({
   const { t } = useTranslation()
   const trim = useRef<{ side: 'in' | 'out'; x: number; in0: number; out0: number } | null>(null)
   const [wave, setWave] = useState<{ file: string; path: string; buckets: number; duration: number } | null>(null)
+  // Visuals: a ripple when a deck ties this node or its take is kept — a
+  // fresh `key` restarts the one-shot CSS animation; loom.css gates it.
+  const tied = onA || onB || queuedA || queuedB
+  const [ripple, setRipple] = useState({ tied, take, count: 0 })
+  if (ripple.tied !== tied || ripple.take !== take) {
+    const fire = (tied && !ripple.tied) || (take === null && ripple.take !== null)
+    setRipple({ tied, take, count: ripple.count + (fire ? 1 : 0) })
+  }
 
   const ready = node.status === 'ready'
   const ghost = node.status === 'rendering'
@@ -334,6 +336,7 @@ export const LoomNode = memo(function LoomNode({
         <i className="loom-node__cue-point" style={{ left: `${((cueFromBar - node.in) / body) * 100}%` }} />
       ) : null}
       {cued ? <span className="loom-node__cue-label">{cueLabel}</span> : null}
+      {ripple.count > 0 ? <i key={ripple.count} className="loom-node__ripple" aria-hidden="true" /> : null}
       {ghost ? (
         <div className="loom-node__progress">
           <i style={{ width: `${progress ? clamp(progress.elapsed / progress.eta, 0, 1) * 100 : 0}%` }} />

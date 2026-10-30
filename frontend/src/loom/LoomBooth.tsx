@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useState, type Ref } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
@@ -14,11 +14,13 @@ import { deckPath, nodePath, pathParts, stitchSongs } from './bounce'
 import { PX_DEFAULT } from './layout'
 import { LoomBar } from './LoomBar'
 import { LoomMixer, type LoomDeckPanel } from './LoomMixer'
+import { LoomScope } from './LoomScope'
 import { nodeById } from './loomState'
 import { LoomView, type Peaks } from './LoomView'
 import { deckSeam } from './schedule'
 import { barAt, HOLD_WARN_BARS, nodeStartSeconds } from './timing'
 import { useLoom, type LoomControls } from './useLoom'
+import { useBeatPulse } from './visuals'
 
 /** The booth contract in Loom theme: App hands over both decks and the mixer
  * projections it already owns, so the loom is a theme, not a second app. */
@@ -69,6 +71,7 @@ export function LoomBooth({
   onSyncA,
   onSyncB,
   renderAhead,
+  performanceVisuals,
   barSlot,
   mediaOpen,
 }: LoomBoothProps & { ref?: Ref<LoomBoothHandle> }) {
@@ -119,11 +122,28 @@ export function LoomBooth({
     deckPath(state, deck).length > 0 ? () => bounce(deckPath(state, deck), controls.track?.position) : undefined
   // ---- end bounce ----
 
+  // ---- visuals: the beat pulse on the booth and the mixer's scope ----
+  // Both are frame loops outside React, off with the performance-visuals
+  // switch and under reduced motion.
+  const boothRef = useRef<HTMLElement>(null)
+  useBeatPulse(boothRef, performanceVisuals, deckA.getTrackBeat, deckB.getTrackBeat, engine.getContextTime)
+  const scope = performanceVisuals ? (
+    <LoomScope
+      crossfade={crossfade}
+      decks={{
+        a: { getLevel: channels.a.getLevel, getBeat: deckA.getTrackBeat },
+        b: { getLevel: channels.b.getLevel, getBeat: deckB.getTrackBeat },
+      }}
+    />
+  ) : undefined
+  // ---- /visuals ----
+
   const statusOf = (controls: DeckControls) =>
     controls.track && { position: controls.track.position, playing: controls.track.playing, loop: controls.track.loop }
 
   return (
     <section
+      ref={boothRef}
       className="loom-booth"
       aria-label={t('loom.title')}
       onDragOver={(event) => event.preventDefault()}
@@ -172,6 +192,7 @@ export function LoomBooth({
         onCueMix={onCueMix}
         getMasterLevel={engine.getMasterLevel}
         getPhaseOffset={getPhaseOffset}
+        scope={scope}
       />
       {barSlot &&
         createPortal(
@@ -243,5 +264,6 @@ function deckPanel(
     onSetFx: controls.setFx,
     onSetFxAmount: controls.setFxAmount,
     onDropNode: (id) => loom.tie(deck, id),
+    getBeat: controls.getTrackBeat,
   }
 }
