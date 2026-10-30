@@ -20,12 +20,14 @@ and the deck's playhead — the **shuttle** — follows the tied thread.
 | Word | Meaning |
 | ---- | ------- |
 | loom | The canvas. x = bars, y = branches. Several roots can coexist (a forest). Zoom the bar scale with − / = (0 resets) or ⌘-wheel. |
-| thread | A node: one clip (prompt, key, bars, seed, LoRA stack), rendered from its parent's last bars. A root is seeded from a prompt or a library song. |
+| thread | A node: one clip (prompt, key, bars, seed, LoRA stack), rendered from its parent's last bars. A root is seeded from a prompt or a library song. The waveform runs the full length of the clip (peaks from the decoded audio in the app; the mockup synthesises an intro / build / drop / break envelope). |
+| trim | Drag a node's left or right edge to skip an intro or end at the drop, snapping to bars. DAW-style: the trimmed audio is hidden, the node gets shorter, the tree closes up behind it. The shuttle enters at the in-point and seams at the out-point. |
 | weave | "What next?" after any node: a prompt (or none = continue), how many **takes**, how many bars, a LoRA stack, and the SA3 knobs behind a disclosure. Renders shimmer as ghosts with a progress bar until the audio exists. |
 | take | One of N sibling renders of the same prompt with different seeds, drawn in a bracket. Cue each from the join, then ✓ **keep** one; the others are discarded (⨯ discards a single take). A deck can't lose the take it is on or has tied. |
 | shuttle | A deck's playhead inside the loom. It follows the threads you tied; where none is tied it **holds** the last four bars (amber slot, counting tag). With **auto** on for that deck it follows the first rendered child instead. It never goes silent. |
 | →A / →B | Tie a node as the deck's *next*: through the tree if it is downstream, a jump or a return at the seam if not. Ties queue; ⨯ (the same button, or the rail chip) unties. Shift-click, or drop the node on the shuttle, **cuts** to it on the next bar. |
-| cue | ⌾ auditions a node in the headphones, by default from the *join* (four bars before it) so you hear the transition. Independent of the on-air decks. |
+| cue | ⌾ auditions a node in the headphones, by default from the *join* (four bars before it) so you hear the transition. Click inside a waveform to cue from that bar instead (a lime marker shows where). Independent of the on-air decks. |
+| scrub | Clicking inside the waveform of the node a deck is playing moves that deck's playhead to that bar (on the beat, in the real thing). |
 | rail | The deck's flattened path (past · now · next) in the mixer. Scrolls under a fade; drop target. |
 | bounce | Drop a node on the explorer: its root-to-node path is stitched to one song in the library. |
 
@@ -56,6 +58,9 @@ sidecar. Nothing in the popover needs a new endpoint.
   is right.
 - **2026-10-30, no chord row.** We don't have chord data; the node shows a
   waveform, key and length instead.
+- **2026-10-30, trim hides, it does not dim.** Left-to-right is real time, so a
+  trimmed intro cannot stay on screen without lying about when the next node
+  starts. Nodes shrink like DAW clips and the handles stay reachable.
 - **2026-10-30, takes, not flavours.** "Give me three of this prompt, I'll pick"
   beats three auto-varied prompts. Variation in *prompt* is the user's job (the
   chips help); variation in *seed* is the model's.
@@ -96,6 +101,10 @@ sidecar. Nothing in the popover needs a new endpoint.
   real time. Weaving must run well ahead of the playhead. Does the deck need
   an automatic "safe continuation" that renders in the background for every
   on-air node, and how many takes can the machine afford at once?
+- **Needle drops.** Clicking the playing node's waveform moves the playhead at
+  once in the mockup. In the app: next beat, next bar, or immediate with a
+  modifier? And does a trim on the node a deck is *playing* take effect now or
+  at the seam?
 - **Discarded takes.** Gone, or a trash the explorer can show? Rendering is
   expensive enough that "undo keep" probably matters.
 - **Live decks later.** When Magenta RT returns, is a live thread a node with

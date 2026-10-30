@@ -93,14 +93,21 @@ button{background:none;border:0;cursor:pointer}
 .node .prog{display:none;position:absolute;left:12px;right:12px;bottom:6px;height:2px;background:rgba(255,255,255,.1);border-radius:1px}
 .node.ghost .prog{display:block}
 .node .prog i{display:block;height:100%;width:0;background:var(--cue);box-shadow:0 0 8px var(--cue);transition:width .2s linear}
-.node .wave{position:absolute;left:10px;right:10px;top:8px;height:22px;fill:currentColor;opacity:.55}
+.node .wave{position:absolute;left:10px;width:calc(100% - 20px);top:7px;height:24px;fill:currentColor;cursor:crosshair}
+.node .wave .pk{opacity:.28} .node .wave .rms{opacity:.85}
+.node .h{position:absolute;top:5px;bottom:5px;width:7px;border-radius:4px;background:rgba(255,255,255,.5);opacity:0;cursor:ew-resize;z-index:2}
+.node .h.l{left:2px} .node .h.r{right:2px}
+.node:hover .h,.node.selected .h{opacity:.45} .node .h:hover{opacity:1}
+.node .h.set{opacity:.9;background:var(--cue);box-shadow:0 0 8px var(--cue)}
+.node .cuept{display:none;position:absolute;top:4px;bottom:4px;width:2px;margin-left:-1px;background:var(--cue);box-shadow:0 0 8px var(--cue);pointer-events:none}
+.node.cued.from .cuept{display:block}
 .node.ghost .wave{opacity:.15}
 .node .head{position:absolute;left:12px;right:10px;bottom:9px;display:flex;justify-content:space-between;gap:8px;white-space:nowrap;align-items:baseline}
 .node .prompt{overflow:hidden;text-overflow:ellipsis;font-weight:600;font-size:12.5px;letter-spacing:.01em}
 .node .meta{font:10.5px var(--mono);color:var(--muted);flex:none}
 .node .meta i{font-style:normal;color:var(--cue);opacity:.8}
 .node.tight .meta{display:none} .node.tight .prompt{font-size:11px}
-.node.tiny .head{display:none} .node.tiny .wave{top:20px}
+.node.tiny .head{display:none} .node.tiny .wave{top:19px}
 .node .seed{position:absolute;right:calc(100% + 10px);top:50%;transform:translateY(-50%);font:10px var(--mono);color:var(--faint);white-space:nowrap;display:flex;align-items:center;gap:8px;letter-spacing:.04em}
 .node .seed::after{content:'';width:8px;height:8px;border-radius:50%;border:1px solid var(--faint);box-shadow:0 0 10px rgba(255,255,255,.15)}
 .node .tools{position:absolute;right:4px;top:-31px;display:none;gap:3px;padding:3px;border-radius:9px;background:rgba(10,7,22,.92);border:1px solid var(--line);backdrop-filter:blur(8px);z-index:4}
@@ -206,7 +213,7 @@ details.adv summary b{color:var(--ink);font-weight:400}
 .help p{margin:6px 0} .help b{color:var(--cue);font-family:var(--mono);font-weight:400;font-size:11.5px}
 
 /* ---------- mixer ---------- */
-.mixer{display:grid;grid-template-columns:1fr 340px 1fr;border-top:1px solid var(--line);background:rgba(7,5,15,.62);backdrop-filter:blur(16px)}
+.mixer{display:grid;grid-template-columns:1fr 300px 1fr;border-top:1px solid var(--line);background:rgba(7,5,15,.62);backdrop-filter:blur(16px)}
 .deck{padding:10px 16px 12px;display:grid;grid-template-rows:auto auto 1fr;gap:8px;min-width:0;transition:box-shadow .2s}
 .deck.a{--dc:var(--a)} .deck.b{--dc:var(--b)}
 .deck.over{box-shadow:inset 0 0 0 2px var(--dc)}
@@ -247,14 +254,9 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
 .xf span.a{color:var(--a)} .xf span.b{color:var(--b)}
 .xf input{flex:1;appearance:none;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--a),var(--b));margin:0}
 .xf input::-webkit-slider-thumb{appearance:none;width:14px;height:26px;border-radius:4px;background:#f3f4f6;box-shadow:0 0 12px rgba(255,255,255,.5)}
-.master{display:flex;align-items:flex-end;gap:12px}
+.master{display:flex;align-items:flex-end;justify-content:center;gap:26px}
 .meter{display:flex;gap:3px;align-items:flex-end;height:66px}
 .meter i{width:8px;background:linear-gradient(0deg,var(--cue),#f59e0b 75%,#ef4444);height:var(--l);border-radius:2px;opacity:.9;transition:height .08s}
-.cuebox{font:10.5px var(--mono);color:var(--muted);padding:7px 10px;border:1px solid var(--line);border-radius:9px;flex:1;min-width:0;line-height:1.5;align-self:stretch;display:flex;flex-direction:column;justify-content:center}
-.cuebox.on{border-color:var(--cue);color:var(--ink)}
-.cuebox b{color:var(--cue);font-weight:400}
-.cuebox .ch{display:inline-block;padding:0 6px;border-radius:4px;border:1px solid var(--line);margin-left:4px;color:var(--faint)}
-.cuebox .ch.on{color:#000;background:var(--cue);border-color:transparent}
 
 .toast{position:fixed;left:50%;bottom:220px;transform:translate(-50%,10px);opacity:0;transition:.25s;padding:8px 14px;border-radius:10px;background:rgba(12,8,26,.92);border:1px solid var(--line);font:11.5px var(--mono);z-index:30;pointer-events:none;white-space:nowrap}
 .toast.show{opacity:1;transform:translate(-50%,0)}
@@ -330,7 +332,8 @@ input[type=range].v::-webkit-slider-thumb{appearance:none;width:22px;height:10px
   <p><b>loom</b> — the canvas. Left to right is musical time in bars; down is alternatives. Every pill is a <b>thread</b>: one Stable Audio 3 clip, continued from the tail of its parent. <b>−</b> / <b>=</b> (or ⌘-wheel) zoom the bar scale.</p>
   <p><b>weave</b> — the dashed “what next?” after any leaf (or ✱ on any node) renders what follows. Ask for 1–4 <b>takes</b> of the same prompt: they render as siblings in a bracket, you cue each from the join, then <b>✓ keep</b> one and the rest are discarded. Pick a <b>LoRA</b> stack and the SA3 knobs (cfg, apg, drift from the parent, negative prompt, seed) in the same popover.</p>
   <p><b>shuttle</b> — a deck's playhead. <b>→A</b>/<b>→B</b> ties a node as that deck's <em>next</em>: through the tree if it's downstream, a jump (or a return) at the seam if not. Ties queue; <b>⨯</b> on a tied node or its rail chip unties it. Shift-click, or drop a node on the shuttle, <b>cuts</b> to it on the next bar. Where nothing is tied the shuttle <b>holds</b> the last four bars: the tag counts down to it and turns amber at eight. It never falls silent, and it never picks for you unless <b>auto</b> is on for that deck.</p>
-  <p><b>cue</b> — ⌾ auditions a node in the headphones, from the join (four bars before it) so you hear the transition, not just the clip.</p>
+  <p><b>cue</b> — ⌾ auditions a node in the headphones, from the join (four bars before it) so you hear the transition, not just the clip. Click inside a waveform to cue from that bar instead; on the node a deck is playing, the click moves that deck's playhead.</p>
+  <p><b>trim</b> — drag a node's left or right edge to skip an intro or end at the drop (snaps to bars). Like a clip in a DAW the trimmed audio is hidden, not dimmed: the node gets shorter and the tree closes up behind it, because left-to-right is real time.</p>
   <p><b>rail</b> — each deck's flattened path in the mixer: past · now · next. Also a drop target. <b>explorer</b> — rate, tag, sort and filter the library; “in key” keeps only songs that mix with what a deck is playing.</p>
   <p>Drag the background to pan. Nothing here makes sound; it's a mockup.</p>
 </div>
@@ -364,6 +367,7 @@ const kids=id=>Object.values(N).filter(n=>n.parent===id).sort((a,b)=>a.order-b.o
 const ancestors=id=>{const a=[];let n=N[id];while(n.parent){n=N[n.parent];a.unshift(n.id)}return a}
 const rootOf=id=>{let n=N[id];while(n.parent)n=N[n.parent];return n}
 const tempoOf=n=>rootOf(n.id).bpm||120
+const inOf=n=>n.in||0,outOf=n=>n.out??n.bars,lenOf=n=>outOf(n)-inOf(n)
 const SEMI={C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11}
 function hue(key){const m=/^([A-G][b#]?)(.*)$/.exec(key||'');if(!m)return 280;let s=SEMI[m[1]]??0;if(/^m(?!aj)/.test(m[2]))s=(s+3)%12;return ((s*7)%12)*30}
 const inKey=(a,b)=>{const d=Math.abs(hue(a)-hue(b));return Math.min(d,360-d)<=30}
@@ -375,7 +379,7 @@ const esc=s=>s.replace(/"/g,'&quot;')
 let rows=0,W=0
 function layout(){rows=0
   const roots=Object.values(N).filter(n=>!n.parent).sort((a,b)=>a.order-b.order)
-  const place=n=>{n.w=n.bars*PX-GAP;n.x=n.parent?N[n.parent].x+N[n.parent].w+GAP:PADX
+  const place=n=>{n.w=lenOf(n)*PX-GAP;n.x=n.parent?N[n.parent].x+N[n.parent].w+GAP:PADX
     const k=kids(n.id);if(!k.length){n.row=rows++;return}k.forEach(place);n.row=k[0].row}
   roots.forEach((r,i)=>{if(i)rows++;place(r)})
   W=Math.max(...Object.values(N).map(n=>n.x+n.w))+SLOT_W+120}
@@ -383,16 +387,22 @@ function layout(){rows=0
 /* ---------- nodes ---------- */
 const loom=$('#loom'),svg=$('#threads'),canvas=$('#canvas'),stage=$('#stage')
 const els=new Map(),slotEls=new Map(),takeEls=new Map()
-function wave(id,n=48){let h=7;for(const c of id)h=(h*31+c.charCodeAt(0))>>>0
-  const r=()=>{h=(h*1103515245+12345)>>>0;return(h>>>8)/16777216};let s=''
-  for(let i=0;i<n;i++){const v=1.5+r()*14;s+=`<rect x="${(i*100/n).toFixed(2)}" y="${(8-v/2).toFixed(2)}" width="${(100/n*.55).toFixed(2)}" height="${v.toFixed(2)}" rx=".5"/>`}
-  return `<svg class="wave" viewBox="0 0 100 16" preserveAspectRatio="none">${s}</svg>`}
+function wave(n){let h=7;for(const c of n.id)h=(h*31+c.charCodeAt(0))>>>0
+  const r=()=>{h=(h*1103515245+12345)>>>0;return(h>>>8)/16777216}
+  const S=8,pts=n.bars*S,kinds=n.parent?['body','drop','break','build','drop']:['intro','build','drop','break','drop']
+  const lvl=[];for(let b=0;b<n.bars;b++){const k=kinds[Math.min(Math.floor(b/8),kinds.length-1)];lvl.push({intro:.2+.35*(b%8)/8,build:.55+.35*(b%8)/8,drop:.92,break:.3,body:.75}[k])}
+  let top='',bot='';for(let i=0;i<pts;i++){const b=Math.floor(i/S),beat=i%S;let v=lvl[b]*(beat%2?.72:1)*(.85+r()*.3)
+    if((b+1)%8===0&&beat>=6&&lvl[b]>.8)v*=.08 // the gap before a drop
+    if(lvl[b]<.35&&beat%4)v*=.45 // sparse break
+    v=Math.min(1,v)*7.6;const x=(i/pts*100).toFixed(2);top+=`${i?'L':'M'}${x},${(8-v).toFixed(2)}`;bot=`L${x},${(8+v).toFixed(2)}`+bot}
+  const d=top+bot+'Z'
+  return `<svg class="wave" viewBox="0 0 100 16" preserveAspectRatio="none"><path class="pk" d="${d}"/><path class="rms" d="${d}" transform="translate(0 8) scale(1 .55) translate(0 -8)"/></svg>`}
 const loraTitle=n=>n.loras?.length?n.loras.map(l=>`${l.n} ×${l.s}`).join(' + '):''
 function makeNode(n){const el=document.createElement('div');el.className='node';el.dataset.id=n.id;el.draggable=true
   el.style.setProperty('--h',hue(n.key))
-  el.innerHTML=`${n.parent?'':`<span class="seed">${n.seedFrom}</span>`}${wave(n.id)}
-  <div class="head"><span class="prompt" title="${esc(n.prompt)}">${n.prompt}</span><span class="meta" title="seed ${n.seed}${n.loras?.length?' · '+loraTitle(n):''}">${n.loras?.length?'<i>⟐</i> ':''}${n.key} · ${n.bars}b</span></div>
-  <div class="prog"><i></i></div>
+  el.innerHTML=`${n.parent?'':`<span class="seed">${n.seedFrom}</span>`}${wave(n)}
+  <div class="head"><span class="prompt" title="${esc(n.prompt)}">${n.prompt}</span><span class="meta" title="seed ${n.seed}${n.loras?.length?' · '+loraTitle(n):''}"></span></div>
+  <i class="h l" title="drag to trim the start (snaps to bars)"></i><i class="h r" title="drag to trim the end (snaps to bars)"></i><i class="cuept"></i><div class="prog"><i></i></div>
   <div class="tools"><button class="keep" data-act="keep" title="keep this take, discard its siblings">✓ keep</button><button class="drop" data-act="drop" title="discard this take">⨯</button><button class="cue" data-act="cue" title="audition in headphones, from the join">⌾ cue</button><button class="ta" data-act="A" title="thread deck A through this">→ A</button><button class="tb" data-act="B" title="thread deck B through this">→ B</button><button data-act="weave" title="weave what comes next">✱</button></div>`
   return el}
 
@@ -419,7 +429,13 @@ function render(){layout()
     c.toggle('q-a',D.A.queue.includes(n.id));c.toggle('q-b',D.B.queue.includes(n.id))
     c.toggle('cued',cue?.node===n.id);c.toggle('selected',selected===n.id);c.toggle('ghost',!!n.ghost)
     c.toggle('tight',n.w<130);c.toggle('tiny',n.w<64);c.toggle('take',!!n.take&&kids(n.parent).filter(x=>x.take===n.take).length>1)
-    if(cue?.node===n.id)el.dataset.cue=cue.join?'⌾ cue · from the join (−4 bars)':'⌾ cue · from the top'
+    const cp=cue?.node===n.id&&cue.from!=null;c.toggle('from',cp)
+    if(cue?.node===n.id)el.dataset.cue=cp?`⌾ cue · from bar ${cue.from-inOf(n)+1}`:cue.join?'⌾ cue · from the join (−4 bars)':'⌾ cue · from the top'
+    if(cp)el.querySelector('.cuept').style.left=10+(cue.from-inOf(n))/lenOf(n)*(n.w-20)+'px'
+    el.querySelector('.wave').setAttribute('viewBox',`${inOf(n)/n.bars*100} 0 ${lenOf(n)/n.bars*100} 16`)
+    const tr=inOf(n)>0||outOf(n)<n.bars
+    el.querySelector('.meta').innerHTML=`${n.loras?.length?'<i>⟐</i> ':''}${n.key} · ${tr?`${lenOf(n)}<span style="opacity:.55">/${n.bars}</span>`:n.bars}b`
+    el.querySelector('.h.l').classList.toggle('set',inOf(n)>0);el.querySelector('.h.r').classList.toggle('set',outOf(n)<n.bars)
     el.querySelector('.cue').classList.toggle('active',cue?.node===n.id)
     el.querySelector('.ta').textContent=D.A.queue.includes(n.id)?'⨯ A':'→ A'
     el.querySelector('.tb').textContent=D.B.queue.includes(n.id)?'⨯ B':'→ B'}
@@ -447,8 +463,7 @@ function render(){layout()
   let rl='';for(let b=0;b*PX+PADX<W;b+=step)rl+=`<span style="left:${PADX+b*PX}px">${b}</span>`;$('#ruler').innerHTML=rl;$('#ruler').style.width=W+'px'
   $('#zval').textContent=`${PX}px / bar`
   for(const k of['A','B'])rail(k)
-  $('#count').textContent=`${Object.values(N).filter(n=>!n.ghost).length} threads · ${Object.values(N).filter(n=>n.ghost).length} weaving`
-  cuebox()}
+  $('#count').textContent=`${Object.values(N).filter(n=>!n.ghost).length} threads · ${Object.values(N).filter(n=>n.ghost).length} weaving`}
 
 /* ---------- zoom ---------- */
 function zoom(f){const px=Math.max(6,Math.min(48,Math.round(PX*f)));if(px===PX)return
@@ -467,7 +482,7 @@ for(const k of['A','B']){sh[k]={};for(const c of['trail','head','tag']){const e=
   t.addEventListener('drop',e=>{t.classList.remove('over');const id=e.dataTransfer.getData('text/lsdj-node');if(id)threadTo(k,id,true)})}
 const tiny=s=>s.length>19?s.slice(0,17)+'…':s
 function seam(k){const d=D[k],n=N[d.node]
-  const left=Math.max(0,n.bars-d.pos).toFixed(0)
+  const left=Math.max(0,outOf(n)-d.pos).toFixed(0)
   if(!d.playing)return{left,tag:`${k} ⏸`,warn:false}
   const nx=d.queue[0];const au=!nx&&d.auto?kids(n.id).find(x=>!x.ghost):null
   if(d.hold)return{left,tag:nx?`${k} · hold · ⟳ ${Math.round(N[nx].progress*100)}%`:`${k} · hold`,warn:true}
@@ -476,25 +491,25 @@ function seam(k){const d=D[k],n=N[d.node]
   return{left,tag:`${k} · ${left} → HOLD`,warn:+left<=8}}
 function paint(){const sr=stage.getBoundingClientRect()
   for(const k of['A','B']){const d=D[k],n=N[d.node],s=sh[k],y=rowY(n.row)
-    const x=Math.min(n.x+d.pos*PX,n.x+n.w)
+    const x=Math.max(n.x,Math.min(n.x+(d.pos-inOf(n))*PX,n.x+n.w))
     s.trail.style.left=n.x+'px';s.trail.style.top=y+'px';s.trail.style.width=(x-n.x)+'px'
     s.head.style.left=x+'px';s.head.style.top=(y-8)+'px';s.head.style.height=(H+16)+'px'
     const sm=seam(k);s.tag.style.left=x+'px';s.tag.style.top=(y-28)+'px';s.tag.textContent=sm.tag;s.tag.classList.toggle('hold',sm.warn)
     const cnt=$('#cnt-'+k);if(cnt)cnt.textContent=sm.left+' ›'
     document.querySelector(`.deck[data-deck=${k}] [data-dact=play]`).classList.toggle('blink',sm.warn&&d.playing)
-    $('#pos-'+k).textContent=`bar ${d.pos.toFixed(1)} / ${n.bars}`
-    $('#rail-'+k+' .cur')?.style.setProperty('--p',(d.pos/n.bars*100).toFixed(1)+'%')
+    $('#pos-'+k).textContent=`bar ${(d.pos-inOf(n)).toFixed(1)} / ${lenOf(n)}`
+    $('#rail-'+k+' .cur')?.style.setProperty('--p',((d.pos-inOf(n))/lenOf(n)*100).toFixed(1)+'%')
     document.documentElement.style.setProperty(`--${k.toLowerCase()}x`,(sr.left+x-canvas.scrollLeft)+'px')}}
 
 let last=performance.now(),t0=last
 function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
   for(const k of['A','B']){const d=D[k];if(!d.playing)continue;const n=N[d.node];const was=Math.floor(d.pos);d.pos+=dt*tempoOf(n)/240
     if(d.cut&&Math.floor(d.pos)>was){const id=d.cut;d.cut=null;d.queue=[];go(k,id,0);dirty=true;toast(`${k} cut → “${short(N[id].prompt)}”`);continue}
-    const bars=n.bars;if(d.pos<bars)continue
+    const end=outOf(n);if(d.pos<end)continue
     let nx=d.queue[0],viaAuto=false
     if(!nx&&d.auto){const c=kids(n.id).find(x=>!x.ghost);if(c){nx=c.id;viaAuto=true}}
-    if(nx&&!N[nx].ghost){if(!viaAuto)d.queue.shift();go(k,nx,d.pos-bars);dirty=true;toast(`${k} ${viaAuto?'autopilot ':''}→ “${short(N[nx].prompt)}”`)}
-    else{d.pos=bars-4;if(!d.hold){d.hold=true;dirty=true;toast(nx?`${k}: next is still rendering — holding the last 4 bars`:`${k}: nothing tied — holding the last 4 bars`)}}}
+    if(nx&&!N[nx].ghost){if(!viaAuto)d.queue.shift();go(k,nx,d.pos-end);dirty=true;toast(`${k} ${viaAuto?'autopilot ':''}→ “${short(N[nx].prompt)}”`)}
+    else{d.pos=end-4;if(!d.hold){d.hold=true;dirty=true;toast(nx?`${k}: next is still rendering — holding the last 4 bars`:`${k}: nothing tied — holding the last 4 bars`)}}}
   for(const n of Object.values(N))if(n.ghost){n.progress=Math.min(1,n.progress+dt/n.dur)
     if(n.progress>=1){n.ghost=false;dirty=true;toast(`rendered “${short(n.prompt)}”${n.take?` · take ${n.takeN}`:''} · ready to cue`)}
     else{const i=els.get(n.id)?.querySelector('.prog i');if(i)i.style.width=(n.progress*100)+'%'}}
@@ -502,7 +517,7 @@ function tick(t){const dt=Math.min(.1,(t-last)/1000);last=t;let dirty=false
   requestAnimationFrame(tick)}
 
 /* ---------- actions ---------- */
-function go(k,id,pos){const d=D[k];if(d.node!==id){d.hist.push(d.node);if(d.hist.length>8)d.hist.shift()}d.node=id;d.pos=pos;d.hold=false}
+function go(k,id,pos){const d=D[k];if(d.node!==id){d.hist.push(d.node);if(d.hist.length>8)d.hist.shift()}d.node=id;d.pos=inOf(N[id])+pos;d.hold=false}
 function threadTo(k,id,cut=false){const d=D[k],name=short(N[id].prompt)
   if(cut){if(d.playing){d.cut=id;toast(`${k} cuts → “${name}” on the next bar`)}else{d.queue=[];go(k,id,0);toast(`${k} loaded “${name}” at the top`)}render();return}
   const qi=d.queue.indexOf(id)
@@ -512,7 +527,7 @@ function threadTo(k,id,cut=false){const d=D[k],name=short(N[id].prompt)
   if(tail===id){toast(`${k} is already headed there — tie something after it`);return}
   const anc=ancestors(id),i=anc.indexOf(tail)
   if(i>=0){d.queue=[...d.queue,...anc.slice(i+1),id]
-    const until=(N[d.node].bars-d.pos)+d.queue.slice(0,-1).reduce((s,q)=>s+N[q].bars,0)
+    const until=(outOf(N[d.node])-d.pos)+d.queue.slice(0,-1).reduce((s,q)=>s+lenOf(N[q]),0)
     toast(`${k} ties → “${name}” · in ${until.toFixed(0)} bars`)}
   else{d.queue=[...d.queue,id];toast(`${k} ties → “${name}” · ${ancestors(tail).includes(id)?'returns':'jumps'} at the seam`)}
   render()}
@@ -566,6 +581,13 @@ loom.addEventListener('click',e=>{
   if(act&&node){const id=node.dataset.id;const a=act.dataset.act
     if(a==='cue')toggleCue(id);else if(a==='weave')openWeave(id,act);else if(a==='keep')keep(id);else if(a==='drop'){const g=discard([id]);render();toast(g?'take discarded':'a deck still holds that take')}else threadTo(a,id,e.shiftKey);return}
   if(slot){openWeave(slot.dataset.slot,slot);return}
+  const wv=e.target.closest('.wave')
+  if(wv&&node&&!N[node.dataset.id].ghost){const n=N[node.dataset.id],r=wv.getBoundingClientRect()
+    const bar=inOf(n)+Math.max(0,Math.min(lenOf(n)-1,Math.floor((e.clientX-r.left)/r.width*lenOf(n))))
+    const k=['A','B'].find(k=>D[k].node===n.id)
+    if(k){D[k].pos=bar;D[k].hold=false;D[k].cut=null;toast(`${k} → bar ${bar-inOf(n)+1} (on the beat in the real thing)`)}
+    else{cue={node:n.id,from:bar};toast(`⌾ cue “${short(n.prompt)}” from bar ${bar-inOf(n)+1}`)}
+    render();return}
   if(node){selected=selected===node.dataset.id?null:node.dataset.id;render();return}
   selected=null;pop.classList.remove('open');render()})
 document.addEventListener('click',e=>{if(!e.target.closest('.pop,[data-act],.slot,#helpbtn'))pop.classList.remove('open');if(!e.target.closest('#help,#helpbtn'))$('#help').classList.remove('open')})
@@ -579,7 +601,7 @@ canvas.addEventListener('pointermove',e=>{if(!pan)return;canvas.scrollLeft=pan.l
 canvas.addEventListener('pointerup',()=>{pan=null;canvas.classList.remove('panning')})
 
 // drag & drop: nodes → decks / explorer, songs → loom
-loom.addEventListener('dragstart',e=>{const n=e.target.closest('.node');if(!n)return;e.dataTransfer.setData('text/lsdj-node',n.dataset.id);e.dataTransfer.effectAllowed='link'})
+loom.addEventListener('dragstart',e=>{const n=e.target.closest('.node');if(!n||hd){e.preventDefault();return}e.dataTransfer.setData('text/lsdj-node',n.dataset.id);e.dataTransfer.effectAllowed='link'})
 canvas.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-song'))e.preventDefault()})
 canvas.addEventListener('drop',e=>{const i=e.dataTransfer.getData('text/lsdj-song');if(i==='')return;e.preventDefault();seed(LIB[+i])})
 
@@ -619,7 +641,7 @@ $('#explorer').onclick=()=>drawer.classList.toggle('open')
 $('#drawerClose').onclick=()=>drawer.classList.remove('open')
 drawer.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('text/lsdj-node')){e.preventDefault();drawer.classList.add('over')}})
 drawer.addEventListener('dragleave',()=>drawer.classList.remove('over'))
-drawer.addEventListener('drop',e=>{drawer.classList.remove('over');const id=e.dataTransfer.getData('text/lsdj-node');if(!id)return;const path=[...ancestors(id),id];toast(`bounced ${path.length} threads to songs · “${short(N[id].prompt)}” (${path.reduce((s,i)=>s+N[i].bars,0)} bars)`)})
+drawer.addEventListener('drop',e=>{drawer.classList.remove('over');const id=e.dataTransfer.getData('text/lsdj-node');if(!id)return;const path=[...ancestors(id),id];toast(`bounced ${path.length} threads to songs · “${short(N[id].prompt)}” (${path.reduce((s,i)=>s+lenOf(N[i]),0)} bars)`)})
 drawer.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{drawer.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active')})
 
 /* ---------- mixer ---------- */
@@ -636,12 +658,12 @@ const deckHTML=k=>`<section class="deck ${k.toLowerCase()}" data-deck="${k}">
   </div></section>`
 $('#mixer').innerHTML=deckHTML('A')+`<section class="core">
   <div class="xf"><span class="a">A</span><input type="range" id="xf" min="0" max="1" step=".01" value=".5"><span class="b">B</span></div>
-  <div class="master"><div class="meter" id="meter"><i style="--l:40%"></i><i style="--l:52%"></i></div><div class="cuebox" id="cuebox"></div>${knob('cue mix',.4)}${knob('master',.8)}</div>
+  <div class="master">${knob('cue mix',.4)}<div class="meter" id="meter"><i style="--l:40%"></i><i style="--l:52%"></i></div>${knob('master',.8)}</div>
 </section>`+deckHTML('B')
 
 function rail(k){const d=D[k],n=N[d.node];let h=''
   for(const id of d.hist.slice(-2))h+=`<span class="c past">${short(N[id].prompt)}</span><span class="arr">›</span>`
-  h+=`<span class="c cur" style="--p:${(d.pos/n.bars*100).toFixed(1)}%">${short(n.prompt)}</span>`
+  h+=`<span class="c cur" style="--p:${((d.pos-inOf(n))/lenOf(n)*100).toFixed(1)}%">${short(n.prompt)}</span>`
   h+=`<span class="arr" id="cnt-${k}">›</span>`
   d.queue.forEach((id,i)=>{const q=N[id];h+=(i?`<span class="arr">›</span>`:'')+`<span class="c next" data-untie="${id}" title="click to untie">${q.ghost?'⟳ ':''}${short(q.prompt)}</span>`})
   if(!d.queue.length){const au=d.auto?kids(n.id).find(x=>!x.ghost):null
@@ -649,8 +671,6 @@ function rail(k){const d=D[k],n=N[d.node];let h=''
   const el=$('#rail-'+k);el.innerHTML=h;el.scrollLeft=Math.max(0,el.querySelector('.cur').offsetLeft-el.offsetLeft-120)
   $('#now-'+k).textContent=n.prompt;$('#meta-'+k).textContent=`${n.key} · ${tempoOf(n)} bpm${n.loras?.length?' · ⟐ '+n.loras.map(l=>l.n).join('+'):''}`
   const deck=document.querySelector(`.deck[data-deck=${k}]`);deck.querySelector('[data-dact=play]').classList.toggle('on',d.playing);deck.querySelector('[data-dact=dcue]').classList.toggle('on',d.cue);deck.querySelector('[data-dact=auto]').classList.toggle('on',d.auto)}
-function cuebox(){const b=$('#cuebox');b.classList.toggle('on',!!cue||D.A.cue||D.B.cue)
-  b.innerHTML=(cue?`<b>⌾</b> ${short(N[cue.node].prompt)} <span style="color:var(--muted)">· ${cue.join?'from the join':'from the top'}</span>`:`<span style="color:var(--faint)">⌾ nothing cued</span>`)+`<br>phones <span class="ch ${D.A.cue?'on':''}">A</span><span class="ch ${D.B.cue?'on':''}">B</span>`}
 document.querySelectorAll('.deck').forEach(deck=>{const k=deck.dataset.deck
   deck.addEventListener('click',e=>{const b=e.target.closest('[data-dact]');if(!b)return;const d=D[k]
     if(b.dataset.dact==='play'){d.playing=!d.playing;toast(`${k} ${d.playing?'play':'pause'}`)}
@@ -668,6 +688,15 @@ let kd=null
 document.addEventListener('pointerdown',e=>{const k=e.target.closest('.knob');if(!k)return;kd={k,y:e.clientY,v:+k.dataset.v};k.setPointerCapture(e.pointerId)})
 document.addEventListener('pointermove',e=>{if(!kd)return;const v=Math.max(0,Math.min(1,kd.v+(kd.y-e.clientY)/140));kd.k.dataset.v=v;kd.k.querySelector('.arc').setAttribute('stroke-dasharray',`${C*.75*v} ${C}`)})
 document.addEventListener('pointerup',()=>kd=null)
+let hd=null
+document.addEventListener('pointerdown',e=>{const h=e.target.closest('.node .h');if(!h)return;const n=N[h.closest('.node').dataset.id];if(n.ghost)return
+  hd={n,side:h.classList.contains('l')?'l':'r',x:e.clientX,in0:inOf(n),out0:outOf(n)};h.setPointerCapture(e.pointerId);loom.classList.add('zooming');e.preventDefault()})
+document.addEventListener('pointermove',e=>{if(!hd)return;const d=Math.round((e.clientX-hd.x)/PX),n=hd.n
+  if(hd.side==='l')n.in=Math.max(0,Math.min(hd.out0-4,hd.in0+d));else n.out=Math.max(hd.in0+4,Math.min(n.bars,hd.out0+d))
+  for(const k of['A','B'])if(D[k].node===n.id)D[k].pos=Math.max(inOf(n),Math.min(outOf(n)-.01,D[k].pos))
+  if(cue?.node===n.id&&cue.from!=null)cue.from=Math.max(inOf(n),Math.min(outOf(n)-1,cue.from))
+  render();paint()})
+document.addEventListener('pointerup',()=>{if(!hd)return;const n=hd.n;hd=null;loom.classList.remove('zooming');toast(`“${short(n.prompt)}” plays bars ${inOf(n)+1}–${outOf(n)} of ${n.bars}`)})
 const lv={A:[.4,.5],B:[.4,.5],M:[.4,.5]}
 const walk=a=>a.map(v=>Math.max(.08,Math.min(1,v+(Math.random()-.5)*.25)))
 function meters(){const x=+$('#xf').value,g={A:Math.min(1,(1-x)*2),B:Math.min(1,x*2)}
