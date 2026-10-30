@@ -139,3 +139,47 @@
   --color-deck-b: var(--color-accent-violet);
   --color-deck-b-dim: var(--color-accent-violet-dim);
 }
+
+/* Loom theme (ADR-0038, `mockups/loom/`): the look when <html
+   data-theme='loom'>. A sans UI face over Space Mono numbers, soft corners,
+   violet A / cyan B over a lime cue, and glass surfaces the aurora shows
+   through. `:root[...]` outranks the [data-accent] blocks, so the deck pair
+   is fixed in this theme while the master accent stays the user's. */
+:root[data-theme='loom'] {
+  --color-bg: #07050f;
+  --color-surface: #0c081a;
+  --color-surface-raised: #160f2c;
+  --color-surface-inset: #05030b;
+  /* The mockup's hairline, and the brighter edge a hovered control takes. */
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-strong: rgba(255, 255, 255, 0.25);
+  /* See-through panels: the cards, and the darker bars (header, mixer). */
+  --color-glass: rgba(20, 14, 40, 0.55);
+  --color-glass-bar: rgba(7, 5, 15, 0.6);
+  --color-shadow: #000;
+
+  --color-text: #ebe7f7;
+  --color-text-muted: #8c87a3;
+  --color-text-silkscreen: #5a556f;
+
+  --color-deck-a: var(--color-accent-violet-strong);
+  --color-deck-a-dim: var(--color-accent-violet-dim);
+  --color-deck-b: var(--color-accent-cyan);
+  --color-deck-b-dim: var(--color-accent-cyan-dim);
+  --color-cue: var(--color-accent-lime);
+  --color-led-ok: var(--color-accent-lime);
+  --color-led-warn: #fbbf24;
+
+  /* The aurora's four washes and the cued ring's extra stop. */
+  --color-aurora-violet: #4c1d95;
+  --color-aurora-teal: #0e7490;
+  --color-aurora-rose: #9d174d;
+  --color-aurora-moss: #3f6212;
+  --color-aurora-pink: #f472b6;
+
+  --font-ui: system-ui, -apple-system, 'Inter', sans-serif;
+  /* Small labels stay mono and regular, as in the mockup. */
+  --silkscreen: 400 var(--text-xs) var(--font-mono);
+  --radius-s: 7px;
+  --radius-m: 14px;
+}

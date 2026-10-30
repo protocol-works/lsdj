@@ -6,7 +6,8 @@
 
 import { kids, pathTo, type LoomNode } from './loomState'
 
-export const LAYOUT = { gap: 18, row: 84, padX: 190, padY: 52 }
+/** The mockup's geometry: a 62 px node on an 84 px row (a 22 px gutter). */
+export const LAYOUT = { gap: 18, row: 84, padX: 190, padY: 52, node: 62 }
 export const PX_MIN = 6
 export const PX_MAX = 48
 export const PX_DEFAULT = 20

@@ -8,6 +8,7 @@ import {
   type DragEvent,
   type PointerEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
@@ -69,10 +70,13 @@ export type LoomViewProps = {
   /** The media explorer is open: its rating keys own `0` (clear), so the zoom
    * reset leaves it alone. */
   explorerOpen?: boolean
+  /** Where the zoom and new-thread buttons render (the loom bar); without
+   * one they sit in the view. */
+  toolsSlot?: HTMLElement | null
 }
 
 const DECKS: DeckId[] = ['a', 'b']
-const NODE_HEIGHT = 62
+const NODE_HEIGHT = LAYOUT.node
 // The "what next?" slot after every leaf, and the room left of the first bar.
 const SLOT_WIDTH = 236
 const CANVAS_MARGIN = 120
@@ -354,6 +358,23 @@ export function LoomView(props: LoomViewProps) {
     props.onCut(deck, data.slice('loom:'.length))
   }
 
+  const tools = (
+    <div className="loom__zoom">
+      <Button aria-label={t('loom.view.zoomOut')} title={t('loom.view.zoomOut')} onClick={() => view.zoomBy(0.8)}>
+        {t('loom.view.zoomOutMark')}
+      </Button>
+      <Button title={t('loom.view.fitHint')} onClick={view.fit}>
+        {t('loom.view.fit')}
+      </Button>
+      <Button aria-label={t('loom.view.zoomIn')} title={t('loom.view.zoomIn')} onClick={() => view.zoomBy(1.25)}>
+        {t('loom.view.zoomInMark')}
+      </Button>
+      <Button title={t('loom.view.newThread')} onClick={(event) => view.openWeave(null, event.currentTarget)}>
+        {t('loom.view.newThreadMark')}
+      </Button>
+    </div>
+  )
+
   return (
     <div className="loom" style={{ '--loom-node-height': `${NODE_HEIGHT}px` } as CSSProperties}>
       <div
@@ -459,6 +480,7 @@ export function LoomView(props: LoomViewProps) {
                 style={{ left: box.x + box.w + LAYOUT.gap, top: box.y, width: SLOT_WIDTH - LAYOUT.gap }}
               >
                 <Button onClick={(event) => view.openWeave(node.id, event.currentTarget)}>
+                  <span className="loom__plus">{t('loom.view.plus')}</span>{' '}
                   {holder ? t('loom.view.holding', { deck: t(deckLetter(holder.deck)) }) : t('loom.view.whatNext')}
                 </Button>
               </div>
@@ -491,20 +513,7 @@ export function LoomView(props: LoomViewProps) {
           ))}
         </div>
       </div>
-      <div className="loom__zoom">
-        <Button title={t('loom.view.newThread')} onClick={(event) => view.openWeave(null, event.currentTarget)}>
-          {t('loom.view.newThreadMark')}
-        </Button>
-        <Button aria-label={t('loom.view.zoomOut')} title={t('loom.view.zoomOut')} onClick={() => view.zoomBy(0.8)}>
-          {t('loom.view.zoomOutMark')}
-        </Button>
-        <Button title={t('loom.view.fitHint')} onClick={view.fit}>
-          {t('loom.view.fit')}
-        </Button>
-        <Button aria-label={t('loom.view.zoomIn')} title={t('loom.view.zoomIn')} onClick={() => view.zoomBy(1.25)}>
-          {t('loom.view.zoomInMark')}
-        </Button>
-      </div>
+      {props.toolsSlot ? createPortal(tools, props.toolsSlot) : tools}
       {nodes.length === 0 ? (
         <div className="loom__empty">
           <p>{t('loom.empty')}</p>

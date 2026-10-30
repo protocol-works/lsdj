@@ -250,7 +250,6 @@ export const LoomNode = memo(function LoomNode({
     node.status === 'failed' && 'loom-node--failed',
     node.status === 'missing' && 'loom-node--missing',
     take !== null && 'loom-node--take',
-    hue !== null && 'loom-node--keyed',
     width < TIGHT_PX && 'loom-node--tight',
     width < TINY_PX && 'loom-node--tiny',
   ]

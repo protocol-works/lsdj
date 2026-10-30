@@ -190,11 +190,13 @@ describe('LoomMixer channel strip', () => {
     expect(a.onSetTrimDb).toHaveBeenCalledWith(6)
   })
 
+  // The visible labels are the loom's lowercase `trim hi mid low`; the
+  // controls keep the mixer's names, so the order is read from those.
   it('stacks the EQ knobs Hi, Mid, Low after the trim', () => {
     render(<LoomMixer {...makeProps()} />)
     const labels = within(deckPanel('a'))
-      .getAllByText(/^(Trim|EQ Hi|EQ Mid|EQ Low)$/)
-      .map((node) => node.textContent)
+      .getAllByLabelText(/^(Trim|EQ Hi|EQ Mid|EQ Low)$/)
+      .map((input) => input.getAttribute('aria-label'))
     expect(labels).toEqual(['Trim', 'EQ Hi', 'EQ Mid', 'EQ Low'])
   })
 

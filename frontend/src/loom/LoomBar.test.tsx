@@ -1,25 +1,35 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { LoomBar, type LoomBarProps } from './LoomBar'
 
+const barProps = (overrides: Partial<LoomBarProps> = {}): LoomBarProps => ({
+  name: 'Late dub',
+  createdAt: 0,
+  currentId: 'loom-a',
+  saved: 'saved',
+  status: null,
+  looms: [
+    { id: 'loom-a', name: 'Late dub', updatedAt: 2, nodes: 11 },
+    { id: 'loom-b', name: 'Warm-up', updatedAt: 1, nodes: 1 },
+  ],
+  onRename: vi.fn(),
+  onNew: vi.fn(),
+  onOpen: vi.fn(),
+  onDuplicate: vi.fn(),
+  onDelete: vi.fn(),
+  explorerOpen: false,
+  onToggleExplorer: vi.fn(),
+  toolsRef: vi.fn(),
+  playing: false,
+  bpm: 124,
+  threads: 11,
+  weaving: 0,
+  ...overrides,
+})
+
 function renderBar(overrides: Partial<LoomBarProps> = {}) {
-  const props: LoomBarProps = {
-    name: 'Late dub',
-    currentId: 'loom-a',
-    saved: 'saved',
-    status: null,
-    looms: [
-      { id: 'loom-a', name: 'Late dub', updatedAt: 2, nodes: 11 },
-      { id: 'loom-b', name: 'Warm-up', updatedAt: 1, nodes: 1 },
-    ],
-    onRename: vi.fn(),
-    onNew: vi.fn(),
-    onOpen: vi.fn(),
-    onDuplicate: vi.fn(),
-    onDelete: vi.fn(),
-    ...overrides,
-  }
+  const props = barProps(overrides)
   render(<LoomBar {...props} />)
   return props
 }
@@ -76,5 +86,31 @@ describe('LoomBar', () => {
     menu('Duplicate')
     expect(props.onNew).toHaveBeenCalledTimes(1)
     expect(props.onDuplicate).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the master tempo and node counts, and toggles the explorer', () => {
+    const props = renderBar({ bpm: 128.04, threads: 1, weaving: 2, explorerOpen: true })
+    expect(screen.getByText(/master/)).toHaveTextContent('00:00 · master 128.0 bpm · 1 thread · 2 weaving')
+    const explorer = screen.getByRole('button', { name: '☰ explorer' })
+    expect(explorer).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(explorer)
+    expect(props.onToggleExplorer).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts the clock from the first play and on through a pause', () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<LoomBar {...barProps()} />)
+      act(() => vi.advanceTimersByTime(5_000))
+      expect(screen.getByText('00:00')).toBeInTheDocument()
+
+      rerender(<LoomBar {...barProps({ playing: true })} />)
+      act(() => vi.advanceTimersByTime(65_000))
+      rerender(<LoomBar {...barProps({ playing: false })} />)
+      act(() => vi.advanceTimersByTime(2_000))
+      expect(screen.getByText('01:07')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

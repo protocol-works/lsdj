@@ -107,7 +107,8 @@ export function LoomMixer({
             <PhaseMeter label={t('mixer.phase')} getOffset={getPhaseOffset} />
           </div>
           <Knob
-            label={t('mixer.cueMix')}
+            label={t('loom.strip.cueMix')}
+            ariaLabel={t('mixer.cueMix')}
             accent="master"
             size="s"
             value={cueMix}
@@ -115,7 +116,7 @@ export function LoomMixer({
           />
           <div className="loom-mixer__meter">
             <LevelMeter label={t('mixer.masterLevel')} getLevel={getMasterLevel} />
-            <span className="loom-mixer__caption">{t('mixer.master')}</span>
+            <span className="loom-mixer__caption">{t('loom.strip.master')}</span>
           </div>
         </div>
       </div>
@@ -235,7 +236,7 @@ function LoomDeck({
         </div>
 
         <SegmentedControl
-          label={t('loom.deck.loop')}
+          label={t('loom.strip.loop')}
           value={deck.loopBars === null ? '' : String(deck.loopBars)}
           options={LOOP_OPTIONS}
           onChange={(value) => {
@@ -255,11 +256,15 @@ function LoomDeck({
             label={t('mixer.channelLevel', { id: deckId })}
             getLevel={channel.getLevel}
           />
+          <span className="loom-mixer__caption" aria-hidden="true">
+            {t('loom.strip.vol')}
+          </span>
         </div>
 
         <div className="loom-mixer__eq">
           <Knob
-            label={t('mixer.trim')}
+            label={t('loom.strip.trim')}
+            ariaLabel={t('mixer.trim')}
             size="s"
             accent={deckId}
             value={knobFromTrimDb(channel.trim.db)}
@@ -268,7 +273,8 @@ function LoomDeck({
           {EQ_DISPLAY_ORDER.map((band) => (
             <Knob
               key={band}
-              label={t(`deck.eq.${band}`)}
+              label={t(`loom.strip.${band}`)}
+              ariaLabel={t(`deck.eq.${band}`)}
               size="s"
               accent={deckId}
               value={channel.eq[band]}
@@ -285,7 +291,8 @@ function LoomDeck({
             onChange={handleFx}
           />
           <Knob
-            label={t('deck.fx.amount')}
+            label={t('loom.strip.fx')}
+            ariaLabel={t('deck.fx.amount')}
             size="s"
             accent={deckId}
             value={deck.fx.amount}

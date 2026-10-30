@@ -1092,6 +1092,7 @@ function App() {
           ref={loomRef}
           barSlot={loomBarSlot}
           mediaOpen={mediaOpen}
+          onToggleExplorer={handleMediaToggle}
           deckA={deckA}
           deckB={deckB}
           channels={channels}

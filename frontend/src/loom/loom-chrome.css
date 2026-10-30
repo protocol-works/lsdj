@@ -1,0 +1,275 @@
+/* The loom theme's chrome (`mockups/loom/`): the ui/* primitives' skin and
+   the slim header. Imported by loom.css. Primitive rules sit
+   under `:where([data-theme='loom'])` so they only outrank the primitives'
+   own rules, never a placement rule in a loom file. */
+
+/* ---- primitives in the loom theme ---- */
+
+/* The mockup's `.tbtn`: a quiet mono button that lights lime. */
+:where([data-theme='loom']) .ui-button {
+  font: 400 10.5px var(--font-mono);
+  letter-spacing: 0.08em;
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-text) 2%, transparent);
+  color: var(--color-text-muted);
+}
+
+:where([data-theme='loom']) .ui-button:not(:disabled):hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+:where([data-theme='loom']) .ui-button--lit,
+:where([data-theme='loom']) .ui-button--primary {
+  border-color: transparent;
+  background: var(--color-cue);
+  color: var(--color-on-accent);
+}
+
+:where([data-theme='loom']) .ui-button--primary:not(:disabled):hover {
+  background: var(--color-accent-lime-strong);
+  color: var(--color-on-accent);
+}
+
+/* The mockup's `.seg`: hairline-split options in one outlined pill. */
+:where([data-theme='loom']) .ui-segmented {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  box-shadow: none;
+}
+
+:where([data-theme='loom']) .ui-segmented__option {
+  border-right: 1px solid var(--color-border);
+  border-radius: 0;
+  font: 400 10.5px var(--font-mono);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+:where([data-theme='loom']) .ui-segmented__option:last-child {
+  border-right: 0;
+}
+
+:where([data-theme='loom']) .ui-segmented__option--selected {
+  background: color-mix(in srgb, var(--color-text) 14%, transparent);
+  box-shadow: none;
+  color: var(--color-text);
+}
+
+/* Ring knobs: the arc alone, on a faint track. */
+:where([data-theme='loom']) .ui-knob__track {
+  stroke: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+/* ---- header: the slim top line ---- */
+
+/* Full bleed: the header, canvas and mixer meet edge to edge. */
+:root[data-theme='loom'] .app {
+  padding: var(--titlebar-inset) 0 0;
+  gap: 0;
+}
+
+:root[data-theme='loom'] .app > .app__statusbar {
+  min-height: 46px;
+  padding: 0 14px;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-glass-bar);
+  backdrop-filter: blur(12px);
+}
+
+/* One line at any width: the buttons and names keep their size and the
+   clock line gives way (it ellipsises). */
+[data-theme='loom'] .app__statusbar .ui-button {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+[data-theme='loom'] .logo {
+  gap: 10px;
+}
+
+[data-theme='loom'] .logo__mark {
+  width: 24px;
+  height: 24px;
+}
+
+[data-theme='loom'] .logo__word {
+  font: 700 14px var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+[data-theme='loom'] .logo__dj {
+  color: inherit;
+}
+
+[data-theme='loom'] .logo__tag {
+  display: none;
+}
+
+[data-theme='loom'] .app__loom-bar {
+  flex: 1;
+  display: flex;
+}
+
+[data-theme='loom'] .app__statusbar-right {
+  flex: none;
+  margin-left: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The controller: a dot (lime when connected) and its name. */
+[data-theme='loom'] .midi__status {
+  font: 11px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+[data-theme='loom'] .midi__led {
+  width: 7px;
+  height: 7px;
+  background: var(--color-text-silkscreen);
+}
+
+[data-theme='loom'] .midi__led--on {
+  background: var(--color-cue);
+  box-shadow: 0 0 8px var(--color-cue);
+}
+
+[data-theme='loom'] .record .ui-button {
+  gap: 6px;
+}
+
+[data-theme='loom'] .record__dot {
+  width: 6px;
+  height: 6px;
+  border: 0;
+  background: currentColor;
+}
+
+[data-theme='loom'] .record--on .ui-button {
+  border-color: transparent;
+  background: var(--color-led-danger);
+  color: var(--color-text);
+}
+
+[data-theme='loom'] .record--on .record__dot {
+  background: currentColor;
+}
+
+/* The loom's part of the line: name · date, saved, menu, explorer, the
+   view's tools, the status, and the clock centred in what is left. */
+.loom-bar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.loom-bar__name {
+  flex: none;
+  display: flex;
+  align-items: center;
+  font: 12.5px var(--font-ui);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.loom-bar__name .ui-field {
+  flex: none;
+}
+
+/* Reads as text; a hover or focus shows it is editable. */
+.loom-bar__name .ui-field__input {
+  field-sizing: content;
+  min-width: 3ch;
+  max-width: 16rem;
+  height: auto;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+}
+
+.loom-bar__name .ui-field__input:hover,
+.loom-bar__name .ui-field__input:focus {
+  outline: none;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.loom-bar__saved {
+  flex: none;
+  min-width: 52px;
+  font: 10px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  color: var(--color-text-silkscreen);
+  white-space: nowrap;
+}
+
+.loom-bar__tools {
+  display: contents;
+}
+
+.loom-bar__status {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px var(--font-mono);
+  color: var(--color-led-warn);
+}
+
+.loom-bar__status:empty {
+  display: none;
+}
+
+.loom-bar__clock {
+  min-width: 0;
+  margin-inline: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.loom-bar__clock b {
+  font-weight: 400;
+  color: var(--color-text);
+}
+
+.loom-bar__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: min(20rem, calc(100vw - 1rem));
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-m);
+  background: var(--color-surface-raised);
+  font: 400 var(--text-s) var(--font-ui);
+  color: var(--color-text);
+}
+
+.loom-bar__confirm p {
+  margin: 0;
+}
+
+.loom-bar__confirm-actions {
+  display: flex;
+  gap: var(--space-2);
+}

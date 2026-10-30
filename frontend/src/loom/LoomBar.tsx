@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useEffect, useRef, useState } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
 
 import { ActionMenu } from '../ui/ActionMenu'
 import { AnchoredPanel } from '../ui/AnchoredPanel'
@@ -10,6 +10,8 @@ import './loom.css'
 
 export type LoomBarProps = {
   name: string
+  /** When the loom was made (epoch ms), shown after its name. */
+  createdAt: number
   currentId: string
   saved: 'saved' | 'saving'
   /** A refusal or failure line; the owner clears it. */
@@ -21,13 +23,28 @@ export type LoomBarProps = {
   onOpen: (id: string) => void
   onDuplicate: () => void
   onDelete: () => void
+  explorerOpen: boolean
+  onToggleExplorer: () => void
+  /** Receives the bar's slot for the view's zoom and new-thread buttons. */
+  toolsRef: (element: HTMLElement | null) => void
+  /** The clock line: a deck is playing (the clock starts at the first play
+   * and counts on through pauses), the master tempo, and the ready and
+   * rendering node counts. */
+  playing: boolean
+  bpm: number
+  threads: number
+  weaving: number
 }
 
-/** The loom chrome in the top bar (plan decision 13): the name (commits on
- * blur or Enter), a quiet saved mark, the loom menu, and the status line. The
- * loom saves itself, so there is no save button. */
+const twoDigits = (value: number) => String(value).padStart(2, '0')
+
+/** The loom chrome in the top bar (plan decision 13, the mockup's slim
+ * line): the name (commits on blur or Enter) and its date, a quiet saved
+ * mark, the loom menu, the explorer toggle, the view's tools, the status and
+ * the clock line. The loom saves itself, so there is no save button. */
 export function LoomBar({
   name,
+  createdAt,
   currentId,
   saved,
   status,
@@ -37,8 +54,15 @@ export function LoomBar({
   onOpen,
   onDuplicate,
   onDelete,
+  explorerOpen,
+  onToggleExplorer,
+  toolsRef,
+  playing,
+  bpm,
+  threads,
+  weaving,
 }: LoomBarProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const rootRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState(name)
   const [seededName, setSeededName] = useState(name)
@@ -49,11 +73,25 @@ export function LoomBar({
     setDraft(name)
   }
 
+  // The set clock: from the first play, ticking once a second.
+  const startedAt = useRef<number | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!playing && startedAt.current === null) return
+    startedAt.current ??= Date.now()
+    const timer = setInterval(
+      () => setElapsed(Math.floor((Date.now() - (startedAt.current ?? Date.now())) / 1000)),
+      1000,
+    )
+    return () => clearInterval(timer)
+  }, [playing])
+
   const commit = () => {
     if (draft.trim() && draft.trim() !== name) onRename(draft)
     else setDraft(name)
   }
   const others = looms.filter((loom) => loom.id !== currentId)
+  const created = new Date(createdAt)
 
   return (
     <div ref={rootRef} className="loom-bar">
@@ -69,6 +107,12 @@ export function LoomBar({
             if (event.key === 'Enter' || event.key === 'Escape') event.currentTarget.blur()
           }}
         />
+        <span className="loom-bar__created">
+          {t('loom.bar.created', {
+            day: created.getDate(),
+            month: created.toLocaleDateString(i18n.language, { month: 'short' }),
+          })}
+        </span>
       </div>
       <span className="loom-bar__saved">{t(saved === 'saved' ? 'loom.bar.saved' : 'loom.bar.saving')}</span>
       <ActionMenu
@@ -80,8 +124,20 @@ export function LoomBar({
           { label: t('loom.bar.delete'), onSelect: () => setPanel('delete'), danger: true },
         ]}
       />
+      <Button aria-pressed={explorerOpen} onClick={onToggleExplorer}>
+        {t('loom.bar.explorer')}
+      </Button>
+      <span ref={toolsRef} className="loom-bar__tools" />
       <span className="loom-bar__status" role="status">
         {status}
+      </span>
+      <span className="loom-bar__clock">
+        <Trans
+          i18nKey="loom.bar.clock"
+          count={threads}
+          values={{ time: `${twoDigits(Math.floor(elapsed / 60))}:${twoDigits(elapsed % 60)}`, bpm: bpm.toFixed(1), weaving }}
+          components={{ b: <b /> }}
+        />
       </span>
       <AnchoredPanel
         open={panel === 'open'}

@@ -1,0 +1,399 @@
+/* ---- nodes (imported by loom.css) ---- */
+
+/* A glass card tinted by its key's hue (280, the mockup's violet, when the
+   key is unknown): hue-tinted hairline, a gradient wash over the glass, a
+   soft drop shadow. */
+.loom-node {
+  --loom-node-hue: 280;
+  --loom-node-tint: hsl(var(--loom-node-hue), 90%, 72%);
+  position: absolute;
+  height: var(--loom-node-height);
+  border: 1px solid hsla(var(--loom-node-hue), 80%, 75%, 0.28);
+  border-radius: var(--radius-m);
+  background:
+    linear-gradient(
+      135deg,
+      hsla(var(--loom-node-hue), 75%, 60%, 0.22),
+      hsla(calc(var(--loom-node-hue) + 50), 75%, 50%, 0.08)
+    ),
+    var(--color-glass);
+  backdrop-filter: blur(8px);
+  box-shadow:
+    0 12px 30px -18px var(--color-shadow),
+    inset 0 1px 0 color-mix(in srgb, var(--color-text) 8%, transparent);
+  transition: box-shadow 0.25s, transform 0.15s;
+  cursor: pointer;
+}
+
+.loom-node:hover,
+.loom-node:focus-visible {
+  transform: translateY(-1px);
+  box-shadow:
+    0 14px 34px -16px var(--color-shadow),
+    0 0 0 1px hsla(var(--loom-node-hue), 80%, 75%, 0.35);
+  outline: none;
+}
+
+.loom-node--selected,
+.loom-node--selected:hover {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--color-text) 55%, transparent),
+    0 14px 34px -16px var(--color-shadow);
+}
+
+.loom-node--on-a,
+.loom-node--on-a:hover {
+  border-color: var(--color-deck-a);
+  box-shadow: 0 0 26px -4px var(--color-deck-a), inset 0 0 0 1px var(--color-deck-a);
+}
+
+.loom-node--on-b,
+.loom-node--on-b:hover {
+  border-color: var(--color-deck-b);
+  box-shadow: 0 0 26px -4px var(--color-deck-b), inset 0 0 0 1px var(--color-deck-b);
+}
+
+.loom-node--q-a {
+  border-style: dashed;
+  border-color: var(--color-deck-a);
+}
+
+.loom-node--q-b {
+  border-style: dashed;
+  border-color: var(--color-deck-b);
+}
+
+/* Cued: a ring of colour 5 px outside the card (it turns with motion on).
+   `::after`, since a tied node's beat glow owns `::before`. */
+@property --loom-ring-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.loom-node--cued::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  padding: 2px;
+  border-radius: calc(var(--radius-m) + 5px);
+  background: conic-gradient(
+    from var(--loom-ring-angle),
+    var(--color-cue),
+    var(--color-deck-b),
+    var(--color-deck-a),
+    var(--color-aurora-pink),
+    var(--color-cue)
+  );
+  -webkit-mask:
+    linear-gradient(var(--color-shadow) 0 0) content-box,
+    linear-gradient(var(--color-shadow) 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.loom-node--ghost {
+  border-style: dashed;
+  color: var(--color-text-muted);
+  background:
+    linear-gradient(
+        110deg,
+        color-mix(in srgb, var(--color-text) 3%, transparent) 30%,
+        color-mix(in srgb, var(--color-text) 13%, transparent) 50%,
+        color-mix(in srgb, var(--color-text) 3%, transparent) 70%
+      )
+      0 0 / 200% 100%,
+    var(--color-glass);
+  animation: loom-shimmer 1.4s linear infinite;
+}
+
+.loom-node--failed {
+  border-color: var(--color-led-danger);
+}
+
+.loom-node--missing {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+
+@keyframes loom-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loom-node--ghost {
+    animation: none;
+  }
+}
+
+/* The envelope spans the whole node so a click, the playhead and the cue
+   marker all map the same fraction of the body. */
+.loom-node__wave {
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 100%;
+  height: 24px;
+  cursor: crosshair;
+}
+
+/* A 24 px band: the hue-tinted peaks under a white RMS core. */
+.loom-node__peaks {
+  fill: var(--loom-node-tint);
+  opacity: 0.5;
+}
+
+.loom-node__body {
+  fill: var(--color-wave-high);
+  opacity: 0.72;
+  mix-blend-mode: screen;
+}
+
+.loom-node--ghost .loom-node__wave {
+  opacity: 0.15;
+}
+
+.loom-node__head {
+  position: absolute;
+  left: 12px;
+  right: 10px;
+  bottom: 9px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.loom-node__prompt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: 600 12.5px var(--font-ui);
+  letter-spacing: 0.01em;
+  color: var(--color-text);
+}
+
+.loom-node__meta {
+  flex: none;
+  font: 10.5px var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.loom-node--failed .loom-node__meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-led-danger);
+}
+
+.loom-node--tight .loom-node__meta {
+  display: none;
+}
+
+.loom-node--tight .loom-node__prompt {
+  font-size: 11px;
+}
+
+.loom-node--tiny .loom-node__head {
+  display: none;
+}
+
+.loom-node--tiny .loom-node__wave {
+  top: 19px;
+}
+
+.loom-node__handle {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  z-index: 2;
+  width: 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-text) 50%, transparent);
+  opacity: 0;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.loom-node__handle--in {
+  left: 2px;
+}
+
+.loom-node__handle--out {
+  right: 2px;
+}
+
+.loom-node:hover .loom-node__handle,
+.loom-node--selected .loom-node__handle {
+  opacity: 0.45;
+}
+
+.loom-node .loom-node__handle:hover {
+  opacity: 1;
+}
+
+.loom-node .loom-node__handle--set {
+  opacity: 0.9;
+  background: var(--color-cue);
+  box-shadow: 0 0 8px var(--color-cue);
+}
+
+.loom-node__cue-point {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-cue);
+  box-shadow: 0 0 8px var(--color-cue);
+  pointer-events: none;
+}
+
+.loom-node__cue-label {
+  position: absolute;
+  left: 2px;
+  top: calc(100% + 6px);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--color-cue);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.loom-node__progress {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-border);
+}
+
+.loom-node__progress i {
+  display: block;
+  height: 100%;
+  background: var(--color-cue);
+  box-shadow: 0 0 8px var(--color-cue);
+  transition: width 0.2s linear;
+}
+
+/* Sits flush on the node's top edge so the hover never drops in a gap. */
+.loom-node__tools {
+  position: absolute;
+  right: 4px;
+  bottom: calc(100% - 1px);
+  /* Over the shuttle tags and the sticky ruler: the tools are what the
+     pointer is reaching for. */
+  z-index: 7;
+  display: none;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.loom-node:hover .loom-node__tools,
+.loom-node:focus-within .loom-node__tools,
+.loom-node--selected .loom-node__tools {
+  display: flex;
+}
+
+.loom-node__tools .ui-button {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: 11px var(--font-mono);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.loom-node__tools .ui-button:hover {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.loom-node__tools .ui-button--lit,
+.loom-node__tools .ui-button--lit:hover {
+  background: var(--color-cue);
+  color: var(--color-on-accent);
+}
+
+/* Siblings from one weave, waiting for a pick. */
+.loom__takes {
+  position: absolute;
+  width: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-text) 22%, transparent);
+  border-right: 0;
+  border-radius: 8px 0 0 8px;
+  pointer-events: none;
+}
+
+.loom__takes span {
+  position: absolute;
+  left: -2px;
+  bottom: calc(100% + 3px);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* "What next?" after every leaf: a dashed card with a ⊕; amber while a deck
+   holds there. */
+.loom__slot {
+  position: absolute;
+  height: var(--loom-node-height);
+}
+
+.loom__slot .ui-button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 0 14px;
+  overflow: hidden;
+  border: 1px dashed color-mix(in srgb, var(--color-text) 18%, transparent);
+  border-radius: var(--radius-m);
+  background: transparent;
+  font: 13px var(--font-ui);
+  letter-spacing: normal;
+  text-align: left;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  transition: border-color 0.2s;
+}
+
+.loom__slot .ui-button:hover {
+  border-color: var(--color-cue);
+  color: var(--color-text);
+}
+
+.loom__plus {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.loom__slot--hot .ui-button {
+  border-color: var(--color-led-warn);
+  color: var(--color-led-warn);
+}
+

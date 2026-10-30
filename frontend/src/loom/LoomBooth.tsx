@@ -15,10 +15,10 @@ import { PX_DEFAULT } from './layout'
 import { LoomBar } from './LoomBar'
 import { LoomMixer, type LoomDeckPanel } from './LoomMixer'
 import { LoomScope } from './LoomScope'
-import { nodeById } from './loomState'
+import { nodeById, type LoomNode } from './loomState'
 import { LoomView, type Peaks } from './LoomView'
 import { deckSeam } from './schedule'
-import { barAt, HOLD_WARN_BARS, nodeStartSeconds } from './timing'
+import { barAt, DEFAULT_BPM, HOLD_WARN_BARS, nodeStartSeconds } from './timing'
 import { useLoom, type LoomControls } from './useLoom'
 import { useBeatPulse } from './visuals'
 
@@ -42,6 +42,8 @@ export type LoomBoothProps = {
   barSlot: HTMLElement | null
   /** The media explorer is open (its rating keys own `0`). */
   mediaOpen: boolean
+  /** The bar's explorer button: App's media drawer toggle. */
+  onToggleExplorer: () => void
 }
 
 /** What App reaches through the booth's ref: the explorer's →A/→B and an MCP
@@ -71,6 +73,7 @@ export function LoomBooth({
   performanceVisuals,
   barSlot,
   mediaOpen,
+  onToggleExplorer,
 }: LoomBoothProps & { ref?: Ref<LoomBoothHandle> }) {
   const { t } = useTranslation()
   const engine = useAudioEngine()
@@ -79,6 +82,8 @@ export function LoomBooth({
   const { state, loadSong, beatLoop, stepLoop } = loom
   const [pxPerBar, setPxPerBar] = useState(PX_DEFAULT)
   const [scrollX, setScrollX] = useState(0)
+  // The view's zoom and new-thread buttons render in the bar.
+  const [toolsSlot, setToolsSlot] = useState<HTMLElement | null>(null)
 
   useImperativeHandle(ref, () => ({ loadSong }), [loadSong])
 
@@ -138,6 +143,13 @@ export function LoomBooth({
   const statusOf = (controls: DeckControls) =>
     controls.track && { position: controls.track.position, playing: controls.track.playing, loop: controls.track.loop }
 
+  // The bar's clock line: the playing deck's tempo (A first), the counts.
+  const onAir = deckA.track?.playing ? 'a' : deckB.track?.playing ? 'b' : null
+  const airTrack = onAir === 'a' ? deckA.track : onAir === 'b' ? deckB.track : null
+  const airNode = onAir ? nodeById(state.loom.nodes, state.decks[onAir].nodeId) : null
+  const masterBpm = airNode && airTrack ? airNode.bpm * airTrack.rate : DEFAULT_BPM
+  const countOf = (status: LoomNode['status']) => state.loom.nodes.filter((node) => node.status === status).length
+
   return (
     <section
       ref={boothRef}
@@ -153,6 +165,19 @@ export function LoomBooth({
         loom.dropSong(data)
       }}
     >
+      {/* The aurora and grain under the booth; loom.css shows them only with
+          performance visuals on and motion allowed. */}
+      <div className="loom-aurora" aria-hidden="true">
+        <i className="loom-aurora__wash" />
+        <i className="loom-aurora__wash" />
+        <i className="loom-aurora__wash" />
+        <i className="loom-aurora__wash" />
+        <i className="loom-aurora__glow loom-aurora__glow--a" />
+        <i className="loom-aurora__glow loom-aurora__glow--b" />
+        <i className="loom-aurora__spiral" />
+        <i className="loom-aurora__spiral loom-aurora__spiral--reverse" />
+      </div>
+      <div className="loom-grain" aria-hidden="true" />
       <LoomView
         state={state}
         pxPerBar={pxPerBar}
@@ -176,6 +201,7 @@ export function LoomBooth({
         onSelect={loom.select}
         renderAhead={renderAhead}
         explorerOpen={mediaOpen}
+        toolsSlot={toolsSlot}
       />
       <LoomMixer
         channels={channels}
@@ -195,6 +221,7 @@ export function LoomBooth({
         createPortal(
           <LoomBar
             name={state.loom.name}
+            createdAt={state.loom.createdAt}
             currentId={state.loom.id}
             saved={loom.saved}
             status={loom.status}
@@ -204,6 +231,13 @@ export function LoomBooth({
             onOpen={(id) => void loom.openLoom(id)}
             onDuplicate={loom.duplicateLoom}
             onDelete={() => void loom.deleteLoom()}
+            explorerOpen={mediaOpen}
+            onToggleExplorer={onToggleExplorer}
+            toolsRef={setToolsSlot}
+            playing={onAir !== null}
+            bpm={masterBpm}
+            threads={countOf('ready')}
+            weaving={countOf('rendering')}
           />,
           barSlot,
         )}

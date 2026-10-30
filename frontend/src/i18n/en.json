@@ -617,9 +617,19 @@
       "autoHint": "Autopilot: take the first rendered child when nothing is tied",
       "late": "{{seconds}} s late",
       "bar": "bar {{bar}} / {{length}}",
-      "loop": "Loop",
       "bounce": "Bounce what this deck played to songs",
       "nothingTied": "Nothing tied — tie a node to this deck"
+    },
+    "strip": {
+      "vol": "vol",
+      "trim": "trim",
+      "high": "hi",
+      "mid": "mid",
+      "low": "low",
+      "fx": "fx",
+      "loop": "loop",
+      "cueMix": "cue mix",
+      "master": "master"
     },
     "ruler": "Drag up or down to zoom, sideways to scroll",
     "view": {
@@ -631,8 +641,9 @@
       "fitHint": "Fit the whole loom (Z)",
       "newThread": "Weave a new thread",
       "newThreadMark": "+ thread",
-      "whatNext": "+ What next?",
-      "holding": "+ {{deck}} is holding — what next?"
+      "plus": "+",
+      "whatNext": "What next?",
+      "holding": "{{deck}} is holding — what next?"
     },
     "node": {
       "queued": "queued · {{time}}",
@@ -732,7 +743,11 @@
       "confirm": "Delete",
       "cancel": "Cancel",
       "defaultName": "Untitled loom",
-      "copyName": "{{name}} copy"
+      "copyName": "{{name}} copy",
+      "created": "· {{day}} {{month}}",
+      "explorer": "☰ explorer",
+      "clock_one": "<b>{{time}}</b> · master <b>{{bpm}}</b> bpm · <b>{{count}}</b> thread · <b>{{weaving}}</b> weaving",
+      "clock_other": "<b>{{time}}</b> · master <b>{{bpm}}</b> bpm · <b>{{count}}</b> threads · <b>{{weaving}}</b> weaving"
     },
     "status": {
       "saveFailed": "Autosave failed: {{message}}",

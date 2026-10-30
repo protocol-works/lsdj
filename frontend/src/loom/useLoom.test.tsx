@@ -479,6 +479,7 @@ describe('LoomBooth', () => {
       performanceVisuals: false,
       barSlot,
       mediaOpen: false,
+      onToggleExplorer: vi.fn(),
     }
     const tree = (p: LoomBoothProps) => (
       <AudioEngineProvider engine={engine}>
