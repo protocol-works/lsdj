@@ -45,8 +45,6 @@ export type LoomDeckPanel = {
   onBounce?: () => void
   /** A loom node dragged onto the panel (`text/plain` = `loom:<id>`): tie it. */
   onDropNode?: (id: string) => void
-  /** The deck's beat clock, for the badge pulse (visuals pass). */
-  getBeat?: () => { periodSeconds: number; beatAtContext: number } | null
 }
 
 export type LoomMixerProps = {

@@ -20,3 +20,7 @@ Object.defineProperty(globalThis, 'localStorage', {
 })
 
 beforeEach(() => localStorage.clear())
+
+// jsdom has no canvas: its getContext returns null after printing a "not
+// implemented" notice per call. Same null, no noise; a test that draws spies.
+HTMLCanvasElement.prototype.getContext = () => null

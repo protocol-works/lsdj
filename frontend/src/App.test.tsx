@@ -2,7 +2,7 @@
  * chains (audio bus + persistence) are owned by App and must hold from
  * both the on-screen control and the hardware intent path. */
 
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { createElement, type ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -132,17 +132,23 @@ describe('App crossfade ownership', () => {
   })
 })
 
+// The DJ booth is ~640 nodes with ~90 labelable controls, and after any DOM
+// change jsdom rebuilds every control's live `labels` list by walking the
+// whole document: a `*ByLabelText` there costs ~200 ms (seconds under load).
+// The drawer and theme checks ask by role and name, which names only the
+// candidates of that role.
 describe('App settings drawer', () => {
   it('hosts a per-deck model picker (moved out of the deck columns)', () => {
     const engine = makeEngine()
     renderApp(engine)
     // The decks no longer carry a model picker; it lives in settings now.
-    expect(screen.queryByLabelText('Deck A')).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Deck A' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
-    expect(screen.getByLabelText('Deck A')).toBeInTheDocument()
-    expect(screen.getByLabelText('Deck B')).toBeInTheDocument()
+    const settings = within(screen.getByRole('dialog', { name: 'Settings' }))
+    expect(settings.getByRole('combobox', { name: 'Deck A' })).toBeInTheDocument()
+    expect(settings.getByRole('combobox', { name: 'Deck B' })).toBeInTheDocument()
   })
 
   it('defaults performance visuals on and persists the switch across remounts', () => {
@@ -201,12 +207,12 @@ describe('App theme', () => {
   it('picking DJ restores the deck columns', () => {
     updateAppSettings({ theme: 'loom' })
     renderApp(makeEngine())
-    expect(screen.getByLabelText('Loom')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Loom' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
     fireEvent.click(screen.getByRole('radio', { name: 'DJ' }))
 
-    expect(screen.queryByLabelText('Loom')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Loom' })).toBeNull()
     expect(screen.getByRole('region', { name: 'Deck a' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Deck b' })).toBeInTheDocument()
     expect(loadAppSettings().theme).toBe('dj')

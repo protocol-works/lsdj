@@ -33,6 +33,24 @@ describe('SegmentedControl', () => {
     expect(advanced).toHaveFocus()
   })
 
+  it('makes the first option the tab stop when none is checked', () => {
+    render(
+      <SegmentedControl
+        label="Loop"
+        value=""
+        options={[
+          { value: '4', label: '4' },
+          { value: '8', label: '8' },
+        ]}
+        onChange={() => {}}
+      />,
+    )
+    const four = screen.getByRole('radio', { name: '4' })
+    expect(four).toHaveAttribute('aria-checked', 'false')
+    expect(four).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('radio', { name: '8' })).toHaveAttribute('tabindex', '-1')
+  })
+
   it('removes every option from interaction when disabled', () => {
     render(
       <SegmentedControl

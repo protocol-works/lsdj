@@ -116,6 +116,41 @@ sidecar. Nothing in the popover needs a new endpoint.
 - **2026-10-30, takes, not flavours.** "Give me three of this prompt, I'll pick"
   beats three auto-varied prompts. Variation in *prompt* is the user's job (the
   chips help); variation in *seed* is the model's.
+- **2026-10-30, a node is a song.** Every render is saved to the songs library,
+  so nodes are rated, tagged and analysed like any song and a loom is a small
+  graph over song files. Discarding a take removes it from the loom and leaves
+  the file in songs: the library is the trash, and there is no undo UI in v1.
+- **2026-10-30, a nominal grid, clamped to the clip.** A loom has one tempo per
+  root (124 BPM unless a dropped song brings its own) and a bar is `240 / bpm`
+  seconds from the node's own bar 0; the detected grid never moves a seam.
+  Every derived end is clamped to the clip's measured duration and a dropped
+  song's bars are floored, so a nominal end never runs past the audio. A
+  render that drifts from its tempo seams off the beat; trim fixes it.
+- **2026-10-30, no drift in v1.** `init_noise_level` is remix mode and its
+  interaction with continue mode is unmeasured, so continuations do not offer
+  it. It comes back as its own follow-up.
+- **2026-10-30, render ahead skips LoRA nodes.** A ≈2 min auto render is not a
+  safety net, so behind a node with a LoRA stack render ahead weaves nothing
+  and the deck tag says `auto skipped (LoRA)`. The warm merge is a later
+  phase.
+- **2026-10-30, looms are files beside the songs.** Each loom is a JSON file
+  in `generated_songs/looms/`, written by the shell; the webview autosaves it
+  and validates it on read. Deck state is never saved.
+- **2026-10-30, a bar menu, not an explorer tab.** The loom's name, a saved
+  mark and a menu (new, open, duplicate, delete) sit in the top bar. The
+  explorer "looms" tab is deferred; the menu is the lazy working version.
+- **2026-10-30, needle drops are immediate.** A click on a playing node's
+  waveform seeks at once; quantised drops are a follow-up. A trim on the node
+  a deck is playing takes effect at the seam: the out-point moves the seam,
+  the in-point only matters on entry.
+- **2026-10-30, bounce joins with a 5 ms crossfade.** Bounce stitches a deck's
+  played path, or a node's path from its root, into one new song. Each join is
+  a 5 ms crossfade over the last 5 ms of the outgoing part and the incoming
+  clip's 5 ms just before its start, the gains summing to one; a part that
+  starts at its clip's first frame has nothing before it and joins hard.
+- **2026-10-30, key hue from the Camelot number.** Each Camelot number is a 30°
+  step on the circle of fifths, and a relative pair shares a hue: 8A/8B
+  (A minor / C major) sits at 0°, as in the mockup's `hue()`.
 
 ## Shuttle rules (settled 2026-10-30)
 
@@ -149,15 +184,6 @@ sidecar. Nothing in the popover needs a new endpoint.
 - **What is a fork, musically?** Children start where the parent ends. Do we
   also want branches that *overlap* (start 8 bars before the parent ends, for
   a blended transition rendered by the model)?
-- **Render ahead with a LoRA.** The auto continuation inherits the parent's
-  stack, so behind a LoRA thread it takes ≈2 min. Drop the stack for the
-  safety net (fast, but a style shift) or wait for the warm-merge fix?
-- **Needle drops.** Clicking the playing node's waveform moves the playhead at
-  once in the mockup. In the app: next beat, next bar, or immediate with a
-  modifier? And does a trim on the node a deck is *playing* take effect now or
-  at the seam?
-- **Discarded takes.** Gone, or a trash the explorer can show? Rendering is
-  expensive enough that "undo keep" probably matters.
 - **Live decks later.** When Magenta RT returns, is a live thread a node with
   no end (the earlier mockup) or a separate deck type beside the loom?
 - **Hardware.** FLX4 jog = scrub the loom? Pads = the current node's takes or

@@ -50,13 +50,22 @@ MIDI layer. The shuttle rules in the mockup README are part of this decision.
 - **A node is a song.** Every render is saved through `save_generated_song`
   with model `track`; the recipe's `source` marks a continuation. A loom is a
   small graph over song filenames. Discarding a take removes it from the loom
-  and leaves the file in songs: the songs library is the trash.
-- **The nominal grid.** A loom has one tempo per root (124 BPM by default at
-  the first weave; a dropped song uses its registry BPM, else 120). A bar is
-  `240 / bpm` seconds. Seams, loops, cuts and trims snap to that grid from the
-  node's own bar 0; the detected grid is not used for scheduling. Every
+  and leaves the file in songs: the songs library is the trash. Keep closes a
+  take group and is never refused: every sibling take that no deck is on or
+  tied to, and that has no children, is discarded; a protected sibling stays
+  as an ordinary node.
+- **The nominal grid.** A loom has one tempo per root. One default, 124 BPM,
+  serves both a first weave and a dropped song with no registry BPM; a dropped
+  song otherwise keeps its registry BPM. A bar is `240 / bpm` seconds. Seams,
+  loops, cuts and trims snap to that grid from the node's own bar 0; the
+  detected grid is not used for scheduling. Every
   derived end is clamped to the real clip, and a dropped song's bar count is
   floored, so a nominal end never runs past the audio.
+- **Trim moves the seam, never under a branch.** The in-point can always
+  move and only matters when a deck enters the node. The out-point is the
+  seam, so trimming the node a deck is playing takes effect there. A node
+  with children keeps its out-point (a refusal line says why): its children
+  were rendered from the audio up to it.
 - **Continue over the parent's last four bars.** A child is rendered in
   continue mode from the parent's last four bars up to its out-point. Its bar
   0 sits after the kept tail, so by default a child starts exactly where its
@@ -86,17 +95,25 @@ MIDI layer. The shuttle rules in the mockup README are part of this decision.
 - **Cue from a bar.** `audition_song_clip(name, start, end)` decodes the song
   shell-side and feeds the existing audition path, so no audio crosses IPC
   and cueing never touches the master.
-- **Render ahead.** A setting, on by default: when an on-air deck lands on a
-  leaf with nothing rendering, one `auto` child (same prompt, 16 bars) is
-  woven behind it, so a hold is a choice rather than an accident. Nodes with a
-  LoRA stack are skipped and the deck says so.
+- **Render ahead.** A setting, on by default: when a playing deck (its track
+  is playing; the M10 on-air flag plays no part) lands on a leaf with nothing
+  rendering, one `auto` child (same prompt, 16 bars) is woven behind it, so a
+  hold is a choice rather than an accident. Nodes with a LoRA stack are
+  skipped and the deck says so.
 - **Stable Audio 3 only, for now.** The loom is playback-only. A Magenta RT
   deck is an endless stream with no seam to branch at; live threads come back
   as a later layer.
 - **The hardware mapping is unchanged.** Every FLX4 intent keeps its meaning
-  through `useDeck`; in Loom theme the 4 BEAT/EXIT intent (`track_beat_loop`)
-  runs the loom's nominal-grid loop instead of the grid-required beat loop.
-  No byte changes; loom-specific pads and jog are not built.
+  through `useDeck`, with one theme gate: in Loom theme App hands the loop
+  section to the loom. 4 BEAT/EXIT (`track_beat_loop`) starts a four-bar
+  loom loop on the nominal grid instead of the grid-required beat loop, or,
+  while any loop runs, releases it; CUE/LOOP CALL ◄/►
+  (`track_loop_halve` / `track_loop_double`) step a running loom loop
+  4 → 8 → 16, clamped. LOOP IN and OUT keep their engine behaviour: a region
+  the scheduler did not place is a user loop, and the scheduler places
+  nothing until it is gone. BEAT SYNC stays unmapped on the FLX4; the loom
+  uses the on-screen SYNC. No byte changes; loom-specific pads and jog are
+  not built.
 
 ## Consequences
 
@@ -104,8 +121,9 @@ MIDI layer. The shuttle rules in the mockup README are part of this decision.
   `clear_queued_track`, `queued` and `swaps` in `TrackStatus`). A Rust test
   proves the frame after a switch is the queued clip's start frame, with no
   zero frame between and `assert_no_alloc` still armed.
-- The shell gains `looms.rs`, `audition_song_clip`, and the
-  queue/clear/promote track commands. The webview gains `frontend/src/loom/`:
+- The shell gains `looms.rs`, `audition_song_clip`, `stitch_songs` (bounce a
+  played path into one song), and the queue/clear/promote track commands.
+  The webview gains `frontend/src/loom/`:
   a pure reducer, nominal-grid timing, layout, scheduler and render queue,
   plus the view, the mixer bar and the loom bar.
 - The DJ theme is untouched and stays the default until the loom has been
@@ -123,7 +141,9 @@ MIDI layer. The shuttle rules in the mockup README are part of this decision.
   tags are how keepers are found. There is no undo for a discard beyond "the
   song is still in the library".
 - A relaunch reopens the newest loom with every node and the decks stopped;
-  →A on any node resumes the set.
+  →A on any node resumes the set. A node saved while queued or rendering
+  reopens as failed, and its retry weaves it again, so no node waits on a
+  job that died with the app.
 - The new track's analysis (synced echo clock, zoom bands) follows a swap by
   at most one 250 ms poll. The audio does not wait for it.
 - The shuttle rules' blinking FLX4 play LED at HOLD is not part of v1; the

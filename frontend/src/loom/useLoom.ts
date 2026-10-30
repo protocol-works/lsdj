@@ -1,5 +1,5 @@
 /** The loom's owner in the booth (plan §7): loom state, autosave, the render
- * queue, and the shuttle — every deck poll turns into `planDeck` and the plan
+ * queue (`useRenderQueue`), and the shuttle — every deck poll turns into `planDeck` and the plan
  * is applied to the engine only when it changed, so a 4 Hz poll costs a
  * comparison. Gestures fold their actions into `stateRef` at once (the next
  * gesture sees them) and React renders the copy. Deck runtime is never saved. */
@@ -11,11 +11,10 @@ import { useAudioEngine } from '../audio/engineContext'
 import { invoke, subscribeLibraryChanged } from '../audio/nativeEngine'
 import type { DeckId, TrackSource } from '../audio/types'
 import type { DeckControls } from '../deck/useDeck'
-import { postSa3Generate, postSa3GenerateWithSource } from '../generation/client'
-import { saveGeneratedSong, type SongEntry } from '../generation/library'
+import type { SongEntry } from '../generation/library'
 import { mintSa3Seed, SA3_SEED_MAX } from '../generation/songGeneration'
 import type { LoopBars } from './LoomMixer'
-import type { RenderProgress, WeaveForm } from './LoomView'
+import type { WeaveForm } from './LoomView'
 import {
   auditionSongClip,
   deleteLoom as deleteLoomFile,
@@ -38,9 +37,9 @@ import {
   type LoomNode,
 } from './loomState'
 import { renderAheadCandidate } from './renderAhead'
-import { createRenderQueue, type RenderQueue } from './renderQueue'
 import { cutPlan, planDeck, type Region } from './schedule'
 import { barAt, barStartSeconds, DEFAULT_BARS, DEFAULT_BPM, nodeStartSeconds } from './timing'
+import { useRenderQueue } from './useRenderQueue'
 
 const AUTOSAVE_MS = 700
 const STATUS_MS = 6000
@@ -77,7 +76,6 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
   const { t } = useTranslation()
   const engine = useAudioEngine()
   const [state, setState] = useState(() => initialLoomState(emptyLoom('', 0)))
-  const [progress, setProgress] = useState<Record<string, RenderProgress>>({})
   const [savedLoom, setSavedLoom] = useState<Loom | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [looms, setLooms] = useState<LoomSummary[]>([])
@@ -114,32 +112,7 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
     setStatus(latest.current.t(key, options))
   }, [])
 
-  // Made on first use, outside render: one queue for the hook's lifetime.
-  const queueRef = useRef<RenderQueue | null>(null)
-  const renderQueue = useCallback(() => {
-    const clearProgress = (id: string) =>
-      setProgress((current) => {
-        const next = { ...current }
-        delete next[id]
-        return next
-      })
-    queueRef.current ??= createRenderQueue({
-      sourceClip: (file, start, end) => invoke<ArrayBuffer>('song_source_clip', { name: file, start, end }),
-      generate: postSa3Generate,
-      generateWithSource: postSa3GenerateWithSource,
-      save: saveGeneratedSong,
-      onDone: (id, file, durationSeconds) => {
-        clearProgress(id)
-        act({ type: 'rendered', id, file, durationSeconds })
-      },
-      onError: (id, error) => {
-        clearProgress(id)
-        act({ type: 'render_failed', id, error })
-      },
-      onProgress: (id, elapsed, eta) => setProgress((current) => ({ ...current, [id]: { elapsed, eta } })),
-    })
-    return queueRef.current
-  }, [act])
+  const { progress, pending } = useRenderQueue(state.loom, act)
 
   // Registry facts the loom shows: keys as the analysis lands, and files gone
   // from the songs folder (greyed, the rest plays).
@@ -316,7 +289,7 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
 
     /** Render ahead: behind the node a playing deck is on, once per visit. */
     const growAhead = () => {
-      const inFlight = new Set(renderQueue().pending())
+      const inFlight = new Set(pending())
       for (const deck of DECKS) {
         const nodeId = stateRef.current.decks[deck].nodeId
         if (!nodeId || !deckOf(deck).track?.playing || aheadFor.current[deck] === nodeId) continue
@@ -402,6 +375,7 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
     return {
       step,
       growAhead,
+      detach,
       tie,
       untie: (deck: DeckId, id: string) => act({ type: 'untie', deck, id }),
       /** Shift-click or a drop on the shuttle: hand over on the next bar. */
@@ -530,7 +504,7 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
         else newLoom()
       },
     }
-  }, [act, renderQueue, refreshSongs, save, say])
+  }, [act, pending, refreshSongs, save, say])
 
   // Boot: the newest loom, or a fresh one.
   useEffect(() => {
@@ -575,35 +549,15 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
     return () => clearTimeout(timer)
   }, [state.loom, booted, save])
   useEffect(() => () => save(), [save])
+  // Theme → DJ unmounts the booth: no swap stays armed on a deck the loom no
+  // longer drives.
+  useEffect(() => () => gestures.detach(), [gestures])
 
   useEffect(() => {
     if (!status) return
     const timer = setTimeout(() => setStatus(null), STATUS_MS)
     return () => clearTimeout(timer)
   }, [status])
-
-  // The render queue follows the loom: a rendering node gets one job once its
-  // parent is ready (the job reads the parent's file); a node gone from the
-  // loom (a discarded take) drops its job.
-  useEffect(() => {
-    const { nodes } = state.loom
-    const live = new Set(nodes.map((n) => n.id))
-    const queue = renderQueue()
-    const pending = new Set(queue.pending())
-    for (const id of pending) if (!live.has(id)) queue.cancel(id)
-    for (const node of nodes) {
-      if (node.status !== 'rendering' || pending.has(node.id)) continue
-      const parent = nodeById(nodes, node.parentId)
-      if (parent && parent.status !== 'ready') {
-        if (parent.status !== 'rendering') {
-          act({ type: 'render_failed', id: node.id, error: latest.current.t('loom.status.parentFailed') })
-        }
-        continue
-      }
-      const takes = node.takeGroup ? nodes.filter((n) => n.takeGroup === node.takeGroup) : []
-      queue.enqueue({ nodeId: node.id, node, parent, take: takes.length > 1 ? takes.indexOf(node) + 1 : undefined })
-    }
-  }, [state.loom, renderQueue, act])
 
   // The shuttle: every deck poll (and every loom change) re-plans both decks.
   const trackA = deckA.track
@@ -619,6 +573,8 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
     status,
     looms,
     saved: !booted || state.loom === savedLoom ? ('saved' as const) : ('saving' as const),
+    /** A line in the loom bar for 6 s; the newest line replaces the last. */
+    say,
     ...gestures,
   }
 }

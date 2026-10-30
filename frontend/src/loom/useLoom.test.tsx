@@ -287,6 +287,16 @@ describe('useLoom shuttle', () => {
     expect(m.decks.a.clearQueuedTrack).toHaveBeenCalledTimes(2)
   })
 
+  it('clears an armed swap when the booth unmounts (Theme → DJ)', async () => {
+    const m = await mount()
+    await m.landOn('a', 'n2')
+    act(() => m.result.current.tie('a', 'n5'))
+    expect(m.decks.a.queueTrack).toHaveBeenCalledTimes(1)
+    m.unmount()
+    expect(m.decks.a.clearQueuedTrack).toHaveBeenCalledTimes(1)
+    expect(m.decks.b.clearQueuedTrack).not.toHaveBeenCalled()
+  })
+
   it('lands the swapped-in node and grows one auto child behind it', async () => {
     const m = await mount({ renderAhead: true })
     await m.landOn('a', 'n5')
@@ -451,7 +461,7 @@ const channel = (): ChannelControls => ({
 })
 
 describe('LoomBooth', () => {
-  function mountBooth(bus: ControlBus) {
+  function mountBooth(bus: ControlBus, barSlot: HTMLElement | null = null) {
     libraryHas(seedLoom())
     const props: LoomBoothProps = {
       deckA: fakeDeck(),
@@ -467,7 +477,7 @@ describe('LoomBooth', () => {
       tempoRange: 0.08,
       renderAhead: false,
       performanceVisuals: false,
-      barSlot: null,
+      barSlot,
       mediaOpen: false,
     }
     const tree = (p: LoomBoothProps) => (
@@ -510,6 +520,26 @@ describe('LoomBooth', () => {
     act(() => bus.publish({ kind: 'track_beat_loop', deck: 'a', beats: 4 }))
     const hold = holdRegion(n2)
     expect(booth.deckA.setTrackLoopRegion).toHaveBeenLastCalledWith(hold.start, hold.end)
+  })
+
+  it('lets a loom status raised after a bounce line replace it in the bar', async () => {
+    const bar = document.body.appendChild(document.createElement('div'))
+    const booth = mountBooth(createControlBus(), bar)
+    await flush()
+    const deckA = screen.getByRole('group', { name: 'Deck a' })
+    fireEvent.drop(deckA, { dataTransfer: { getData: () => 'loom:n2' } })
+    await flush()
+    const n2 = seedLoom().nodes.find((n) => n.id === 'n2')!
+    booth.pollA({ loadId: 1, position: nodeStartSeconds(n2) + 2 * BAR })
+    fireEvent.click(within(deckA).getByRole('button', { name: 'Bounce what this deck played to songs' }))
+    await flush()
+    expect(within(bar).getByRole('status')).toHaveTextContent('The bounce failed: no shell: stitch_songs')
+
+    vi.mocked(booth.props.deckB.loadTrack).mockResolvedValueOnce(false)
+    fireEvent.drop(screen.getByRole('group', { name: 'Deck b' }), { dataTransfer: { getData: () => 'loom:n3' } })
+    await flush()
+    expect(within(bar).getByRole('status')).toHaveTextContent('Deck B could not load')
+    bar.remove()
   })
 
   it('shows the deck status line: the node, bars to an untied seam, the bar it is on', async () => {

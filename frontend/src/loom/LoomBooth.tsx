@@ -50,9 +50,6 @@ export type LoomBoothHandle = {
   loadSong: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
 }
 
-/** How long the bounce line holds in the bar (as `useLoom`'s status). */
-const BOUNCE_STATUS_MS = 6000
-
 const peaks = (file: string, buckets: number) =>
   invoke<Peaks>('library_clip_peaks', { library: 'songs', name: file, buckets })
 
@@ -98,27 +95,22 @@ export function LoomBooth({
   )
 
   // ---- bounce: a path stitched into one library song (plan decision 14) ----
-  const [bounced, setBounced] = useState<string | null>(null)
-  useEffect(() => {
-    if (!bounced) return
-    const timer = setTimeout(() => setBounced(null), BOUNCE_STATUS_MS)
-    return () => clearTimeout(timer)
-  }, [bounced])
+  // Its lines share the loom's status slot, so the newest line wins.
   const [bouncing, setBouncing] = useState(false)
   const bounce = (ids: string[], endAt?: number) => {
     if (bouncing) return
     const plan = pathParts(state, ids, t, endAt)
     if (!plan) {
-      setBounced(t('loom.bounce.empty'))
+      loom.say('loom.bounce.empty')
       return
     }
     setBouncing(true)
-    setBounced(t('loom.bounce.working', { title: plan.title }))
+    loom.say('loom.bounce.working', { title: plan.title })
     stitchSongs(plan)
       .then(
-        (entry) => setBounced(t('loom.bounce.done', { title: entry.title })),
+        (entry) => loom.say('loom.bounce.done', { title: entry.title }),
         (error: unknown) =>
-          setBounced(t('loom.bounce.failed', { message: error instanceof Error ? error.message : String(error) })),
+          loom.say('loom.bounce.failed', { message: error instanceof Error ? error.message : String(error) }),
       )
       .finally(() => setBouncing(false))
   }
@@ -205,7 +197,7 @@ export function LoomBooth({
             name={state.loom.name}
             currentId={state.loom.id}
             saved={loom.saved}
-            status={bounced ?? loom.status}
+            status={loom.status}
             looms={loom.looms}
             onRename={loom.rename}
             onNew={loom.newLoom}
@@ -269,6 +261,5 @@ function deckPanel(
     onSetFx: controls.setFx,
     onSetFxAmount: controls.setFxAmount,
     onDropNode: (id) => loom.tie(deck, id),
-    getBeat: controls.getTrackBeat,
   }
 }

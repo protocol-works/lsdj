@@ -381,9 +381,10 @@ unit-tested; verified by `verify_m25.mjs` and a human checklist.
 
 ## M26 — The loom: a branching playback surface
 
-**Status: 📋 planned (2026-10-30), design mockup done.** The design is
-settled in [`mockups/loom/README.md`](../mockups/loom/README.md) — vocabulary,
-shuttle rules, open questions — and the decisions behind it are
+**Status: 🔶 built (2026-10-30) on `looming`, pending hardware
+verification.** The design is settled in
+[`mockups/loom/README.md`](../mockups/loom/README.md) — vocabulary, shuttle
+rules, open questions — and the decisions behind it are
 [ADR-0038](adr/0038-the-loom-a-branching-playback-surface-as-a-theme.md)
 (Proposed; Accepted once the hardware checklist passes). The loom ships as a
 second **theme** (`DJ | Loom`) over the same engine, mixer, explorer and FLX4
@@ -408,7 +409,8 @@ Scope, ordered by risk:
    render ahead behind an on-air leaf.
 4. **The surface.** Canvas with ties, cuts, trims, loops 4/8/16, cue from a
    bar, DAW-style zoom, a one-strip-per-deck mixer bar; looms autosave
-   beside the songs.
+   beside the songs; bounce stitches a deck's played path, or a node's path
+   from its root, into one new song (`stitch_songs`).
 5. **Show hardening.** Failure drills, relaunch, a prepared loom with its
    LoRA threads pre-rendered, and a silence scan of the master recording
    (`scripts/silence_gaps.py`).
