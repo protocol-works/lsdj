@@ -78,6 +78,11 @@
   gap: 4px;
 }
 
+/* Songs first, as in the mockup: the drawer is mostly for pulling songs in. */
+.loom__drawer .media__tabs .ui-button:nth-child(2) {
+  order: -1;
+}
+
 .loom__drawer .media__tabs .ui-button {
   padding: 5px 10px;
   border: 0;
@@ -170,6 +175,13 @@
 
 /* ---- tab bodies: the forms inset, the lists edge to edge ---- */
 
+/* No compose form in the drawer: the loom generates through "+ thread" and
+   the weave popover, and the mockup's drawer only lists. The DJ tray keeps it.
+   (`.media__generate` wraps the list too, so only the form's rows hide.) */
+.loom__drawer :is(.media__generate-row, .media__generation-options, .media__generation-hint) {
+  display: none;
+}
+
 .loom__drawer :is(.media__generate, .media__folder) {
   gap: 8px;
   padding-top: 10px;
@@ -179,10 +191,6 @@
   :is(.media__generate, .media__folder, .media__songs-list)
   > :not(.media__songs, .media__list, .media__tag-filter) {
   margin-inline: 12px;
-}
-
-.loom__drawer .media__generate-row {
-  flex-wrap: wrap;
 }
 
 /* The song column folds to its Select, as the tray does when narrow. */
