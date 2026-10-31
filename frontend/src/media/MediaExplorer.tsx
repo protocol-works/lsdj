@@ -446,6 +446,20 @@ type MediaExplorerProps = {
  * folder tracks all load onto a deck; the item type decides the deck's
  * mode. The FLX4 rotary browses the visible tab; LOAD loads its
  * highlighted item. */
+/** The row's drag image: a small opaque pill naming the song. Left to itself,
+ * WebKit snapshots the transparent row with the page text around it baked in
+ * (bugs.webkit.org/237446) — in the loom drawer, every row below it. A fully
+ * off-screen element cancels the drag in Safari, so the pill keeps a sliver in
+ * view (media.css) and leaves once the drag has taken its picture. */
+function setSongDragImage(transfer: DataTransfer, title: string) {
+  const ghost = document.createElement('div')
+  ghost.className = 'media__drag-ghost'
+  ghost.textContent = title
+  document.body.append(ghost)
+  transfer.setDragImage(ghost, 12, 14)
+  setTimeout(() => ghost.remove(), 0)
+}
+
 export function MediaExplorer({
   presets,
   onLoadPreset,
@@ -2403,6 +2417,7 @@ export function MediaExplorer({
                       event.dataTransfer.setData('text/plain', file)
                       event.dataTransfer.setData(SONG_DRAG_TYPE, file)
                       event.dataTransfer.effectAllowed = 'copyMove'
+                      setSongDragImage(event.dataTransfer, track.title)
                     }}
                     onDragEnd={() => {
                       setDropSource(null)
