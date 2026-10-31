@@ -35,6 +35,7 @@ function makeProps(overrides: Partial<LoomViewProps> = {}): LoomViewProps {
     onRetry: vi.fn(),
     onBounce: vi.fn(),
     onWeave: vi.fn(),
+    onDropSong: vi.fn(),
     onSelect: vi.fn(),
     renderAhead: true,
     ...overrides,
@@ -107,6 +108,58 @@ describe('LoomView canvas', () => {
     const setData = vi.fn()
     fireEvent.dragStart(nodeEl(PROMPTS.n2), { dataTransfer: { setData, effectAllowed: '' } })
     expect(setData).toHaveBeenCalledWith('text/plain', 'loom:n2')
+    expect(setData).toHaveBeenCalledWith('text/lsdj-node', 'n2')
+  })
+})
+
+describe('LoomView song drop', () => {
+  const song = (file: string) => ({
+    types: ['text/plain', 'text/lsdj-song'],
+    getData: (type: string) => (type === 'text/lsdj-song' || type === 'text/plain' ? file : ''),
+  })
+  function renderInBooth() {
+    const onBoothDrop = vi.fn()
+    const props = makeProps()
+    render(
+      <div onDrop={onBoothDrop}>
+        <LoomView {...props} />
+      </div>,
+    )
+    return { props, onBoothDrop }
+  }
+
+  it('lights a node a song is dragged over, and only for a song', () => {
+    renderView()
+    fireEvent.dragOver(nodeEl(PROMPTS.n2), { dataTransfer: { types: ['text/plain', 'text/lsdj-node'] } })
+    expect(nodeEl(PROMPTS.n2)).not.toHaveClass('loom-node--drop')
+    fireEvent.dragOver(nodeEl(PROMPTS.n2), { dataTransfer: song('dub.wav') })
+    expect(nodeEl(PROMPTS.n2)).toHaveClass('loom-node--drop')
+    fireEvent.dragLeave(nodeEl(PROMPTS.n2), { relatedTarget: document.body })
+    expect(nodeEl(PROMPTS.n2)).not.toHaveClass('loom-node--drop')
+  })
+
+  it('drops a song on a node as its child, and the booth never sees it', () => {
+    const { props, onBoothDrop } = renderInBooth()
+    fireEvent.drop(nodeEl(PROMPTS.n2), { dataTransfer: song('dub.wav') })
+    expect(props.onDropSong).toHaveBeenCalledWith('dub.wav', 'n2')
+    expect(onBoothDrop).not.toHaveBeenCalled()
+  })
+
+  it('drops a song on a leaf\'s what-next slot as that leaf\'s child', () => {
+    const { props, onBoothDrop } = renderInBooth()
+    // The first slot is the first ready leaf's: n4.
+    fireEvent.drop(screen.getAllByRole('button', { name: /What next\?/ })[0], { dataTransfer: song('dub.wav') })
+    expect(props.onDropSong).toHaveBeenCalledWith('dub.wav', 'n4')
+    expect(onBoothDrop).not.toHaveBeenCalled()
+  })
+
+  it('lets anything but a song through to the booth', () => {
+    const { props, onBoothDrop } = renderInBooth()
+    fireEvent.drop(nodeEl(PROMPTS.n2), {
+      dataTransfer: { types: ['text/plain'], getData: (type: string) => (type === 'text/plain' ? 'loom:n5' : '') },
+    })
+    expect(props.onDropSong).not.toHaveBeenCalled()
+    expect(onBoothDrop).toHaveBeenCalledTimes(1)
   })
 })
 

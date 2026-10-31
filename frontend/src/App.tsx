@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -387,9 +388,12 @@ function App() {
       return next
     })
   }, [])
-  // The loom booth: song loads land in it, and its bar renders in the status bar.
+  // The loom booth: song loads land in it, its bar renders in the status bar,
+  // and the media explorer becomes a drawer over its canvas.
   const loomRef = useRef<LoomBoothHandle>(null)
   const [loomBarSlot, setLoomBarSlot] = useState<HTMLDivElement | null>(null)
+  const [loomDrawerSlot, setLoomDrawerSlot] = useState<HTMLDivElement | null>(null)
+  const handleSeedTrack = useCallback((file: string) => loomRef.current?.seedSong(file), [])
 
   // Where master-bus recordings are saved (empty = the OS Downloads folder,
   // the default). A shell-persisted store setting (ADR-0020 phase A):
@@ -880,6 +884,25 @@ function App() {
     },
   }
 
+  // One explorer: the tray under the DJ booth, the loom's drawer in its theme.
+  const explorer = (
+    <MediaExplorer
+      presets={presets}
+      onLoadPreset={handleLoadPreset}
+      onDeletePreset={handleDeletePreset}
+      onImportPresets={handleImportPresets}
+      onLoadTrack={handleLoadTrack}
+      onLoadSample={handleLoadSample}
+      onPreview={handlePreview}
+      onStopPreview={handleStopPreview}
+      open={mediaOpen}
+      onToggle={handleMediaToggle}
+      height={mediaHeight}
+      onResize={handleMediaResize}
+      onSeedTrack={theme === 'loom' ? handleSeedTrack : undefined}
+    />
+  )
+
   return (
     <LoraProvider>
     <main
@@ -1091,6 +1114,7 @@ function App() {
         <LoomBooth
           ref={loomRef}
           barSlot={loomBarSlot}
+          drawerRef={setLoomDrawerSlot}
           mediaOpen={mediaOpen}
           onToggleExplorer={handleMediaToggle}
           deckA={deckA}
@@ -1208,20 +1232,7 @@ function App() {
           />
         </div>
       )}
-      <MediaExplorer
-        presets={presets}
-        onLoadPreset={handleLoadPreset}
-        onDeletePreset={handleDeletePreset}
-        onImportPresets={handleImportPresets}
-        onLoadTrack={handleLoadTrack}
-        onLoadSample={handleLoadSample}
-        onPreview={handlePreview}
-        onStopPreview={handleStopPreview}
-        open={mediaOpen}
-        onToggle={handleMediaToggle}
-        height={mediaHeight}
-        onResize={handleMediaResize}
-      />
+      {theme === 'loom' ? loomDrawerSlot && createPortal(explorer, loomDrawerSlot) : explorer}
     </main>
     </LoraProvider>
   )

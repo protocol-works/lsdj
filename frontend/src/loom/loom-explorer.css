@@ -1,0 +1,375 @@
+/* The media explorer in the loom theme (`mockups/loom/` `.drawer`): App
+   portals it into `.loom__drawer`, the layer over the canvas, where it is a
+   410 px glass drawer sliding in from the left — under the header, above the
+   mixer bar. Imported by loom.css; the DJ tray (media.css) is untouched. */
+
+.loom__drawer {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ---- the drawer ---- */
+
+.loom__drawer .media {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(410px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-glass-drawer);
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Away: slid out, then hidden, so its header (a button while collapsed)
+   leaves the tab order once the slide is over. */
+.loom__drawer .media--collapsed {
+  transform: translateX(-100%);
+  visibility: hidden;
+  transition:
+    transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s 0.35s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loom__drawer .media,
+  .loom__drawer .media--collapsed {
+    transition: none;
+  }
+}
+
+/* The component sizes the DJ tray's content inline; the drawer is no tray. */
+.loom__drawer .media__content {
+  flex: 1;
+  min-height: 0;
+  height: auto !important;
+  overflow: auto;
+}
+
+.loom__drawer .media__resize,
+.loom__drawer .media__title,
+.loom__drawer .media__chevron,
+.loom__drawer .media__grip,
+.loom__drawer .crates__title {
+  display: none;
+}
+
+/* ---- header: tab pills and the ×, the search line under them ---- */
+
+.loom__drawer .media__header {
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.loom__drawer .media__header-end {
+  display: contents;
+}
+
+.loom__drawer .media__tabs {
+  gap: 4px;
+}
+
+.loom__drawer .media__tabs .ui-button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font: 11px var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--color-text-muted);
+}
+
+.loom__drawer .media__tabs .ui-button--lit {
+  background: color-mix(in srgb, var(--color-text) 10%, transparent);
+  color: var(--color-text);
+}
+
+/* The piano toggle and the collapse button ride the tab line's right end;
+   the collapse button reads as the mockup's ×, its aria-label the meaning. */
+.loom__drawer .media__header-end > .ui-button {
+  height: 26px;
+  padding: 0 7px;
+  border-color: transparent;
+  background: none;
+}
+
+.loom__drawer .media__header-end > .ui-button[aria-pressed] {
+  margin-left: auto;
+}
+
+.loom__drawer .media__header-end > .ui-button[aria-expanded] {
+  font-size: 0;
+}
+
+.loom__drawer .media__header-end > .ui-button[aria-expanded]::before {
+  content: '×';
+  font: 16px var(--font-ui);
+}
+
+/* The mockup's `.ctl`: the search fills the line, the sort and the folder
+   button keep their size. A hairline sets it off from the tabs. */
+.loom__drawer .media__header-actions {
+  order: 1;
+  flex: 1 0 100%;
+  gap: 6px;
+  margin: 6px -12px 0;
+  padding: 10px 12px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.loom__drawer .media__search {
+  flex: 1;
+  min-width: 0;
+  inline-size: auto;
+}
+
+.loom__drawer .media__search .ui-field {
+  min-width: 0;
+}
+
+.loom__drawer .media__header-actions .ui-field__input {
+  border-color: var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.loom__drawer .media__search .ui-field__input {
+  padding: 7px 10px;
+  font: 13px var(--font-ui);
+}
+
+.loom__drawer .media__search .ui-field__input:focus {
+  outline: none;
+  border-color: var(--color-cue);
+}
+
+.loom__drawer .media__sort .ui-field__input {
+  padding-left: 8px;
+  font: 10.5px var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+/* Tight, so the search keeps the room to read its placeholder. */
+.loom__drawer .media__header-actions > .ui-button {
+  flex: none;
+  align-self: stretch;
+  padding: 0 8px;
+  border-radius: 8px;
+  letter-spacing: 0.02em;
+}
+
+/* ---- tab bodies: the forms inset, the lists edge to edge ---- */
+
+.loom__drawer :is(.media__generate, .media__folder) {
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.loom__drawer
+  :is(.media__generate, .media__folder, .media__songs-list)
+  > :not(.media__songs, .media__list, .media__tag-filter) {
+  margin-inline: 12px;
+}
+
+.loom__drawer .media__generate-row {
+  flex-wrap: wrap;
+}
+
+/* The song column folds to its Select, as the tray does when narrow. */
+.loom__drawer .media__songs {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.loom__drawer .media__sources {
+  display: none;
+}
+
+.loom__drawer .media__source-select {
+  display: block;
+}
+
+.loom__drawer :is(.media__empty, .crates__empty) {
+  padding: 30px 0;
+  text-align: center;
+  font: 11px var(--font-mono);
+  color: var(--color-text-silkscreen);
+}
+
+/* The tag filter: the mockup's `.chip`s, a lit one lime. */
+.loom__drawer .media__tag-filter {
+  gap: 5px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.loom__drawer .media__tag {
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  font: 10.5px var(--font-mono);
+  letter-spacing: normal;
+  color: var(--color-text-muted);
+}
+
+.loom__drawer .media__tag:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.loom__drawer .media__tag--on {
+  border-color: var(--color-cue);
+  color: var(--color-cue);
+}
+
+.loom__drawer .media__tag-filter .media__tag {
+  padding: 3px 9px;
+}
+
+.loom__drawer .media__tag-filter .media__tag--on {
+  border-color: transparent;
+  background: var(--color-cue);
+  color: var(--color-on-accent);
+}
+
+/* ---- rows: the mockup's `.row`, from the shipped markup ----
+   The name cluster's parts join the row's own flex line, ordered into
+   title · meta / stars · tags / prompt / actions; `::before` is the break
+   after the first line (a long title pushes the meta onto its own). The
+   whole row drags. */
+
+.loom__drawer :is(.media__list, .crates__list) {
+  max-height: none;
+  gap: 0;
+}
+
+.loom__drawer :is(.media__item, .crates__item) {
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  padding: 10px 12px;
+  border-radius: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.loom__drawer .media__item[draggable='true'] {
+  cursor: grab;
+}
+
+.loom__drawer :is(.media__item, .crates__item):hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+.loom__drawer :is(.media__item--highlighted, .crates__item--highlighted) {
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--color-cue);
+}
+
+.loom__drawer .media__item::before {
+  content: '';
+  order: 2;
+  flex-basis: 100%;
+}
+
+.loom__drawer span.media__name {
+  display: contents;
+}
+
+.loom__drawer :is(.media__name--button, .crates__name) {
+  padding: 0;
+  font: 600 13px var(--font-ui);
+  color: var(--color-text);
+}
+
+/* Room for the #id beside a long title: the title gives way, not the #id. */
+.loom__drawer .media__name > .media__name--button {
+  max-width: calc(100% - 3rem);
+}
+
+.loom__drawer .media__name-tag {
+  font: 10.5px var(--font-mono);
+  color: var(--color-text-silkscreen);
+}
+
+.loom__drawer .media__meta {
+  order: 1;
+  margin-left: auto;
+  font: 10.5px var(--font-mono);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--color-text-muted);
+}
+
+.loom__drawer .media__item .ui-rating {
+  order: 3;
+}
+
+.loom__drawer .media__item .media__tag {
+  order: 4;
+}
+
+/* Stars light amber, the hover preview too. */
+.loom__drawer .ui-rating {
+  --color-accent: var(--color-led-warn);
+  gap: 1px;
+}
+
+.loom__drawer .ui-rating__star {
+  font-size: 10.5px;
+}
+
+.loom__drawer .media__prompt {
+  order: 6;
+  flex: 1 0 100%;
+  font: 11.5px var(--font-ui);
+}
+
+.loom__drawer .media__prompt::before {
+  content: none;
+}
+
+.loom__drawer :is(.media__item, .crates__item) > .ui-button,
+.loom__drawer .media__menu .ui-button {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 9.5px;
+}
+
+.loom__drawer .media__item > .ui-button {
+  order: 7;
+}
+
+.loom__drawer .media__item > .media__menu {
+  order: 8;
+}
+
+/* ---- presets: one line per row, inside the folded-in crates panel ---- */
+
+.loom__drawer .crates {
+  gap: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.loom__drawer :is(.crates__empty, .crates__io, .crates__error) {
+  margin: 10px 12px;
+}
+
+/* ---- footer ---- */
+
+.loom__drawer .media__hint {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border);
+  font: 10.5px/1.5 var(--font-mono);
+  color: var(--color-text-silkscreen);
+}

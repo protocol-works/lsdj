@@ -11,6 +11,7 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
+import { songDropTarget } from '../generation/library'
 import { Button } from '../ui/Button'
 import { keyHue } from './keyHue'
 import type { LoomNode as LoomNodeModel } from './loomState'
@@ -46,6 +47,8 @@ export type NodeActions = {
   bounce: (id: string) => void
   trimPreview: (id: string, inBar: number, outBar: number) => void
   trimCommit: (id: string) => void
+  /** A library song dropped on the node: it becomes the node's next thread. */
+  dropSong: (file: string, parentId: string) => void
 }
 
 type LoomNodeProps = {
@@ -126,6 +129,7 @@ export const LoomNode = memo(function LoomNode({
   const { t } = useTranslation()
   const trim = useRef<{ side: 'in' | 'out'; x: number; in0: number; out0: number } | null>(null)
   const [wave, setWave] = useState<{ file: string; path: string; buckets: number; duration: number } | null>(null)
+  const [songOver, setSongOver] = useState(false)
   // Visuals: a ripple when a deck ties this node or its take is kept — a
   // fresh `key` restarts the one-shot CSS animation; loom.css gates it.
   const tied = onA || onB || queuedA || queuedB
@@ -193,6 +197,7 @@ export const LoomNode = memo(function LoomNode({
       return
     }
     event.dataTransfer.setData('text/plain', `loom:${node.id}`)
+    event.dataTransfer.setData('text/lsdj-node', node.id)
     event.dataTransfer.effectAllowed = 'link'
   }
 
@@ -246,6 +251,7 @@ export const LoomNode = memo(function LoomNode({
     cued && 'loom-node--cued',
     cued && cueFromBar !== null && 'loom-node--from',
     (selected || weaving) && 'loom-node--selected',
+    songOver && 'loom-node--drop',
     ghost && 'loom-node--ghost',
     node.status === 'failed' && 'loom-node--failed',
     node.status === 'missing' && 'loom-node--missing',
@@ -284,6 +290,7 @@ export const LoomNode = memo(function LoomNode({
       tabIndex={0}
       draggable
       onDragStart={onDragStart}
+      {...songDropTarget(setSongOver, (song) => actions.dropSong(song, node.id))}
       onClick={onClick}
     >
       <svg

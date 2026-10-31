@@ -327,8 +327,8 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
       }
     }
 
-    const addSong = async (file: string, title: string) => {
-      const existing = stateRef.current.loom.nodes.find((n) => n.parentId === null && n.file === file)
+    const addSong = async (file: string, title: string, parentId: string | null = null) => {
+      const existing = stateRef.current.loom.nodes.find((n) => n.parentId === parentId && n.file === file)
       if (existing) return existing.id
       const [row, peaks] = await Promise.all([
         invoke<SongEntry[]>('list_generated_songs').then(
@@ -339,8 +339,9 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
       ])
       const id = newId()
       act({
-        type: 'add_root_song',
+        type: 'add_song',
         id,
+        parentId,
         file,
         title: row?.title ?? title,
         bpm: row?.bpm ?? DEFAULT_BPM,
@@ -463,9 +464,21 @@ export function useLoom({ deckA, deckB, renderAhead }: UseLoomOptions) {
         })
         if (form.tieTo) tie(form.tieTo, ids[0])
       },
-      /** A song dropped on the canvas becomes a root (or finds the one it is). */
-      dropSong: (file: string) => {
-        addSong(file, file).catch((error) => say('loom.status.dropFailed', { file, message: errorText(error) }))
+      /** A song dropped on the canvas (or seeded from the explorer) becomes a
+       * root; dropped on a node, its next thread. Either way it is selected —
+       * or found, when that node already has it. */
+      dropSong: (file: string, parentId: string | null = null) => {
+        addSong(file, file, parentId).then(
+          (id) => {
+            const node = nodeOf(id)
+            if (!node) return
+            act({ type: 'select', id })
+            const parent = nodeOf(parentId)
+            if (parent) say('loom.status.songJoined', { title: node.prompt, parent: parent.prompt })
+            else say('loom.status.songSeeded', { title: node.prompt })
+          },
+          (error) => say('loom.status.dropFailed', { file, message: errorText(error) }),
+        )
       },
       /** The explorer's →A/→B and an MCP load in Loom theme: the song becomes a
        * root and is tied like any node. */

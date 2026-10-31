@@ -153,9 +153,11 @@
   /* The mockup's hairline, and the brighter edge a hovered control takes. */
   --color-border: rgba(255, 255, 255, 0.1);
   --color-border-strong: rgba(255, 255, 255, 0.25);
-  /* See-through panels: the cards, and the darker bars (header, mixer). */
+  /* See-through panels: the cards, the darker bars (header, mixer), and the
+     explorer's drawer, which rows of text sit on. */
   --color-glass: rgba(20, 14, 40, 0.55);
   --color-glass-bar: rgba(7, 5, 15, 0.6);
+  --color-glass-drawer: rgba(9, 6, 20, 0.84);
   --color-shadow: #000;
 
   --color-text: #ebe7f7;

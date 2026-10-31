@@ -230,6 +230,24 @@ describe('App theme', () => {
     expect(screen.getByRole('group', { name: 'warm dub' })).toBeInTheDocument()
   })
 
+  it('mounts the explorer as a drawer over the loom, whose seed button starts a thread', async () => {
+    updateAppSettings({ theme: 'loom' })
+    renderApp(makeEngine())
+    const loom = screen.getByRole('region', { name: 'Loom' })
+    expect(within(loom).getByRole('region', { name: 'Media explorer' })).toBeInTheDocument()
+
+    await act(async () => {
+      explorer.props!.onSeedTrack!('dub.wav')
+    })
+
+    expect(await screen.findByRole('group', { name: 'warm dub' })).toBeInTheDocument()
+  })
+
+  it('keeps the seed button to the loom theme', () => {
+    renderApp(makeEngine())
+    expect(explorer.props!.onSeedTrack).toBeUndefined()
+  })
+
   it('leaves the FLX4 loop section to the loom in Loom theme', () => {
     updateAppSettings({ theme: 'loom' })
     const bus = createControlBus()

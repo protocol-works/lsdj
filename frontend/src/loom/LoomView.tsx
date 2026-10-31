@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
 import type { DeckId } from '../audio/types'
+import { songDropTarget } from '../generation/library'
 import { Button } from '../ui/Button'
 import { fitPxPerBar, LAYOUT, layoutLoom, PX_DEFAULT, zoomAnchored, type NodeBox } from './layout'
 import { LoomNode, type NodeActions, type PeaksSource, type Peaks, type RenderProgress } from './LoomNode'
@@ -65,6 +66,8 @@ export type LoomViewProps = {
   /** Bounce the node's root → node path to one song. */
   onBounce: (id: string) => void
   onWeave: (parentId: string | null, form: WeaveForm) => void
+  /** A library song dropped on a node or its "what next?" slot. */
+  onDropSong: (file: string, parentId: string) => void
   onSelect: (id: string | null) => void
   renderAhead: boolean
   /** The media explorer is open: its rating keys own `0` (clear), so the zoom
@@ -73,6 +76,8 @@ export type LoomViewProps = {
   /** Where the zoom and new-thread buttons render (the loom bar); without
    * one they sit in the view. */
   toolsSlot?: HTMLElement | null
+  /** Receives the layer over the canvas the media explorer's drawer mounts in. */
+  drawerRef?: (element: HTMLDivElement | null) => void
 }
 
 const DECKS: DeckId[] = ['a', 'b']
@@ -121,7 +126,7 @@ function jumpPath(from: NodeBox, to: NodeBox) {
  * and deck status come in, every gesture goes out as a callback; the view
  * keeps only transient pointer state (a pan, a trim drag, the open weave). */
 export function LoomView(props: LoomViewProps) {
-  const { state, pxPerBar, scrollX, deckStatus, progress, renderAhead } = props
+  const { state, pxPerBar, scrollX, deckStatus, progress, renderAhead, drawerRef } = props
   const { t } = useTranslation()
   const latest = useRef(props)
   useEffect(() => {
@@ -131,6 +136,8 @@ export function LoomView(props: LoomViewProps) {
   const weaveAnchor = useRef<HTMLElement | null>(null)
   const [weaving, setWeaving] = useState<{ parentId: string | null } | null>(null)
   const [trimDraft, setTrimDraft] = useState<{ id: string; in: number; out: number } | null>(null)
+  // The leaf whose "what next?" slot a dragged song is over.
+  const [songOverSlot, setSongOverSlot] = useState<string | null>(null)
   const trimDraftRef = useRef(trimDraft)
   const peaksCache = useRef(new Map<string, Promise<Peaks | null>>())
   const pan = useRef<{ x: number; y: number; left: number; top: number; moved: boolean } | null>(null)
@@ -204,6 +211,7 @@ export function LoomView(props: LoomViewProps) {
           latest.current.onTrim(id, draft.in, draft.out)
         }
       },
+      dropSong: (file, parentId) => latest.current.onDropSong(file, parentId),
     }
     const peaks: PeaksSource = (file, buckets) => {
       const key = `${file}:${buckets}`
@@ -476,8 +484,12 @@ export function LoomView(props: LoomViewProps) {
             return (
               <div
                 key={`slot-${node.id}`}
-                className={`loom__slot${holder ? ' loom__slot--hot' : ''}`}
+                className={`loom__slot${holder ? ' loom__slot--hot' : ''}${songOverSlot === node.id ? ' loom__slot--drop' : ''}`}
                 style={{ left: box.x + box.w + LAYOUT.gap, top: box.y, width: SLOT_WIDTH - LAYOUT.gap }}
+                {...songDropTarget(
+                  (over) => setSongOverSlot(over ? node.id : null),
+                  (file) => props.onDropSong(file, node.id),
+                )}
               >
                 <Button onClick={(event) => view.openWeave(node.id, event.currentTarget)}>
                   <span className="loom__plus">{t('loom.view.plus')}</span>{' '}
@@ -513,6 +525,7 @@ export function LoomView(props: LoomViewProps) {
           ))}
         </div>
       </div>
+      <div className="loom__drawer" ref={drawerRef} />
       {props.toolsSlot ? createPortal(tools, props.toolsSlot) : tools}
       {nodes.length === 0 ? (
         <div className="loom__empty">

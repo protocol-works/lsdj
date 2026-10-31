@@ -28,6 +28,7 @@
  *   controls (`setCue`/`setCueMix`); `nudgeTrackPhase` (the jog-while-playing
  *   platter bend) is wired to the engine's `nudge_track_phase` rate bend. */
 
+import { fixtureInvoke, LOOM_FIXTURE } from '../loom/fixture'
 import type { EqBand } from './eq'
 import {
   SAMPLE_RATE,
@@ -48,9 +49,12 @@ type TauriGlobal = {
   }
 }
 
+// The visual harness's stand-in shell (`?loomFixture`, dev builds only).
+const HARNESS: TauriGlobal | null = LOOM_FIXTURE ? { core: { invoke: fixtureInvoke } } : null
+
 function tauriGlobal(): TauriGlobal | null {
   const g = globalThis as { __TAURI__?: TauriGlobal }
-  return g.__TAURI__ ?? null
+  return g.__TAURI__ ?? HARNESS
 }
 
 /** Whether the native (Tauri) IPC bridge is present. False in a plain browser (dev

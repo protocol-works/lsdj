@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { fixtureNode, seedLoom, seedState } from './fixture'
+import { layoutLoom } from './layout'
 import {
   initialLoomState,
   isOnAir,
@@ -290,10 +291,11 @@ describe('cue', () => {
 })
 
 describe('looms', () => {
-  it('add_root_song floors its bars so the nominal end never passes the clip', () => {
+  it('add_song floors its bars so the nominal end never passes the clip', () => {
     const state = run(seedState(), {
-      type: 'add_root_song',
+      type: 'add_song',
       id: 'song',
+      parentId: null,
       file: 'dropped.wav',
       title: 'Dropped',
       bpm: 120,
@@ -312,10 +314,11 @@ describe('looms', () => {
     })
   })
 
-  it('add_root_song keeps a very short song at the minimum body', () => {
+  it('add_song keeps a very short song at the minimum body', () => {
     const state = run(seedState(), {
-      type: 'add_root_song',
+      type: 'add_song',
       id: 'blip',
+      parentId: null,
       file: 'blip.wav',
       title: 'Blip',
       bpm: 120,
@@ -324,6 +327,47 @@ describe('looms', () => {
       now: 0,
     })
     expect(node(state, 'blip')).toMatchObject({ bars: 4, prompt: 'a blip' })
+  })
+
+  it('add_song under a node is a ready child with no kept tail, laid out from the parent\'s out-point', () => {
+    const state = run(seedState(), {
+      type: 'add_song',
+      id: 'song',
+      parentId: 'n7',
+      file: 'dropped.wav',
+      title: 'Dropped',
+      bpm: 120,
+      durationSeconds: 31.9, // 15.95 bars of 2 s
+      prompt: 'warm dub',
+      now: 3,
+    })
+    expect(node(state, 'song')).toMatchObject({
+      parentId: 'n7',
+      bpm: 120,
+      bars: 15,
+      out: 15,
+      tailSeconds: 0,
+      status: 'ready',
+      file: 'dropped.wav',
+    })
+    const boxes = layoutLoom(state.loom.nodes, 20).boxes
+    expect(boxes.get('song')!.x).toBe(boxes.get('n7')!.x + node(state, 'n7')!.out * 20)
+  })
+
+  it('add_song refuses a parent that is gone', () => {
+    const before = seedState()
+    const after = loomReducer(before, {
+      type: 'add_song',
+      id: 'song',
+      parentId: 'nope',
+      file: 'dropped.wav',
+      title: 'Dropped',
+      bpm: 120,
+      durationSeconds: 32,
+      prompt: null,
+      now: 3,
+    })
+    expect(after).toBe(before)
   })
 
   it('loom_loaded replaces the loom and resets both decks', () => {

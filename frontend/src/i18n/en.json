@@ -62,6 +62,9 @@
     "previewStop": "Stop preview",
     "undecodable": "{{title}} could not be decoded",
     "onDeck": "On {{deck}}",
+    "seedThread": "⟡ seed thread",
+    "seedThreadLabel": "Seed a loom thread from {{name}}",
+    "loomHint": "drag a song onto the loom to seed a new thread · drop it on a thread to continue it",
     "rating": {
       "label": "Rating for {{name}}",
       "star_one": "{{count}} star",
@@ -759,6 +762,8 @@
       "queueFailed": "Deck {{deck}} could not queue “{{title}}”, so it holds",
       "cueFailed": "“{{title}}” could not be cued",
       "dropFailed": "“{{file}}” could not join the loom: {{message}}",
+      "songSeeded": "“{{title}}” starts a thread",
+      "songJoined": "“{{title}}” follows “{{parent}}”",
       "discardRefused": "A node a deck is on or has tied, or one with children, stays",
       "trimRefused": "A node with children keeps its out-point: trim its start instead",
       "parentFailed": "its parent did not render"

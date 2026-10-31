@@ -63,6 +63,14 @@
   border-color: var(--color-deck-b);
 }
 
+/* A library song is over the node: dropped, it becomes the next thread. */
+.loom-node--drop,
+.loom-node--drop:hover {
+  box-shadow:
+    inset 0 0 0 2px var(--color-cue),
+    0 14px 34px -16px var(--color-shadow);
+}
+
 /* Cued: a ring of colour 5 px outside the card (it turns with motion on).
    `::after`, since a tied node's beat glow owns `::before`. */
 @property --loom-ring-angle {
@@ -377,7 +385,8 @@
   transition: border-color 0.2s;
 }
 
-.loom__slot .ui-button:hover {
+.loom__slot .ui-button:hover,
+.loom__slot--drop .ui-button {
   border-color: var(--color-cue);
   color: var(--color-text);
 }

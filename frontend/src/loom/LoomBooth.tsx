@@ -44,12 +44,15 @@ export type LoomBoothProps = {
   mediaOpen: boolean
   /** The bar's explorer button: App's media drawer toggle. */
   onToggleExplorer: () => void
+  /** Receives the layer over the canvas App mounts the explorer drawer in. */
+  drawerRef?: (element: HTMLDivElement | null) => void
 }
 
 /** What App reaches through the booth's ref: the explorer's →A/→B and an MCP
- * load land in the loom. */
+ * load land in the loom; its ⟡ seed thread starts a new one. */
 export type LoomBoothHandle = {
   loadSong: (deck: DeckId, source: TrackSource, title: string) => Promise<boolean>
+  seedSong: (file: string) => void
 }
 
 const peaks = (file: string, buckets: number) =>
@@ -74,18 +77,19 @@ export function LoomBooth({
   barSlot,
   mediaOpen,
   onToggleExplorer,
+  drawerRef,
 }: LoomBoothProps & { ref?: Ref<LoomBoothHandle> }) {
   const { t } = useTranslation()
   const engine = useAudioEngine()
   const bus = useControlBus()
   const loom = useLoom({ deckA, deckB, renderAhead })
-  const { state, loadSong, beatLoop, stepLoop } = loom
+  const { state, loadSong, dropSong, beatLoop, stepLoop } = loom
   const [pxPerBar, setPxPerBar] = useState(PX_DEFAULT)
   const [scrollX, setScrollX] = useState(0)
   // The view's zoom and new-thread buttons render in the bar.
   const [toolsSlot, setToolsSlot] = useState<HTMLElement | null>(null)
 
-  useImperativeHandle(ref, () => ({ loadSong }), [loadSong])
+  useImperativeHandle(ref, () => ({ loadSong, seedSong: dropSong }), [loadSong, dropSong])
 
   // The FLX4 loop section in Loom theme (App skips these intents there): the
   // loom's nominal 4/8/16 instead of the grid-required beat loop.
@@ -198,10 +202,12 @@ export function LoomBooth({
         onRetry={loom.retry}
         onBounce={(id) => bounce(nodePath(state, id))}
         onWeave={loom.weave}
+        onDropSong={loom.dropSong}
         onSelect={loom.select}
         renderAhead={renderAhead}
         explorerOpen={mediaOpen}
         toolsSlot={toolsSlot}
+        drawerRef={drawerRef}
       />
       <LoomMixer
         channels={channels}

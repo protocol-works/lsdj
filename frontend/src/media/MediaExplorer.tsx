@@ -54,7 +54,7 @@ import {
   type SourceDraft,
   type TrackGenerationRequest,
 } from '../generation/songGeneration'
-import { saveGeneratedSong, type SongEntry } from '../generation/library'
+import { saveGeneratedSong, SONG_DRAG_TYPE, type SongEntry } from '../generation/library'
 import { Sa3AdvancedControls } from '../generation/Sa3AdvancedControls'
 import { loadAppSettings, updateAppSettings } from '../persistence'
 import { LoraControl } from '../ui/LoraControl'
@@ -379,8 +379,9 @@ function reListLibrary<
     // Newest-first: in-session takes not yet on disk lead, above the restored
     // library reversed so the most recently composed file sits at the top (the
     // registry stores composition order, oldest first), sparing a scroll to the
-    // take you just made.
-    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...restored.reverse()])
+    // take you just made. Reversed here, not in the updater: StrictMode replays it.
+    const newestFirst = restored.reverse()
+    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...newestFirst])
   })()
 }
 
@@ -435,6 +436,9 @@ type MediaExplorerProps = {
   /** Resize from dragging the top grip. `commit` is false during the drag (live
    * update only) and true on release, so App persists once at the end. */
   onResize: (height: number, commit: boolean) => void
+  /** Loom theme: a saved song seeds a new thread (its row's ⟡ button), and a
+   * footer says songs drag onto the loom. Absent, neither shows. */
+  onSeedTrack?: (file: string) => void
 }
 
 /** The Media Explorer (M19, ADR-0013): one pane below the booth that
@@ -455,6 +459,7 @@ export function MediaExplorer({
   onToggle,
   height,
   onResize,
+  onSeedTrack,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
   // Whether the standalone MIDI-keyboard window (issue #49) is open — a shell
@@ -2370,8 +2375,9 @@ export function MediaExplorer({
                     ? playedFiles.has(track.file)
                     : false
                 const length = track.state === 'ready' ? recipeSeconds(track.recipe) : null
+                const savedFile = fileOf(track)
                 // In a playlist view every row is saved and a drop target for reordering.
-                const playlistFile = playlist != null ? fileOf(track) : null
+                const playlistFile = playlist != null ? savedFile : null
                 const dropSide =
                   playlistFile != null && dropRow?.file === playlistFile
                     ? dropRow.after
@@ -2395,6 +2401,7 @@ export function MediaExplorer({
                       const file = fileOf(track)
                       if (file == null) return
                       event.dataTransfer.setData('text/plain', file)
+                      event.dataTransfer.setData(SONG_DRAG_TYPE, file)
                       event.dataTransfer.effectAllowed = 'copyMove'
                     }}
                     onDragEnd={() => {
@@ -2519,6 +2526,14 @@ export function MediaExplorer({
                           ...sourceMenuItems(track),
                         ],
                       )}
+                    {onSeedTrack && savedFile != null && (
+                      <Button
+                        aria-label={t('media.seedThreadLabel', { name: rowLabel })}
+                        onClick={() => onSeedTrack(savedFile)}
+                      >
+                        {t('media.seedThread')}
+                      </Button>
+                    )}
                     {track.state === 'ready' && (
                       <Button
                         aria-label={
@@ -2926,6 +2941,7 @@ export function MediaExplorer({
         />
       )}
       </div>
+      {onSeedTrack && <p className="media__hint">{t('media.loomHint')}</p>}
     </Panel>
   )
 }

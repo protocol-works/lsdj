@@ -447,6 +447,49 @@ describe('useLoom cue', () => {
   })
 })
 
+describe('useLoom song drop', () => {
+  /** The shell's two answers a dropped song needs: its registry row and its length. */
+  const libraryHasSong = () =>
+    invokeMock.mockImplementation(async (cmd) => {
+      if (cmd === 'list_generated_songs') {
+        return [{ file: 'dub.wav', title: 'Dub', prompt: 'warm dub, 120 BPM', model: 'track', bpm: 120, key: '8A' }]
+      }
+      if (cmd === 'library_clip_peaks') return { min: [], max: [], duration: 33 }
+      throw new Error(`no shell: ${cmd}`)
+    })
+
+  it('drops a song on a node as its ready next thread at the song\'s own tempo, and selects it', async () => {
+    const m = await mount()
+    libraryHasSong()
+    act(() => m.result.current.dropSong('dub.wav', 'n7'))
+    await flush()
+    const added = m.state().loom.nodes.filter((n) => n.file === 'dub.wav')
+    expect(added).toHaveLength(1)
+    expect(added[0]).toMatchObject({ parentId: 'n7', prompt: 'warm dub', bpm: 120, bars: 16, tailSeconds: 0, status: 'ready', key: '8A' })
+    expect(m.state().selected).toBe(added[0].id)
+    expect(m.result.current.status).toBe('“warm dub” follows “breakbeat jungle, chopped amens, reese bass”')
+  })
+
+  it('finds the child a node already has rather than adding the song twice', async () => {
+    const m = await mount()
+    libraryHasSong()
+    act(() => m.result.current.dropSong('dub.wav', 'n7'))
+    await flush()
+    act(() => m.result.current.dropSong('dub.wav', 'n7'))
+    await flush()
+    expect(m.state().loom.nodes.filter((n) => n.file === 'dub.wav')).toHaveLength(1)
+  })
+
+  it('drops a song on the canvas as a new root', async () => {
+    const m = await mount()
+    libraryHasSong()
+    act(() => m.result.current.dropSong('dub.wav'))
+    await flush()
+    expect(m.state().loom.nodes.find((n) => n.file === 'dub.wav')).toMatchObject({ parentId: null })
+    expect(m.result.current.status).toBe('“warm dub” starts a thread')
+  })
+})
+
 const channel = (): ChannelControls => ({
   volume: 0.8,
   eq: { low: 0.5, mid: 0.5, high: 0.5 },

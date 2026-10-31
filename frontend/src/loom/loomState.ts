@@ -70,9 +70,12 @@ export type LoomAction =
   // `name` is supplied by the caller (localised); the reducer holds no copy.
   | { type: 'loom_new'; id: string; now: number; name?: string }
   | { type: 'rename'; name: string }
+  // A library song as a ready node: a root, or (`parentId`) the next thread
+  // after a node — it plays from its own start at the parent's seam.
   | {
-      type: 'add_root_song'
+      type: 'add_song'
       id: string
+      parentId: string | null
       file: string
       title: string
       bpm: number
@@ -286,12 +289,13 @@ export function loomReducer(state: LoomState, action: LoomAction): LoomState {
       const name = action.name.trim()
       return name ? { ...state, loom: { ...state.loom, name } } : state
     }
-    case 'add_root_song': {
+    case 'add_song': {
+      if (action.parentId !== null && !nodeById(state.loom.nodes, action.parentId)) return state
       // Floor, so the nominal end never passes the clip.
       const bars = Math.max(MIN_BARS, Math.floor(action.durationSeconds / barSeconds(action.bpm)))
       const node: LoomNode = {
         id: action.id,
-        parentId: null,
+        parentId: action.parentId,
         prompt: action.prompt ?? action.title,
         bars,
         bpm: action.bpm,
@@ -300,6 +304,7 @@ export function loomReducer(state: LoomState, action: LoomAction): LoomState {
         sa3: {},
         file: action.file,
         durationSeconds: action.durationSeconds,
+        // Nothing before bar 0 is a kept tail: the song was not rendered from its parent.
         tailSeconds: 0,
         in: 0,
         out: bars,
