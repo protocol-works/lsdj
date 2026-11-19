@@ -44,6 +44,7 @@ mod commands;
 mod decode;
 mod generation;
 mod library;
+mod looms;
 mod loras;
 mod mcp;
 mod midi;
@@ -53,6 +54,7 @@ mod samples;
 mod settings;
 mod sidecar;
 mod songs;
+mod stitch;
 mod store;
 mod style;
 mod style_send;
@@ -830,6 +832,9 @@ pub fn run() {
             commands::open_samples_folder,
             commands::save_loop_slot,
             commands::load_track_file,
+            commands::queue_track_file,
+            commands::clear_queued_track,
+            commands::promote_queued_track,
             commands::load_track_bytes,
             commands::track_bands,
             commands::unload_track,
@@ -895,6 +900,12 @@ pub fn run() {
             models::open_model_folder,
             loras::install_lora,
             loras::delete_lora,
+            commands::list_looms,
+            commands::read_loom,
+            commands::save_loom,
+            commands::delete_loom,
+            commands::audition_song_clip,
+            commands::stitch_songs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -31,6 +31,9 @@ export type BeatViewLayout = 'center' | 'vertical' | 'top' | 'off'
 /** User-selectable master accent (LSDJ). Default is 'lime'. */
 export type AccentTheme = 'lime' | 'violet' | 'cyan'
 
+/** Which booth the app shows: the DJ decks or the loom (ADR-0038). Default 'dj'. */
+export type AppTheme = 'dj' | 'loom'
+
 export type AppSettings = {
   beatView: BeatViewLayout
   accent: AccentTheme
@@ -50,6 +53,9 @@ export type AppSettings = {
   /** Varispeed envelope for SYNC, the tempo knob, and the FLX4 slider
    * (ADR-0014). Absent = ±8 %. */
   tempoRange: TempoRange
+  theme: AppTheme
+  /** Loom theme: grow one auto continuation behind an on-air leaf. Absent = on. */
+  renderAhead: boolean
 }
 
 /** The settings that moved to shell-side persistence (ADR-0020 phase A:
@@ -339,6 +345,12 @@ export function loadAppSettings(): Partial<AppSettings> {
   }
   const tempoRange = TEMPO_RANGES.find((range) => range === stored.tempoRange)
   if (tempoRange !== undefined) settings.tempoRange = tempoRange
+  if (stored.theme === 'dj' || stored.theme === 'loom') {
+    settings.theme = stored.theme
+  }
+  if (typeof stored.renderAhead === 'boolean') {
+    settings.renderAhead = stored.renderAhead
+  }
   return settings
 }
 

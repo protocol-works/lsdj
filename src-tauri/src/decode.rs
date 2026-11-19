@@ -401,7 +401,7 @@ fn resample(
     let trimmed = &produced[start..end.min(produced.len())];
     let mut out_left = Vec::with_capacity(expected_frames);
     let mut out_right = Vec::with_capacity(expected_frames);
-    for frame in trimmed.chunks_exact(2) {
+    for frame in trimmed.as_chunks::<2>().0 {
         out_left.push(frame[0]);
         out_right.push(frame[1]);
     }

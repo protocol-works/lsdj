@@ -54,6 +54,7 @@ import {
   type SourceDraft,
   type TrackGenerationRequest,
 } from '../generation/songGeneration'
+import { saveGeneratedSong, SONG_DRAG_TYPE, type SongEntry } from '../generation/library'
 import { Sa3AdvancedControls } from '../generation/Sa3AdvancedControls'
 import { loadAppSettings, updateAppSettings } from '../persistence'
 import { LoraControl } from '../ui/LoraControl'
@@ -84,25 +85,6 @@ type TrackEngine = 'sfx' | 'music' | 'track' | 'magenta'
 // The short loop engines (ADR-0022): SFX/Music now compose into the samples library,
 // not the songs library — the Generate tab keeps only the full-track engines.
 type SampleEngine = 'sfx' | 'music'
-
-// One row of the on-disk song registry (Rust `songs::SongEntry`, camelCase): a file
-// in the songs folder with the provenance the filesystem can't carry.
-type SongEntry = {
-  file: string
-  title: string
-  prompt: string | null
-  model: string | null
-  recipe?: unknown
-  /** 1–5; absent when unrated. */
-  rating?: number
-  /** Absent when untagged. */
-  tags?: string[]
-  /** Background analysis (Rust `analysis::media::TrackInfo`); absent until it
-   * runs, and when it wasn't confident. `key` is Camelot ("8A"). */
-  bpm?: number
-  key?: string
-  keyName?: string
-}
 
 // One row of the on-disk sample registry (Rust `samples::SampleEntry`, camelCase):
 // like a SongEntry plus `oneShot`, the loop-vs-one-shot verdict reload needs.
@@ -397,25 +379,10 @@ function reListLibrary<
     // Newest-first: in-session takes not yet on disk lead, above the restored
     // library reversed so the most recently composed file sits at the top (the
     // registry stores composition order, oldest first), sparing a scroll to the
-    // take you just made.
-    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...restored.reverse()])
+    // take you just made. Reversed here, not in the updater: StrictMode replays it.
+    const newestFirst = restored.reverse()
+    setRows((current) => [...current.filter((row) => fileOf(row) == null), ...newestFirst])
   })()
-}
-
-/** What the webview sends with a freshly composed take (Rust `songs::NewSong`). */
-type NewSong = {
-  title: string
-  prompt: string
-  model: SongGenerationEngine
-  recipe: SongGenerationRecipeV1
-}
-
-/** Persist a ready take to ~/Documents/LSDJ/generated_songs through the Rust shell
- * and return its registry entry ({@link encodeMetaFrame} builds the binary payload —
- * a JSON args map would be megabytes of text for a multi-MB WAV). The old
- * `<a download>` is gone: it silently no-ops in WKWebView. */
-function saveGeneratedSong(meta: NewSong, wav: ArrayBuffer): Promise<SongEntry> {
-  return invoke<SongEntry>('save_generated_song', encodeMetaFrame(meta, wav))
 }
 
 /** What the webview sends with a freshly composed sample (Rust `samples::NewSample`):
@@ -469,6 +436,9 @@ type MediaExplorerProps = {
   /** Resize from dragging the top grip. `commit` is false during the drag (live
    * update only) and true on release, so App persists once at the end. */
   onResize: (height: number, commit: boolean) => void
+  /** Loom theme: a saved song seeds a new thread (its row's ⟡ button), and a
+   * footer says songs drag onto the loom. Absent, neither shows. */
+  onSeedTrack?: (file: string) => void
 }
 
 /** The Media Explorer (M19, ADR-0013): one pane below the booth that
@@ -476,6 +446,20 @@ type MediaExplorerProps = {
  * folder tracks all load onto a deck; the item type decides the deck's
  * mode. The FLX4 rotary browses the visible tab; LOAD loads its
  * highlighted item. */
+/** The row's drag image: a small opaque pill naming the song. Left to itself,
+ * WebKit snapshots the transparent row with the page text around it baked in
+ * (bugs.webkit.org/237446) — in the loom drawer, every row below it. A fully
+ * off-screen element cancels the drag in Safari, so the pill keeps a sliver in
+ * view (media.css) and leaves once the drag has taken its picture. */
+function setSongDragImage(transfer: DataTransfer, title: string) {
+  const ghost = document.createElement('div')
+  ghost.className = 'media__drag-ghost'
+  ghost.textContent = title
+  document.body.append(ghost)
+  transfer.setDragImage(ghost, 12, 14)
+  setTimeout(() => ghost.remove(), 0)
+}
+
 export function MediaExplorer({
   presets,
   onLoadPreset,
@@ -489,6 +473,7 @@ export function MediaExplorer({
   onToggle,
   height,
   onResize,
+  onSeedTrack,
 }: MediaExplorerProps) {
   const { t } = useTranslation()
   // Whether the standalone MIDI-keyboard window (issue #49) is open — a shell
@@ -2404,8 +2389,9 @@ export function MediaExplorer({
                     ? playedFiles.has(track.file)
                     : false
                 const length = track.state === 'ready' ? recipeSeconds(track.recipe) : null
+                const savedFile = fileOf(track)
                 // In a playlist view every row is saved and a drop target for reordering.
-                const playlistFile = playlist != null ? fileOf(track) : null
+                const playlistFile = playlist != null ? savedFile : null
                 const dropSide =
                   playlistFile != null && dropRow?.file === playlistFile
                     ? dropRow.after
@@ -2429,7 +2415,9 @@ export function MediaExplorer({
                       const file = fileOf(track)
                       if (file == null) return
                       event.dataTransfer.setData('text/plain', file)
+                      event.dataTransfer.setData(SONG_DRAG_TYPE, file)
                       event.dataTransfer.effectAllowed = 'copyMove'
+                      setSongDragImage(event.dataTransfer, track.title)
                     }}
                     onDragEnd={() => {
                       setDropSource(null)
@@ -2553,6 +2541,14 @@ export function MediaExplorer({
                           ...sourceMenuItems(track),
                         ],
                       )}
+                    {onSeedTrack && savedFile != null && (
+                      <Button
+                        aria-label={t('media.seedThreadLabel', { name: rowLabel })}
+                        onClick={() => onSeedTrack(savedFile)}
+                      >
+                        {t('media.seedThread')}
+                      </Button>
+                    )}
                     {track.state === 'ready' && (
                       <Button
                         aria-label={
@@ -2960,6 +2956,7 @@ export function MediaExplorer({
         />
       )}
       </div>
+      {onSeedTrack && <p className="media__hint">{t('media.loomHint')}</p>}
     </Panel>
   )
 }

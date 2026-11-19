@@ -60,3 +60,4 @@ scaffolds the file from the template.
 | [0035](0035-dual-envelope-beat-detection-with-fast-change-invalidation.md) | Dual-envelope beat detection with fast change invalidation | Accepted |
 | [0036](0036-curation-metadata-in-the-library-registry-playlists-as-m3u8.md) | Curation metadata in the library registry; playlists as m3u8 files | Proposed |
 | [0037](0037-audio-to-audio-from-library-songs.md) | Audio-to-audio from library songs: the shell cuts the window | Proposed |
+| [0038](0038-the-loom-a-branching-playback-surface-as-a-theme.md) | The loom: a branching playback surface, as a theme | Proposed |

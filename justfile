@@ -104,9 +104,10 @@ tauri-release:
 release:
     ./scripts/create-release.sh
 
-# All tests: backend pytest + frontend vitest + the Rust engine/shell.
+# All tests: backend pytest (and scripts/) + frontend vitest + the Rust engine/shell.
 test:
     cd backend && uv run pytest
+    cd backend && uv run pytest ../scripts
     cd frontend && npm run test
     cd src-tauri && cargo test --workspace
 
@@ -114,8 +115,8 @@ test:
 # the Rust follows a hand-style like the frontend, not rustfmt — clippy is the
 # gate.)
 lint:
-    cd backend && uv run ruff format --check .
-    cd backend && uv run ruff check .
+    cd backend && uv run ruff format --check . ../scripts
+    cd backend && uv run ruff check . ../scripts
     cd frontend && npm run lint
     cd frontend && npx tsc -b
     cd src-tauri && cargo clippy --workspace --all-targets -- -D warnings

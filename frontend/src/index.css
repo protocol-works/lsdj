@@ -157,6 +157,11 @@ body {
   border-bottom: 2px solid var(--color-accent);
 }
 
+/* Loom theme: the loom bar (name, saved mark, menu, status) portals in here. */
+.app__loom-bar {
+  min-width: 0;
+}
+
 /* The status cluster — warnings + switches + MIDI — rides the right edge. */
 .app__statusbar-right {
   margin-left: auto;
@@ -233,6 +238,14 @@ body {
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+}
+
+/* Loom theme: the loom takes the booth's space. */
+.loom-booth {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 @media (max-width: 64rem) {

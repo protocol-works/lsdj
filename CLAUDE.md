@@ -33,7 +33,8 @@ Underlying tools: uv + pytest + ruff in `backend/`, npm + vitest + eslint in
   generate / models) on a loopback port (ADR-0002).
 - `frontend/src/` map: `audio/` (engine-facing state, FX curves in `fx.ts`),
   `control/` (the `ControlIntent` bus + the native-MIDI status/monitor
-  projections), `deck/`, `mixer/`, `ui/` primitives.
+  projections), `deck/`, `loom/` (the looming surface, ADR-0038), `mixer/`,
+  `ui/` primitives.
 - Hardware control is **native MIDI in the Rust shell** (`src-tauri/src/midi/`,
   ADR-0031, superseding ADR-0005's Web MIDI): midir/CoreMIDI transport, the
   FLX4/DDJ-400 translators, LEDs, and the performance-note steering all live

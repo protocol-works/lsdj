@@ -1,0 +1,310 @@
+/* The loom's styles, one file per surface; every loom component imports this
+   one. The chrome comes first: its primitive skins are the defaults the node
+   and mixer rules refine. */
+@import './loom-chrome.css';
+@import './loom-node.css';
+@import './loom-mixer.css';
+@import './loom-visuals.css';
+@import './loom-explorer.css';
+
+/* ---- view ---- */
+
+/* The loom canvas (plan §8, the mockup's stage): left to right is musical
+   time in bars, down is alternatives. Geometry comes from layout.ts and the
+   inline `--loom-node-height`; colour from tokens, the deck accents and, per
+   node, `--loom-node-hue` (its key) when known. */
+/* A flex child of the booth's column: it takes the height the mixer leaves.
+   No background of its own, so the aurora shows through. */
+.loom {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.loom__canvas {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  cursor: grab;
+  scrollbar-width: thin;
+}
+
+.loom__canvas:active {
+  cursor: grabbing;
+}
+
+.loom__content {
+  position: relative;
+}
+
+.loom__ruler {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  height: 1.4rem;
+  font: var(--text-xs) var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--color-text-silkscreen);
+  background: linear-gradient(color-mix(in srgb, var(--color-bg) 70%, transparent), transparent);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.loom__ruler:hover {
+  color: var(--color-text-muted);
+}
+
+.loom__ruler-mark {
+  position: absolute;
+  top: var(--space-2);
+  transform: translateX(-50%);
+}
+
+.loom__ruler-mark::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: calc(-1 * var(--space-2));
+  height: var(--space-1);
+  border-left: 1px solid currentColor;
+}
+
+.loom__threads {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Thin beziers from a parent's right edge to its child's left edge. */
+.loom__thread {
+  fill: none;
+  stroke: color-mix(in srgb, var(--color-text) 16%, transparent);
+  stroke-width: 1.5;
+}
+
+.loom__thread--ghost {
+  stroke-dasharray: 3 4;
+}
+
+/* `color` too, so a deck path's glow takes the deck's colour. */
+.loom__thread--a {
+  color: var(--color-deck-a);
+  stroke: var(--color-deck-a);
+}
+
+.loom__thread--b {
+  color: var(--color-deck-b);
+  stroke: var(--color-deck-b);
+}
+
+.loom__thread--past {
+  opacity: 0.5;
+  stroke-width: 2.5;
+}
+
+.loom__thread--future {
+  stroke-width: 3;
+  stroke-dasharray: 7 5;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+/* Zoom and "new thread": portalled into the loom bar. */
+.loom__zoom {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* − and + read as glyphs; fit and "+ thread" stay words. */
+.loom__zoom .ui-button:is(:first-child, :nth-child(3)) {
+  min-width: 26px;
+  padding: 0 7px;
+  font-size: 14px;
+  text-transform: none;
+}
+
+.loom__zoom .ui-button:last-child {
+  margin-left: 9px;
+}
+
+/* Lets drops through to the canvas; only the button takes the pointer. */
+.loom__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.loom__empty .ui-button {
+  pointer-events: auto;
+}
+
+/* ---- shuttles ---- */
+
+/* Each deck's playhead in the loom: trail, head, countdown tag and the loop
+   region (amber when it is the hold). Positions arrive at the deck's 4 Hz
+   poll; smoothing them is CSS (the visuals pass), never a re-render. */
+.loom__shuttle--a {
+  --loom-deck: var(--color-deck-a);
+}
+
+.loom__shuttle--b {
+  --loom-deck: var(--color-deck-b);
+}
+
+.loom__trail {
+  position: absolute;
+  z-index: 2;
+  height: var(--loom-node-height);
+  border-radius: var(--radius-m);
+  background: linear-gradient(90deg, transparent, var(--loom-deck));
+  opacity: 0.22;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.loom__head {
+  position: absolute;
+  z-index: 3;
+  width: 2px;
+  height: calc(var(--loom-node-height) + 16px);
+  margin-left: -1px;
+  background: var(--color-text);
+  box-shadow:
+    0 0 8px 2px var(--loom-deck),
+    0 0 26px 5px var(--loom-deck);
+  pointer-events: none;
+}
+
+/* The countdown tag: a glowing pill in the deck's colour. */
+.loom__tag {
+  position: absolute;
+  z-index: 5;
+  max-width: 18rem;
+  overflow: hidden;
+  padding: 1px 7px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  font: 700 10px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-on-accent);
+  background: var(--loom-deck);
+  box-shadow: 0 0 14px var(--loom-deck);
+}
+
+.loom__tag--warn {
+  background: var(--color-led-warn);
+  box-shadow: 0 0 14px var(--color-led-warn);
+}
+
+.loom__loop {
+  position: absolute;
+  z-index: 2;
+  height: var(--loom-node-height);
+  border-radius: 11px;
+  box-shadow: inset 0 0 0 1.5px var(--loom-deck);
+  background: color-mix(in srgb, var(--loom-deck) 14%, transparent);
+  pointer-events: none;
+}
+
+.loom__loop--hold {
+  --loom-deck: var(--color-led-warn);
+}
+
+.loom__loop span {
+  position: absolute;
+  left: 4px;
+  top: calc(100% + 4px);
+  font: 700 10px var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--loom-deck);
+  white-space: nowrap;
+}
+
+/* ---- weave popover ---- */
+
+.loom-weave {
+  width: min(26rem, calc(100vw - 2 * var(--space-4)));
+  max-height: calc(100vh - 2 * var(--space-4));
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 24px 60px -20px var(--color-shadow);
+}
+
+.loom-weave:focus {
+  outline: none;
+}
+
+.loom-weave__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.loom-weave__title {
+  margin: 0;
+  font: var(--silkscreen);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.loom-weave__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.loom-weave__row .ui-field {
+  width: 6rem;
+}
+
+.loom-weave__eta {
+  margin: 0;
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.loom-weave__eta--warn {
+  color: var(--color-led-warn);
+}
+
+.loom-weave__advanced > summary {
+  font: 600 var(--text-s) var(--font-ui);
+  letter-spacing: var(--silkscreen-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.loom-weave__advanced[open] > summary {
+  margin-bottom: var(--space-2);
+  color: var(--color-text);
+}
+
+/* The explorer lays guidance out in two columns; the popover has one. */
+.loom-weave .media__guidance-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.loom-weave__go {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+

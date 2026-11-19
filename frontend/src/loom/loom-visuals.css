@@ -1,0 +1,315 @@
+/* ---- visuals ---- */
+
+/* The microdose (plan §2 decision 12, the mockup's visual language): the
+   aurora and grain under the booth, beat pulses, the sap along the threads,
+   the cued ring turning, the tie/keep ripple and the scope. All of it only
+   with performance visuals on and motion allowed. The beat phases
+   `--loom-beat-a/b` (0 on the beat → 1) are written onto the booth by
+   `useBeatPulse`; unset, every fallback is at rest. Imported by loom.css. */
+.loom__sap,
+.loom-aurora,
+.loom-grain {
+  display: none;
+}
+
+.loom-scope {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* `--loom-glow` is 1 on the beat, decaying to 0 across it. */
+  [data-performance-visuals='on'] .loom-mixer__deck--a,
+  [data-performance-visuals='on'] .loom__shuttle--a,
+  [data-performance-visuals='on'] .loom-node--q-a {
+    --loom-glow: calc(1 - var(--loom-beat-a, 1));
+    --loom-queued: var(--color-deck-a);
+  }
+
+  [data-performance-visuals='on'] .loom-mixer__deck--b,
+  [data-performance-visuals='on'] .loom__shuttle--b,
+  [data-performance-visuals='on'] .loom-node--q-b {
+    --loom-glow: calc(1 - var(--loom-beat-b, 1));
+    --loom-queued: var(--color-deck-b);
+  }
+
+  /* The aurora (the mockup's underlay): four slow washes, a glow per deck
+     that swells on its beat, two conic spirals; fixed behind the whole
+     window like the app's performance stage, with the grain over it. */
+  [data-performance-visuals='on'] .loom-aurora {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    display: block;
+    overflow: hidden;
+    filter: saturate(1.3);
+    pointer-events: none;
+    animation: loom-hue 90s linear infinite;
+  }
+
+  .loom-aurora > i {
+    position: absolute;
+    width: 60vmax;
+    height: 60vmax;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.68;
+    mix-blend-mode: screen;
+    animation: loom-drift 48s ease-in-out infinite alternate;
+  }
+
+  .loom-aurora__wash:nth-child(1) {
+    left: -20vmax;
+    top: -10vmax;
+    background: radial-gradient(circle, var(--color-aurora-violet) 0%, transparent 60%);
+  }
+
+  .loom-aurora__wash:nth-child(2) {
+    right: -25vmax;
+    top: 0;
+    background: radial-gradient(circle, var(--color-aurora-teal) 0%, transparent 60%);
+    animation-duration: 61s;
+  }
+
+  .loom-aurora__wash:nth-child(3) {
+    left: 30vw;
+    bottom: -30vmax;
+    background: radial-gradient(circle, var(--color-aurora-rose) 0%, transparent 60%);
+    animation-duration: 73s;
+    animation-delay: -20s;
+  }
+
+  .loom-aurora__wash:nth-child(4) {
+    left: 55vw;
+    top: 20vh;
+    width: 40vmax;
+    height: 40vmax;
+    background: radial-gradient(circle, var(--color-aurora-moss) 0%, transparent 60%);
+    opacity: 0.35;
+    animation-duration: 39s;
+    animation-delay: -9s;
+  }
+
+  /* ponytail: the glows sit at 30 / 70 vw; following each shuttle's screen
+     x (the mockup's --ax/--bx) waits until the static look has been played. */
+  .loom-aurora > .loom-aurora__glow {
+    width: 36vmax;
+    height: 36vmax;
+    filter: blur(90px);
+    animation: none;
+  }
+
+  .loom-aurora__glow--a {
+    left: calc(30vw - 18vmax);
+    top: 6vh;
+    background: radial-gradient(circle, var(--color-deck-a) 0%, transparent 60%);
+    opacity: calc(0.26 + (1 - var(--loom-beat-a, 1)) * 0.14);
+  }
+
+  .loom-aurora__glow--b {
+    left: calc(70vw - 18vmax);
+    top: 18vh;
+    background: radial-gradient(circle, var(--color-deck-b) 0%, transparent 60%);
+    opacity: calc(0.26 + (1 - var(--loom-beat-b, 1)) * 0.14);
+  }
+
+  .loom-aurora > .loom-aurora__spiral {
+    inset: -60%;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+    filter: none;
+    opacity: 0.8;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0 38%,
+      color-mix(in srgb, var(--color-text) 7%, transparent) 50%,
+      transparent 62% 100%
+    );
+    animation: loom-spin 110s linear infinite;
+  }
+
+  .loom-aurora > .loom-aurora__spiral--reverse {
+    background: conic-gradient(
+      from 180deg,
+      transparent 0 41%,
+      color-mix(in srgb, var(--color-deck-a) 6%, transparent) 50%,
+      transparent 59% 100%
+    );
+    animation: loom-spin 170s linear infinite reverse;
+  }
+
+  [data-performance-visuals='on'] .loom-grain {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    display: block;
+    opacity: 0.07;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .7 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation: loom-grain 0.5s steps(4) infinite;
+  }
+
+  /* The deck badge: a ring that leaves it on every beat. */
+  [data-performance-visuals='on'] .loom-mixer__letter {
+    position: relative;
+  }
+
+  [data-performance-visuals='on'] .loom-mixer__letter::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: 0 0 0 calc((1 - var(--loom-glow, 0)) * 12px) var(--loom-mixer-deck);
+    opacity: calc(var(--loom-glow, 0) * 0.7);
+    pointer-events: none;
+  }
+
+  /* The playhead throbs on its own deck's beat, so unsynced decks disagree. */
+  [data-performance-visuals='on'] .loom__head {
+    box-shadow:
+      0 0 calc(8px + var(--loom-glow, 0) * 4px) calc(2px + var(--loom-glow, 0) * 1px) var(--loom-deck),
+      0 0 calc(26px + var(--loom-glow, 0) * 14px) calc(5px + var(--loom-glow, 0) * 5px) var(--loom-deck);
+  }
+
+  /* A tied node's dashed border breathes on the beat of the deck coming to
+     it. A pseudo-element, so the node's own shadow (selected, on air) and
+     stacking (its tools) are untouched. */
+  [data-performance-visuals='on'] .loom-node--q-a::before,
+  [data-performance-visuals='on'] .loom-node--q-b::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    box-shadow: 0 0 calc(var(--loom-glow, 0) * 14px) calc(var(--loom-glow, 0) * 2px) var(--loom-queued);
+    pointer-events: none;
+  }
+
+  [data-performance-visuals='on'] .loom-node--cued::after {
+    animation: loom-ring 3s linear infinite;
+  }
+
+  [data-performance-visuals='on'] .loom__slot--hot .ui-button {
+    animation: loom-breathe 1.1s ease-in-out infinite;
+  }
+
+  [data-performance-visuals='on'] .loom__sap {
+    display: inline;
+    fill: none;
+    stroke: color-mix(in srgb, var(--color-text) 55%, transparent);
+    stroke-width: 1.5;
+    stroke-dasharray: 2 16;
+    opacity: 0.5;
+    animation: loom-sap 2.6s linear infinite;
+  }
+
+  [data-performance-visuals='on'] .loom__thread--future {
+    animation: loom-flow 1s linear infinite;
+  }
+
+  /* A one-shot ring off a node when a deck ties it (its colour) or a take is
+     kept (cue green); LoomNode remounts it to fire again. */
+  [data-performance-visuals='on'] .loom-node__ripple {
+    --loom-ripple: var(--color-cue);
+    position: absolute;
+    inset: -1px;
+    z-index: 5;
+    border-radius: inherit;
+    pointer-events: none;
+    animation: loom-rip 0.7s ease-out forwards;
+  }
+
+  [data-performance-visuals='on'] :is(.loom-node--q-a, .loom-node--on-a) .loom-node__ripple {
+    --loom-ripple: var(--color-deck-a);
+  }
+
+  [data-performance-visuals='on'] :is(.loom-node--q-b, .loom-node--on-b) .loom-node__ripple {
+    --loom-ripple: var(--color-deck-b);
+  }
+}
+
+/* The sap's dash period is 18, the future thread's 12: one whole period a
+   cycle, so neither jumps when it loops. */
+@keyframes loom-sap {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+@keyframes loom-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+@keyframes loom-rip {
+  from {
+    opacity: 1;
+    box-shadow: 0 0 0 2px var(--loom-ripple);
+  }
+
+  to {
+    opacity: 0;
+    transform: scale(1.1, 1.6);
+    box-shadow: 0 0 0 1px var(--loom-ripple), 0 0 34px 12px var(--loom-ripple);
+  }
+}
+
+@keyframes loom-ring {
+  to {
+    --loom-ring-angle: 360deg;
+  }
+}
+
+@keyframes loom-breathe {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes loom-drift {
+  from {
+    transform: translate(0, 0) scale(1);
+  }
+
+  to {
+    transform: translate(12vw, 8vh) scale(1.25);
+  }
+}
+
+@keyframes loom-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes loom-hue {
+  to {
+    filter: saturate(1.3) hue-rotate(360deg);
+  }
+}
+
+@keyframes loom-grain {
+  0% {
+    background-position: 0 0;
+  }
+
+  25% {
+    background-position: -23px 17px;
+  }
+
+  50% {
+    background-position: 31px -9px;
+  }
+
+  75% {
+    background-position: -11px -29px;
+  }
+
+  100% {
+    background-position: 0 0;
+  }
+}

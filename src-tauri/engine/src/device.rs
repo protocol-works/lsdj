@@ -929,7 +929,7 @@ mod tests {
             out[..len].fill(-9.0);
             r.fill(&mut consumer, &mut out[..len]);
             top_up(&mut producer);
-            let ok = out[..len].chunks_exact(CHANNELS as usize).all(|frame| {
+            let ok = out[..len].as_chunks::<{ CHANNELS as usize }>().0.iter().all(|frame| {
                 (frame[0] - LEFT).abs() < 0.02 && (frame[1] - RIGHT).abs() < 0.02
             });
             assert!(

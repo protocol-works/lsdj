@@ -352,6 +352,10 @@ enum Command {
     NudgeTrackPhase(usize, f64),
     SetTrackLoop(usize, u64, u64),
     ClearTrackLoop(usize),
+    /// Deck, the decoded clip (built off the render thread like `LoadTrack`'s),
+    /// the clip frame to enter at, and the current track's frame to swap at.
+    QueueTrack(usize, Vec<f32>, f64, u64),
+    ClearQueuedTrack(usize),
     CaptureLoop(usize, usize, f64),
     /// Play a loop slot; the `bool` is `layer` — replace the live stream (a freeze)
     /// or sum on top of it (a loaded sample, ADR-0022).
@@ -774,6 +778,18 @@ impl Host {
         self.send(Command::ClearTrackLoop(deck));
     }
 
+    /// Queue a decoded clip to take over the deck's track at `switch_at` (frames
+    /// of the current track), entering it at `start_frame`. `samples` is moved in
+    /// like `load_track`'s; the buffer it replaces is dropped on the render
+    /// thread after the block that swaps.
+    pub fn queue_track(&self, deck: usize, samples: Vec<f32>, start_frame: f64, switch_at: u64) {
+        self.send(Command::QueueTrack(deck, samples, start_frame, switch_at));
+    }
+
+    pub fn clear_queued_track(&self, deck: usize) {
+        self.send(Command::ClearQueuedTrack(deck));
+    }
+
     pub fn capture_loop(&self, deck: usize, slot: usize, seconds: f64) {
         self.send(Command::CaptureLoop(deck, slot, seconds));
     }
@@ -1048,6 +1064,10 @@ impl RenderLoop {
             Command::NudgeTrackPhase(d, f) => self.engine.nudge_track_phase(d, f),
             Command::SetTrackLoop(d, s, e) => self.engine.set_track_loop(d, s, e),
             Command::ClearTrackLoop(d) => self.engine.clear_track_loop(d),
+            Command::QueueTrack(d, samples, start, switch_at) => {
+                self.engine.queue_track(d, samples, start, switch_at)
+            }
+            Command::ClearQueuedTrack(d) => self.engine.clear_queued_track(d),
             Command::CaptureLoop(d, slot, secs) => {
                 self.engine.capture_loop(d, slot, secs);
             }
@@ -1134,6 +1154,9 @@ impl RenderLoop {
         }
         self.engine
             .render_with_cue(&mut self.block, &mut self.cue_block, RENDER_BLOCK_FRAMES);
+        // A queued swap only moves buffers; the one it replaced is freed here, on
+        // the render thread, never inside `render`.
+        self.engine.drop_retired();
         push_all(&mut self.output, &self.block);
         push_all(&mut self.cue_output, &self.cue_block);
         // Tap the rendered master into the recorder if it is recording (no-op
@@ -1222,6 +1245,7 @@ mod tests {
             self.loop_state
                 .engine
                 .render(&mut self.loop_state.block, RENDER_BLOCK_FRAMES);
+            self.loop_state.engine.drop_retired();
             self.loop_state.publish_snapshot();
         }
 
@@ -1265,6 +1289,31 @@ mod tests {
         let status = host.track_status(0).expect("deck is now Playback");
         assert!(status.playing, "the track is playing after load+play");
         assert_eq!(status.duration_frames, 2_000);
+    }
+
+    /// queue_track applied through the channel: once the playhead crosses the
+    /// switch frame the deck plays the queued clip, and the read-back shows its
+    /// length and one swap; clear_queued_track empties the queue.
+    #[test]
+    fn queue_track_swaps_and_the_snapshot_follows() {
+        let mut host = TestHost::new();
+        host.send(Command::LoadTrack(0, ramp_track(2_000)));
+        host.send(Command::PlayTrack(0));
+        host.send(Command::QueueTrack(0, ramp_track(9_000), 0.0, (RENDER_BLOCK_FRAMES + 10) as u64));
+        host.pump();
+        let status = host.track_status(0).expect("deck is Playback");
+        assert!(status.queued && status.swaps == 0, "the first block stops short of the switch");
+
+        host.pump();
+        let status = host.track_status(0).expect("deck is Playback");
+        assert_eq!(status.duration_frames, 9_000, "the queued clip took over");
+        assert_eq!(status.swaps, 1);
+        assert!(!status.queued);
+
+        host.send(Command::QueueTrack(0, ramp_track(2_000), 0.0, 8_000));
+        host.send(Command::ClearQueuedTrack(0));
+        host.pump();
+        assert!(!host.track_status(0).unwrap().queued, "cleared");
     }
 
     /// set_crossfade applied through the channel shifts the mix: with a Playing

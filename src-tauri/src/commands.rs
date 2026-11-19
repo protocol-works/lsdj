@@ -132,6 +132,8 @@ pub struct TrackStatusDto {
     pub rate: f64,
     pub ended: bool,
     pub loop_region: Option<LoopRegionDto>,
+    pub queued: bool,
+    pub swaps: u32,
 }
 
 impl From<TrackStatus> for TrackStatusDto {
@@ -143,6 +145,8 @@ impl From<TrackStatus> for TrackStatusDto {
             rate: status.rate,
             ended: status.ended,
             loop_region: status.loop_region.map(LoopRegionDto::from),
+            queued: status.queued,
+            swaps: status.swaps,
         }
     }
 }
@@ -460,7 +464,7 @@ pub fn open_recordings_folder(app: tauri::AppHandle, folder: String) -> Result<(
 /// frame is ignored.
 fn pcm_from_le_bytes(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -1062,11 +1066,26 @@ fn install_track(
     }
 }
 
+/// Read a scoped track source and run [`analyze_track`] on a `spawn_blocking`
+/// thread: seconds of CPU for a long track, which must block neither the main
+/// thread nor the async runtime. Shared by the load and the queue.
+async fn analyze_source(songs: &SongLibrary, source: TrackSource) -> Result<AnalyzedTrack, String> {
+    let (bytes, name) = match source {
+        TrackSource::Folder { dir, name } => (read_scoped_audio(&dir, &name)?, name),
+        TrackSource::Song { name } => (songs.read(&name)?, name),
+    };
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, extension.as_deref()))
+        .await
+        .map_err(|e| format!("track analysis failed: {e}"))?
+}
+
 /// Load a track onto a deck by scoped reference (ADR-0030): the shell reads,
 /// decodes (symphonia), resamples, analyses, and installs — the webview gets
-/// back `{duration, bpm, grid}` and fetches bands/peaks once. The decode +
-/// analyses run on a `spawn_blocking` thread: seconds of CPU for a long
-/// track, which must block neither the main thread nor the async runtime.
+/// back `{duration, bpm, grid}` and fetches bands/peaks once.
 #[tauri::command]
 pub async fn load_track_file(
     state: tauri::State<'_, Host>,
@@ -1079,19 +1098,92 @@ pub async fn load_track_file(
     if !valid_deck(deck) {
         return Err("invalid deck".to_string());
     }
-    let (bytes, name) = match source {
-        TrackSource::Folder { dir, name } => (read_scoped_audio(&dir, &name)?, name),
-        TrackSource::Song { name } => (songs.read(&name)?, name),
-    };
-    let extension = std::path::Path::new(&name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase);
-    let analyzed =
-        tauri::async_runtime::spawn_blocking(move || analyze_track(bytes, extension.as_deref()))
-            .await
-            .map_err(|e| format!("track analysis failed: {e}"))??;
+    let analyzed = analyze_source(&songs, source).await?;
     Ok(install_track(&state, &feed, &tracks, deck, analyzed))
+}
+
+/// Queue a track to take over a playing deck at a frame — the loom's seamless
+/// seam (architecture §3): decoded and analysed like [`load_track_file`], then
+/// handed to the engine, which swaps buffers when the playhead reaches
+/// `switch_at_seconds` and enters the clip at `start_seconds`. The analysis
+/// waits as the deck's pending one until the webview sees the swap and calls
+/// [`promote_queued_track`]. Replaces any earlier queue on the deck.
+#[tauri::command]
+pub async fn queue_track_file(
+    state: tauri::State<'_, Host>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    songs: tauri::State<'_, SongLibrary>,
+    deck: usize,
+    source: TrackSource,
+    start_seconds: f64,
+    switch_at_seconds: f64,
+) -> Result<LoadedTrackDto, String> {
+    if !valid_deck(deck) {
+        return Err("invalid deck".to_string());
+    }
+    if !(switch_at_seconds.is_finite() && switch_at_seconds >= 0.0) {
+        return Err("invalid switch point".to_string());
+    }
+    let analyzed = analyze_source(&songs, source).await?;
+    // NaN fails both comparisons and is refused with the rest.
+    if !(start_seconds >= 0.0 && start_seconds < analyzed.duration) {
+        return Err("start point outside the track".to_string());
+    }
+    // Parked before the engine can swap, so a promote always finds it.
+    tracks.set_pending(
+        deck,
+        DeckTrack {
+            bpm: analyzed.bpm,
+            bands: analyzed.bands,
+        },
+    );
+    state.queue_track(
+        deck,
+        analyzed.interleaved,
+        start_seconds * SAMPLE_RATE as f64,
+        (switch_at_seconds * SAMPLE_RATE as f64).round() as u64,
+    );
+    Ok(LoadedTrackDto {
+        duration: analyzed.duration,
+        bpm: analyzed.bpm,
+        grid: analyzed.grid,
+    })
+}
+
+/// Drop the deck's queued track and its pending analysis.
+#[tauri::command]
+pub fn clear_queued_track(
+    state: tauri::State<'_, Host>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+) {
+    if valid_deck(deck) {
+        state.clear_queued_track(deck);
+        tracks.clear_pending(deck);
+    }
+}
+
+/// Install the queued track's analysis once the webview sees the engine
+/// swapped (`swaps` advanced) — [`install_track`]'s second half: the live
+/// analysis re-anchors and the echo clock follows the new tempo at the deck's
+/// kept rate. The NON-blocking reset: this sync command runs on the main
+/// thread, where `reset_blocking` could stall for its 500 ms ack. A no-op when
+/// nothing is pending.
+#[tauri::command]
+pub fn promote_queued_track(
+    state: tauri::State<'_, Host>,
+    feed: tauri::State<'_, AnalysisFeed>,
+    tracks: tauri::State<'_, TrackAnalysis>,
+    deck: usize,
+) {
+    if !valid_deck(deck) || !tracks.promote(deck) {
+        return;
+    }
+    feed.reset(deck, state.health().context_frames as f64);
+    let rate = state.track_status(deck).map_or(1.0, |status| status.rate);
+    if let Some(period) = tracks.beat_period_at_rate(deck, rate) {
+        state.set_beat_period(deck, period);
+    }
 }
 
 /// Load an in-memory take onto a deck (the freshly composed WAV that may not
@@ -1897,4 +1989,147 @@ pub fn set_deck_primed(store: tauri::State<'_, InterfaceStore>, deck: usize, pri
     if valid_deck(deck) {
         store.set_deck_primed(deck, primed);
     }
+}
+
+// --- Looms and node cue (ADR-0038, the loom theme). The loom documents live in
+// `generated_songs/looms/` behind `SongLibrary` (see `crate::looms`): stored
+// opaquely, served back, never resolved to song paths here. No library event
+// fires for looms — the webview is the only writer and refreshes its own list.
+
+/// Every loom (`generated_songs/looms/*.json`) as a summary row, newest first.
+#[tauri::command]
+pub async fn list_looms(
+    library: tauri::State<'_, SongLibrary>,
+) -> Result<Vec<crate::looms::LoomSummary>, String> {
+    library.list_looms()
+}
+
+/// One loom's JSON document; the webview validates its shape.
+#[tauri::command]
+pub async fn read_loom(
+    library: tauri::State<'_, SongLibrary>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    library.read_loom(&id)
+}
+
+/// Create or replace a loom (the webview's debounced autosave) and return its
+/// summary. The id, the name and the 2 MiB cap are checked in [`crate::looms::save`].
+#[tauri::command]
+pub async fn save_loom(
+    library: tauri::State<'_, SongLibrary>,
+    id: String,
+    name: String,
+    loom: serde_json::Value,
+) -> Result<crate::looms::LoomSummary, String> {
+    library.save_loom(&id, &name, loom)
+}
+
+/// Move a loom to the OS Trash (recoverable). The songs it names are untouched.
+#[tauri::command]
+pub async fn delete_loom(
+    library: tauri::State<'_, SongLibrary>,
+    id: String,
+) -> Result<(), String> {
+    library.delete_loom(&id)
+}
+
+/// Cue `start_seconds..end_seconds` (`None` = to the end) of a library song in the
+/// headphones, looping like any preview (ADR-0027) — the loom's node cue. The shell
+/// reads, decodes and slices off the main thread, so no PCM crosses IPC; the window
+/// is clamped into the track and a start past its end is refused. `audition_stop`
+/// stops it.
+#[tauri::command]
+pub async fn audition_song_clip(
+    state: tauri::State<'_, Host>,
+    songs: tauri::State<'_, SongLibrary>,
+    name: String,
+    start_seconds: f64,
+    end_seconds: Option<f64>,
+) -> Result<(), String> {
+    let bytes = songs.read(&name)?;
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    let samples = tauri::async_runtime::spawn_blocking(move || {
+        let track = crate::decode::decode_to_48k(bytes, extension.as_deref())?;
+        let (first, last) =
+            crate::looms::audition_frames(start_seconds, end_seconds, track.frames())?;
+        Ok::<Vec<f32>, String>(
+            track.left[first..last]
+                .iter()
+                .zip(&track.right[first..last])
+                .flat_map(|(left, right)| [*left, *right])
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|e| format!("cue decode failed: {e}"))??;
+    state.audition_play(samples);
+    Ok(())
+}
+
+/// One slice of a bounce: `start_seconds..end_seconds` of library song `name`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StitchPart {
+    pub name: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+}
+
+/// The longest prompt a bounce records: the deck's generate-prompt cap.
+const MAX_BOUNCE_PROMPT_CHARS: usize = 32_000;
+
+/// Bounce a loom path (plan decision 14): stitch `parts` of library songs into one
+/// new song titled `title`, recording `prompt` (the path's node prompts). The shell
+/// reads each part scoped to the songs folder, decodes, stitches and writes off the
+/// main thread (see [`crate::stitch`]); only the new row crosses IPC.
+#[tauri::command]
+pub async fn stitch_songs(
+    app: tauri::AppHandle,
+    parts: Vec<StitchPart>,
+    title: String,
+    prompt: String,
+) -> Result<SongEntry, String> {
+    let title: String = title.chars().take(library::MAX_TITLE_CHARS).collect();
+    let title = library::validate_title(&title)?;
+    let prompt: String = prompt.chars().take(MAX_BOUNCE_PROMPT_CHARS).collect();
+    let handle = app.clone();
+    let entry = tauri::async_runtime::spawn_blocking(move || {
+        let songs = handle.state::<SongLibrary>();
+        // ponytail: every part is decoded at once (≈ 1.5 GB at the 30-minute cap);
+        // decode and append part by part if long bounces run short of memory.
+        let tracks = parts
+            .iter()
+            .map(|part| {
+                let extension = std::path::Path::new(&part.name)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(str::to_ascii_lowercase);
+                crate::decode::decode_to_48k(songs.read(&part.name)?, extension.as_deref())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let spans: Vec<_> = tracks
+            .iter()
+            .zip(&parts)
+            .map(|(track, part)| (track.frames(), part.start_seconds, part.end_seconds))
+            .collect();
+        let slices: Vec<_> = tracks.iter().zip(crate::stitch::plan_stitch(&spans)?).collect();
+        let wav = crate::stitch::wav(&crate::stitch::stitch(&slices))?;
+        songs.record(
+            NewSong {
+                title,
+                prompt,
+                model: "loom-bounce".to_string(),
+                recipe: None,
+            },
+            &wav,
+        )
+    })
+    .await
+    .map_err(|e| format!("bounce failed: {e}"))??;
+    crate::watcher::emit_library_changed(&app, "songs");
+    Ok(entry)
 }

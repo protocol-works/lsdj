@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::media::{AnalyzedLibrary, TrackInfo};
 use crate::library;
+use crate::looms::{self, LoomSummary};
 use crate::playlists::{self, Playlist};
 
 /// A LoRA slot captured in the effective song-generation request.
@@ -370,6 +371,39 @@ impl SongLibrary {
     pub fn delete_playlist(&self, name: &str) -> Result<(), String> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         playlists::delete(&self.dir, name)
+    }
+
+    /// Every loom, newest first.
+    pub fn list_looms(&self) -> Result<Vec<LoomSummary>, String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        looms::list(&self.dir)
+    }
+
+    /// One loom's document, opaque (the webview validates its shape).
+    pub fn read_loom(&self, id: &str) -> Result<serde_json::Value, String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        looms::read(&self.dir, id)
+    }
+
+    /// Create or replace a loom, stamping `updatedAt` from the shell clock when the
+    /// webview left it out.
+    pub fn save_loom(
+        &self,
+        id: &str,
+        name: &str,
+        loom: serde_json::Value,
+    ) -> Result<LoomSummary, String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        looms::save(&self.dir, id, name, loom, now)
+    }
+
+    /// Move a loom to the OS Trash; its songs stay.
+    pub fn delete_loom(&self, id: &str) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
+        looms::delete(&self.dir, id)
     }
 
     /// The audio files in the songs folder, created first so a fresh install lists

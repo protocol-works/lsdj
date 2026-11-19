@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { togglePianoWindow } from '../audio/nativeEngine'
@@ -42,6 +42,7 @@ type Handlers = {
   onStopPreview?: () => void
   onToggle?: () => void
   onResize?: (height: number, commit: boolean) => void
+  onSeedTrack?: (file: string) => void
 }
 
 function renderExplorer(
@@ -65,6 +66,7 @@ function renderExplorer(
         onToggle={handlers.onToggle ?? vi.fn()}
         height={MEDIA_DEFAULT_HEIGHT}
         onResize={handlers.onResize ?? vi.fn()}
+        onSeedTrack={handlers.onSeedTrack}
       />
     </ControlBusProvider>,
   )
@@ -908,6 +910,38 @@ describe('MediaExplorer', () => {
 
     expect(screen.getByText('Midnight drive')).toBeInTheDocument()
     expect(screen.queryByText('Sunrise house')).toBeNull()
+  })
+
+  describe('in the loom theme', () => {
+    const libraryHasDub = () =>
+      vi.stubGlobal('__TAURI__', {
+        core: {
+          invoke: vi.fn(async (cmd: string) =>
+            cmd === 'list_generated_songs'
+              ? [{ file: 'dub.wav', title: 'Dub', prompt: 'warm dub', model: 'track' }]
+              : undefined,
+          ),
+        },
+      })
+
+    it('seeds a loom thread from a saved song and says songs drag onto the loom', async () => {
+      libraryHasDub()
+      const onSeedTrack = vi.fn()
+      renderExplorer({ onSeedTrack })
+      fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+      fireEvent.click(await screen.findByRole('button', { name: /^Seed a loom thread from Dub/ }))
+      expect(onSeedTrack).toHaveBeenCalledWith('dub.wav')
+      expect(screen.getByText(/^drag a song onto the loom/)).toBeInTheDocument()
+    })
+
+    it('offers neither the seed button nor the hint outside it', async () => {
+      libraryHasDub()
+      renderExplorer()
+      fireEvent.click(screen.getByRole('tab', { name: 'Songs' }))
+      await screen.findByText('Dub')
+      expect(screen.queryByRole('button', { name: /^Seed a loom thread/ })).toBeNull()
+      expect(screen.queryByText(/^drag a song onto the loom/)).toBeNull()
+    })
   })
 
   it('clears a song filter and restores all results', async () => {
@@ -2447,7 +2481,11 @@ describe('library curation', () => {
     }
     const saves = (shell: ReturnType<typeof playlistShell>) =>
       shell.commands('save_playlist').map((call) => call.args)
-    const dataTransfer = (file: string) => ({ getData: () => file, setData: vi.fn() })
+    const dataTransfer = (file: string) => ({
+      getData: () => file,
+      setData: vi.fn(),
+      setDragImage: vi.fn(),
+    })
 
     it('names the tab Songs and lists the playlists in the source column', async () => {
       playlistShell([set, { name: 'Warm-up', files: ['b.wav'] }])
@@ -2701,6 +2739,14 @@ describe('library curation', () => {
       expect(row).toHaveAttribute('draggable', 'true')
       expect(screen.getByRole('button', { name: 'Select Beta' })).not.toHaveAttribute('draggable')
       expect(transfer.setData).toHaveBeenCalledWith('text/plain', 'b.wav')
+      // The loom tells a song from other drags by this type, on dragover.
+      expect(transfer.setData).toHaveBeenCalledWith('text/lsdj-song', 'b.wav')
+      // The drag image is a pill naming the song, not WebKit's snapshot of the
+      // row (which bakes in the rows below it); it leaves once the drag has it.
+      const ghost = document.querySelector('.media__drag-ghost')
+      expect(ghost).toHaveTextContent('Beta')
+      expect(transfer.setDragImage).toHaveBeenCalledWith(ghost, expect.any(Number), expect.any(Number))
+      await waitFor(() => expect(document.querySelector('.media__drag-ghost')).toBeNull())
     })
 
     it('shows a reorder grip only in a playlist shown in its stored order', async () => {

@@ -18,6 +18,8 @@ export function SegmentedControl<T extends string>({
   disabled?: boolean
 }) {
   const buttons = useRef<(HTMLButtonElement | null)[]>([])
+  // WAI-ARIA radiogroup: with nothing checked, the first option is the tab stop.
+  const tabStop = options.some((option) => option.value === value) ? value : options[0]?.value
 
   const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next: number | null = null
@@ -51,7 +53,7 @@ export function SegmentedControl<T extends string>({
               type="button"
               role="radio"
               aria-checked={selected}
-              tabIndex={selected && !disabled ? 0 : -1}
+              tabIndex={option.value === tabStop && !disabled ? 0 : -1}
               disabled={disabled}
               className={`ui-segmented__option${selected ? ' ui-segmented__option--selected' : ''}`}
               onClick={() => onChange(option.value)}

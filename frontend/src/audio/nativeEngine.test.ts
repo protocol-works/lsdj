@@ -73,6 +73,8 @@ const SNAP = {
       rate: 1.0,
       ended: false,
       loopRegion: { start: SAMPLE_RATE * 4, end: SAMPLE_RATE * 8 },
+      queued: true,
+      swaps: 2,
     },
     null,
   ],
@@ -271,6 +273,8 @@ describe('createNativeEngine — snapshot-backed getters', () => {
     expect(status!.playing).toBe(true)
     expect(status!.loop).toEqual({ start: 4, end: 8 })
     expect(status!.contextTime).toBeCloseTo(2)
+    expect(status!.queued).toBe(true)
+    expect(status!.swaps).toBe(2)
   })
 
   it('playLoop reports the cached filled state and only fires when filled', async () => {
@@ -310,6 +314,83 @@ describe('createNativeEngine — snapshot-backed getters', () => {
     expect(last.bufferedSeconds).toBeCloseTo(1) // 48000 frames / SR
     expect(last.contextTime).toBeCloseTo(2)
     expect(last.playing).toBe(true)
+  })
+})
+
+describe('createNativeEngine — the queued track (the loom seam)', () => {
+  /** A one-hop `track_bands` frame with every lane at `value`. */
+  function bandsFrame(value: number) {
+    const bytes = new ArrayBuffer(4 + 3 * 4)
+    const view = new DataView(bytes)
+    view.setUint32(0, 1, true)
+    for (let lane = 0; lane < 3; lane++) view.setFloat32(4 + lane * 4, value, true)
+    return bytes
+  }
+
+  /** Deck A over an invoke that answers from `replies` (mutable mid-test). */
+  async function deckWithReplies(replies: Record<string, unknown>) {
+    vi.stubGlobal('__TAURI__', {
+      core: {
+        invoke: vi.fn((cmd: string, args?: unknown) => {
+          calls.push({ cmd, args })
+          return Promise.resolve(replies[cmd])
+        }),
+      },
+    })
+    const ch = await createNativeEngine().createDeckChannel(
+      'a',
+      { volume: 1, eq: { low: 0.5, mid: 0.5, high: 0.5 }, cue: false, fx: { kind: null, amount: 0 }, trimDb: 0 },
+      () => {},
+    )
+    calls.length = 0
+    return ch
+  }
+
+  it('queueTrack ships the scoped source and seconds, resolving with the numbers', async () => {
+    const ch = await deckWithReplies({ queue_track_file: { duration: 30, bpm: 124, grid: null } })
+    const queued = await ch.queueTrack({ kind: 'song', name: 'take.wav' }, 7.5, 64)
+    expect(queued).toEqual({ duration: 30, bpm: 124, grid: null })
+    expect(calls).toEqual([
+      {
+        cmd: 'queue_track_file',
+        args: { deck: 0, source: { kind: 'song', name: 'take.wav' }, startSeconds: 7.5, switchAtSeconds: 64 },
+      },
+    ])
+  })
+
+  it('queueTrack refuses an in-memory take without a round-trip', async () => {
+    const ch = await deckWithReplies({})
+    await expect(ch.queueTrack({ kind: 'bytes', wav: new ArrayBuffer(8) }, 0, 1)).rejects.toThrow()
+    expect(calls).toEqual([])
+  })
+
+  it('clearQueuedTrack sends clear_queued_track', async () => {
+    const ch = await deckWithReplies({})
+    ch.clearQueuedTrack()
+    expect(calls).toEqual([{ cmd: 'clear_queued_track', args: { deck: 0 } }])
+  })
+
+  it('promoteQueuedTrack promotes, then refreshes the overview and returns the new bands', async () => {
+    const replies: Record<string, unknown> = {
+      load_track_file: { duration: 60, bpm: 124, grid: null },
+      track_bands: bandsFrame(0.1),
+      track_peaks: { min: [-0.1], max: [0.1] },
+    }
+    const ch = await deckWithReplies(replies)
+    await ch.loadTrack({ kind: 'song', name: 'parent.wav' }, 1)
+    // After the swap the shell serves the queued track's summaries.
+    replies.track_bands = bandsFrame(0.7)
+    replies.track_peaks = { min: [-0.5], max: [0.5] }
+    calls.length = 0
+
+    const bands = await ch.promoteQueuedTrack()
+    expect(calls).toEqual([
+      { cmd: 'promote_queued_track', args: { deck: 0 } },
+      { cmd: 'track_peaks', args: { deck: 0, buckets: 1 } },
+      { cmd: 'track_bands', args: { deck: 0 } },
+    ])
+    expect(bands!.low[0]).toBeCloseTo(0.7)
+    expect(ch.getTrackPeaks(1)!.max[0]).toBeCloseTo(0.5)
   })
 })
 
